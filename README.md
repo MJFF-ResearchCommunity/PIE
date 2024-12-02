@@ -1,1 +1,1 @@
-# Parkinson-s-Insight-Engine-PIE-
+# Parkinsons-Insight-Engine-PIE-
