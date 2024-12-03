@@ -132,4 +132,4 @@ pytest tests/
 This project is licensed under the MIT License. See the LICENSE file for details.
 
 ## Contact
-For questions or suggestions, please contact [your email or GitHub profile link].
+If you have any questions or suggestions, please don't hesitate to contact cameron@allianceai.co.
