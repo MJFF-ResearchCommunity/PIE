@@ -8,6 +8,7 @@ Parkinson's Insight Engine (PIE) is a Python-based data preprocessing and analys
 - **Data Cleaning**: Handles missing values and outliers and standardizes formats.
 - **Feature Engineering**: Aggregates longitudinal data and integrates multi-modal features.
 - **Feature Selection**: Automates feature selection.
+- **Classification and Regression**: Perform supervised learning on the processed data.
 - **Visualization Tools**: Generates insights through interactive plots and dashboards.
 - **Reusable**: Designed as an installable Python package for seamless integration into research workflows.
 
@@ -36,7 +37,7 @@ pip install -r requirements.txt
 Clone this repository to your local machine:
 
 ```bash
-git clone https://github.com/your-username/parkinsons-insight-engine.git
+git clone https://github.com/your-username/PIE.git
 cd parkinsons-insight-engine
 ```
 
@@ -45,6 +46,10 @@ Install the package:
 ```bash
 pip install .
 ```
+
+### Data Format
+
+All data are formatted as Pandas DataFrames unless otherwise specified.
 
 ### Usage
 
@@ -99,7 +104,7 @@ Explore the example Jupyter notebook (`examples/pipeline_demo.ipynb`) to see PIE
 
 ## Repository Structure
 ```plaintext
-parkinsons-insight-engine/
+PIE/
 ├── pie/                  # Core library
 │   ├── data_loader.py    # Module for loading data
 │   ├── data_preprocessor.py # Module for cleaning data
