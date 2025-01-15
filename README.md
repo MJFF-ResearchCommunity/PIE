@@ -59,7 +59,7 @@ Load your MJFF datasets (e.g., CSV files) into PIE:
 ```python
 from pie import DataLoader
 
-data = DataLoader.load("path/to/your/data/folder", source="PPMI")
+data = DataLoader.load("path/to/your/data/folder", source="PPMI", datasets=['clinical','biologic','imaging','wearables'])
 ```
 
 #### 2. Preprocess Data
