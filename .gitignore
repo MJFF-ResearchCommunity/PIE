@@ -1,2 +1,3 @@
 # Ignore the entire PPMI folder and all its contents:
 PPMI/ 
+ppmi_medical_history.csv
