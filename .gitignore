@@ -1,3 +1,7 @@
 # Ignore the entire PPMI folder and all its contents:
-PPMI/ 
-ppmi_medical_history.csv
+PPMI/
+
+# Python packaging files
+*.egg-info/
+__pycache__/
+build/
