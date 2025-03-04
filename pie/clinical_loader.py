@@ -3,6 +3,7 @@ clinical_loader.py
 
 Contains functions for loading and processing clinical data.
 """
+from pie.med_hist_loader import load_ppmi_medical_history
 
 def load_clinical_data(data_path: str, source: str):
     """
@@ -12,5 +13,7 @@ def load_clinical_data(data_path: str, source: str):
     :param source: The data source (e.g., PPMI).
     :return: A placeholder dictionary or DataFrame representing clinical data.
     """
-    # TODO: Implement actual loading logic.
-    return {"clinical_data_placeholder": None} 
+    # TODO: Add other parts of clinical data as added and tested
+    data_dict = {}
+    data_dict["med_hist"] = load_ppmi_medical_history(data_path)
+    return data_dict
