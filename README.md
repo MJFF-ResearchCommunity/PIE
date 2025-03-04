@@ -14,6 +14,13 @@ Parkinson's Insight Engine (PIE) is a Python-based data preprocessing and analys
 
 ## Getting Started
 
+Clone this repository to your local machine:
+
+```bash
+git clone https://github.com/MJFF-ResearchCommunity/PIE.git
+cd PIE
+```
+
 ### Prerequisites
 To use PIE, please ensure you have installed Python 3.8 or later. The pipeline relies on the following libraries:
 
@@ -34,12 +41,6 @@ pip install -r requirements.txt
 ```
 
 ### Installation
-Clone this repository to your local machine:
-
-```bash
-git clone https://github.com/MJFF-ResearchCommunity/PIE.git
-cd PIE
-```
 
 Install the package:
 
