@@ -37,8 +37,8 @@ pip install -r requirements.txt
 Clone this repository to your local machine:
 
 ```bash
-git clone https://github.com/your-username/PIE.git
-cd parkinsons-insight-engine
+git clone https://github.com/MJFF-ResearchCommunity/PIE.git
+cd PIE
 ```
 
 Install the package:
@@ -48,6 +48,12 @@ pip install .
 ```
 
 ### Data Format
+
+You must [apply for access to the PPMI data](https://www.ppmi-info.org/access-data-specimens/download-data) through the PPMI website. After being granted access individual modalities can be downloaded as separate files through [LONI (the Laboratory of Neuro Imaging from the USC)](https://ida.loni.usc.edu/login.jsp).
+
+For development and testing purposes, this repo assumes data has been downloaded from LONI and stored in a directory called `PPMI`.
+
+When using this package as part of your own development, the path to your local copy of the data can be specified (see Usage section below).
 
 All data are formatted as Pandas DataFrames unless otherwise specified.
 
@@ -106,6 +112,7 @@ Explore the example Jupyter notebook (`examples/pipeline_demo.ipynb`) to see PIE
 ```plaintext
 PIE/
 ├── pie/                  # Core library
+│   ├── __init__.py       # Allow module import
 │   ├── data_loader.py    # Module for loading data
 │   ├── data_preprocessor.py # Module for cleaning data
 │   ├── feature_engineer.py  # Module for feature engineering
@@ -113,6 +120,7 @@ PIE/
 │   ├── visualizer.py        # Module for data visualization
 ├── examples/            # Example Jupyter notebooks
 ├── tests/               # Unit tests
+├── PPMI/                # Local copies of the PPMI data files
 ├── requirements.txt     # List of dependencies
 ├── setup.py             # Installation script
 └── README.md            # Project documentation
