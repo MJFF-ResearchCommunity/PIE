@@ -1,3 +1,4 @@
+import glob
 import os
 import pandas as pd
 import numpy as np
@@ -120,9 +121,14 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
         # Add additional column names here if needed
     ]
 
-    all_csv_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
+    # Search all subdirectories too
+    print(f"root_dir is {folder_path}")
+    all_csv_files = list(glob.iglob("**/*.csv", root_dir=folder_path, recursive=True))
+    print(all_csv_files)
+
     for prefix in MEDICAL_HISTORY_PREFIXES:
-        matching_files = [f for f in all_csv_files if f.startswith(prefix)]
+        # Strip directory path, and look only at the filename for the prefix
+        matching_files = [f for f in all_csv_files if f.split("/")[-1].startswith(prefix)]
         if not matching_files:
             print(f"[ERROR] No CSV file found for prefix: {prefix}")
             continue
@@ -186,4 +192,4 @@ def main():
     print(df_med_history.head(25))
     df_med_history.to_csv("ppmi_medical_history.csv", index=False)
 if __name__ == "__main__":
-    main() 
+    main()
