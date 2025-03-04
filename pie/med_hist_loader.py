@@ -122,9 +122,7 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
     ]
 
     # Search all subdirectories too
-    print(f"root_dir is {folder_path}")
     all_csv_files = list(glob.iglob("**/*.csv", root_dir=folder_path, recursive=True))
-    print(all_csv_files)
 
     for prefix in MEDICAL_HISTORY_PREFIXES:
         # Strip directory path, and look only at the filename for the prefix
