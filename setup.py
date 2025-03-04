@@ -12,12 +12,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setuptools.setup(
     name="parkinsons-insight-engine",
     version="0.0.1",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Cameron Hamilton and the Data Modality and Methodology Task Force",
+    author_email="cameron@allianceai.co",
     description="A data preprocessing and analysis pipeline for Parkinson's research (PIE)",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/your-username/PIE",
+    url="https://github.com/MJFF-ResearchCommunity/PIE",
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
@@ -25,4 +25,4 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     python_requires='>=3.8',
-) 
+)
