@@ -34,15 +34,15 @@ class DataPreprocessor:
         return clin_dict
 
     @staticmethod
-    def clean_medical_history(med_hist_df):
+    def clean_medical_history(med_hist_dict):
         # TODO: Add individual column cleaning functions as implemented
-        clean_df = DataPreprocessor.clean_concomitant_meds(med_hist_df)
-        #clean_df = DataPreprocessor.clean_vital_signs(clean_df) # for example
-        return clean_df
+        med_hist_dict["Concomitant_Medication"] = DataPreprocessor.clean_concomitant_meds(
+                med_hist_dict["Concomitant_Medication"])
+        return med_hist_dict
 
     @staticmethod
-    def clean_concomitant_meds(med_hist_df):
-        clean_df = med_hist_df.copy()
+    def clean_concomitant_meds(concom_meds_df):
+        clean_df = concom_meds_df.copy()
 
         # Clean the start and stop dates
         clean_df["STARTDT"] = pd.to_datetime(clean_df["STARTDT"], format="%m/%Y")

@@ -3,7 +3,12 @@ import os
 import pandas as pd
 import numpy as np
 
-# List the file name prefixes relevant to medical history
+# Many medical history files cannot be merged, because data is recorded multiple times per visit,
+# or on a timeline that doesn't correspond to the visits. Examples of the first are Adverse Event
+# logs, where at the visit, multiple adverse events over the past period can be recorded. An
+# example of the second is Concomitant Meds, which have start and end dates based on when the
+# medication was taken. As a result, medical history tables should be kept separate.
+
 MEDICAL_HISTORY_PREFIXES = [
     "Adverse_Event",
     "AV-133_Prodromal",
@@ -105,14 +110,11 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
     """
     1) Lists all CSV files in 'folder_path' that start with any MEDICAL_HISTORY_PREFIX.
     2) For each CSV, read into df_temp.
-         - sanitize_suffixes_in_df(df_temp)
-         - sanitize_suffixes_in_df(df_merged)   (since df_merged can accumulate col_x, col_y)
-         - merge df_temp -> df_merged with suffixes=('_x','_y')
-         - deduplicate_columns(df_merged)
-       This ensures there's no leftover collision from prior merges.
-    3) Return the final merged DataFrame or empty if no files found.
+         - sanitize_suffixes_in_df(df_temp), in case it is merged in the future
+         - Store in a dict of tables, with the prefix as the key
+    3) Return the dict or empty if no files found.
     """
-    df_merged = None
+    df_dict = {}
     found_any_file = False
 
     # Some columns that might appear in multiple DataFrames
@@ -143,51 +145,18 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
             # 1) Rename any leftover _x / _y columns in df_temp
             sanitize_suffixes_in_df(df_temp)
 
-            if df_merged is None:
-                df_merged = df_temp
-            else:
-                # 2) Also rename leftover suffixes in df_merged 
-                #    before we attempt the next merge
-                sanitize_suffixes_in_df(df_merged)
-
-                # Figure out the join keys
-                merge_keys = ["PATNO"]
-                if "EVENT_ID" in df_merged.columns and "EVENT_ID" in df_temp.columns:
-                    merge_keys = ["PATNO", "EVENT_ID"]
-
-                # DEBUG: Print columns to see if we still have something suspicious
-                print("[DEBUG] Attempting merge. df_merged columns:")
-                print(df_merged.columns.tolist())
-                print("[DEBUG] df_temp columns:")
-                print(df_temp.columns.tolist())
-
-                try:
-                    df_merged = pd.merge(
-                        df_merged, df_temp, on=merge_keys, how="outer", suffixes=('_x', '_y')
-                    )
-                except pd.errors.MergeError as me:
-                    print("[ERROR] MergeError encountered during pd.merge(). Columns in df_merged:")
-                    print(df_merged.columns.tolist())
-                    print("[ERROR] Columns in df_temp:")
-                    print(df_temp.columns.tolist())
-                    print("[ERROR] Exception message:", str(me))
-                    raise
-
-            # 3) Immediately deduplicate
-            df_merged = deduplicate_columns(df_merged, columns_to_deduplicate)
+            df_dict[prefix] = df_temp
 
     # Return empty DataFrame if no data was loaded
-    if not found_any_file or df_merged is None:
-        print("[WARNING] No matching medical history CSV files were loaded - returning empty DataFrame.")
-        return pd.DataFrame()
+    if not found_any_file:
+        print("[WARNING] No matching medical history CSV files were loaded - returning empty dict.")
 
-    return df_merged
+    return df_dict
 
 
 def main():
     path_to_med_history = "./PPMI/Medical_History"
-    df_med_history = load_ppmi_medical_history(path_to_med_history)
-    print(df_med_history.head(25))
-    df_med_history.to_csv("ppmi_medical_history.csv", index=False)
+    med_history = load_ppmi_medical_history(path_to_med_history)
+    print(sorted(list(med_history.keys())))
 if __name__ == "__main__":
     main()
