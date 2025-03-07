@@ -41,4 +41,4 @@ def test_clean_concomitant_meds(data_dict):
 
 @pytest.mark.skip(reason="Don't recreate every time")
 def test_create_concomitant_meds(data_dict):
-    DataPreprocessor.create_concomitant_meds(data_dict["clinical"]["med_hist"])
+    DataPreprocessor.create_concomitant_meds(data_dict["clinical"]["med_hist"]["Concomitant_Medication"])
