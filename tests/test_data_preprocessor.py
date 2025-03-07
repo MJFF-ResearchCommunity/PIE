@@ -26,7 +26,7 @@ def test_clean(data_dict):
 
 # Now test the actual cleaning code
 def test_clean_concomitant_meds(data_dict):
-    clean_df = DataPreprocessor.clean_concomitant_meds(data_dict["clinical"]["med_hist"])
+    clean_df = DataPreprocessor.clean_concomitant_meds(data_dict["clinical"]["med_hist"]["Concomitant_Medication"])
     assert "CMTRT" in clean_df.columns
 
     assert clean_df["CMTRT"].notnull().all() # All should have names
