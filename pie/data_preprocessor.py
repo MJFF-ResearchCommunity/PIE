@@ -5,6 +5,7 @@ Methods for cleaning and standardizing data across modalities.
 """
 
 import json
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
@@ -58,7 +59,7 @@ class DataPreprocessor:
         # All concomitant meds entries have either a code in CMINDC or text in CMIND_TEXT
         # (a handful have neither). The code is useful to indicate PD comorbidity/symptom.
         # Those text entries can be mapped to a code, for a completely coded dataset.
-        with open("pie/concomitant_meds_indications.json", "r") as f:
+        with open(f"{Path(__file__).parent}/concomitant_meds_indications.json", "r") as f:
             raw = json.load(f)
         indications = dict((int(k), v) for k, v in raw["indications"].items())
         text_map = dict((k, int(v)) for k, v in raw["text_mappings"].items())
