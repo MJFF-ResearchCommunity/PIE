@@ -1,7 +1,10 @@
 import glob
+import logging
 import os
 import pandas as pd
 import numpy as np
+
+logger = logging.getLogger(f"PIE.{__name__}")
 
 FILE_PREFIXES = [
     "Age_at_visit",
@@ -95,7 +98,7 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
         # Gather all files that start with the prefix (filename only; strip directory path)
         matching_files = [f for f in all_csv_files if f.split("/")[-1].startswith(prefix)]
         if not matching_files:
-            print(f"[ERROR] No CSV file found for prefix: {prefix}")
+            logger.warning(f"No CSV file found for prefix: {prefix}")
             continue
         for filename in matching_files:
             csv_file = os.path.join(folder_path, filename)
@@ -103,7 +106,7 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
                 df_temp = pd.read_csv(csv_file)
                 found_any_file = True
             except Exception as e:
-                print(f"[ERROR] Could not read file '{csv_file}': {e}")
+                logger.error(f"Could not read file '{csv_file}': {e}")
                 continue
             # If df_merged is empty, just set df_merged = df_temp
             if df_merged is None:
@@ -118,7 +121,7 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
                 df_merged = pd.merge(df_merged, df_temp, on=merge_keys, how="outer")
     # If nothing loaded successfully, return empty DataFrame
     if not found_any_file or df_merged is None:
-        print("[WARNING] No matching CSV files were successfully loaded. Returning empty DataFrame.")
+        logger.warning("No matching CSV files were successfully loaded. Returning empty DataFrame.")
         return pd.DataFrame()
     columns_to_deduplicate = ["PAG_NAME","INFODT","ORIG_ENTRY","LAST_UPDATE","COHORT","REC_ID"]
     # Deduplicate the columns
@@ -134,7 +137,7 @@ def main():
     """
     path_to_subject_characteristics = "./PPMI/_Subject_Characteristics"
     df_subjects = load_ppmi_subject_characteristics(path_to_subject_characteristics)
-    print(df_subjects.head(25))  # Show first rows to see merge results
+    logger.info(df_subjects.head(25))  # Show first rows to see merge results
     df_subjects.to_csv("subject_characteristics.csv", index=False)
 
 if __name__ == "__main__":
