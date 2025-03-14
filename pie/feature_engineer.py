@@ -4,7 +4,10 @@ feature_engineer.py
 Methods for feature engineering, such as aggregation or derived features.
 """
 
+import logging
 import pandas as pd
+
+logger = logging.getLogger(f"PIE.{__name__}")
 
 class FeatureEngineer:
     """
@@ -20,5 +23,5 @@ class FeatureEngineer:
         :return: Data with engineered features.
         """
         # TODO: Implement feature engineering logic.
-        print("FeatureEngineer.create_features() is just a placeholder.")
-        return data_dict 
+        logger.info("FeatureEngineer.create_features() is just a placeholder.")
+        return data_dict
