@@ -107,7 +107,7 @@ Visualizer.plot_distribution(selected_features, column="age")
 ```
 
 ### Example Notebook
-Explore the example Jupyter notebook (`examples/pipeline_demo.ipynb`) to see PIE in action.
+Explore the example Jupyter notebooks (eg `notebooks/pipeline_demo.ipynb`) to see PIE in action.
 
 ## Repository Structure
 ```plaintext
@@ -117,9 +117,9 @@ PIE/
 │   ├── data_loader.py    # Module for loading data
 │   ├── data_preprocessor.py # Module for cleaning data
 │   ├── feature_engineer.py  # Module for feature engineering
-│   ├── feature_selector.py     # Module for feature selection
+│   ├── feature_selector.py  # Module for feature selection
 │   ├── visualizer.py        # Module for data visualization
-├── examples/            # Example Jupyter notebooks
+├── notebooks/           # Example Jupyter notebooks
 ├── tests/               # Unit tests
 ├── PPMI/                # Local copies of the PPMI data files
 ├── requirements.txt     # List of dependencies
@@ -131,9 +131,11 @@ PIE/
 Contributions are welcome! To contribute:
 1. Fork the repository.
 2. Create a new branch for your feature: `git checkout -b feature-name`.
-3. Commit your changes: `git commit -m 'Add new feature'`.
-4. Push to the branch: `git push origin feature-name`.
-5. Create a pull request.
+3. Copy the PPMI data into the `PIE/PPMI` directory.
+4. Instead of installing PIE as above, use `pip install -e .` for editable mode.
+5. Commit your changes: `git commit -m 'Add new feature'`.
+6. Push to the branch: `git push origin feature-name`.
+7. Create a pull request.
 
 ### Running Tests
 Ensure all tests pass before submitting a pull request:
