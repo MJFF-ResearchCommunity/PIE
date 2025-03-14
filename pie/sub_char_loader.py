@@ -1,3 +1,4 @@
+import glob
 import os
 import pandas as pd
 import numpy as np
@@ -89,10 +90,10 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
     df_merged = None
     found_any_file = False
     # Get all CSV files in the target folder
-    all_csv_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
+    all_csv_files = list(glob.iglob("**/*.csv", root_dir=folder_path, recursive=True))
     for prefix in FILE_PREFIXES:
-        # Gather all files that start with the prefix
-        matching_files = [f for f in all_csv_files if f.startswith(prefix)]
+        # Gather all files that start with the prefix (filename only; strip directory path)
+        matching_files = [f for f in all_csv_files if f.split("/")[-1].startswith(prefix)]
         if not matching_files:
             print(f"[ERROR] No CSV file found for prefix: {prefix}")
             continue
