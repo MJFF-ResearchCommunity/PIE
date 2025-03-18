@@ -4,7 +4,10 @@ feature_selector.py
 Methods for selecting the most relevant features from the dataset.
 """
 
+import logging
 import pandas as pd
+
+logger = logging.getLogger(f"PIE.{__name__}")
 
 class FeatureSelector:
     """
@@ -21,5 +24,5 @@ class FeatureSelector:
         :return: DataFrame with only selected features (and target).
         """
         # TODO: Implement feature selection logic.
-        print("FeatureSelector.select_features() is just a placeholder.")
-        return data 
+        logger.info("FeatureSelector.select_features() is just a placeholder.")
+        return data

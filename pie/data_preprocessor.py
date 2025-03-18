@@ -5,9 +5,12 @@ Methods for cleaning and standardizing data across modalities.
 """
 
 import json
+import logging
 from pathlib import Path
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(f"PIE.{__name__}")
 
 class DataPreprocessor:
     """
@@ -51,10 +54,10 @@ class DataPreprocessor:
 
         # Not all have start date: assume prior to PPMI enrollment.
         # Not all have stop date: assume still on medication as of date of last visit.
-        print(f"[INFO] There are {clean_df['STARTDT'].isnull().sum()} concomitant medication "
-              f"entries with no start date.")
-        print(f"[INFO] There are {clean_df['STOPDT'].isnull().sum()} concomitant medication "
-              f"entries with no stop date.")
+        logger.info(f"There are {clean_df['STARTDT'].isnull().sum()} concomitant medication "
+                    f"entries with no start date.")
+        logger.info(f"There are {clean_df['STOPDT'].isnull().sum()} concomitant medication "
+                    f"entries with no stop date.")
 
         # All concomitant meds entries have either a code in CMINDC or text in CMIND_TEXT
         # (a handful have neither). The code is useful to indicate PD comorbidity/symptom.
@@ -79,7 +82,7 @@ class DataPreprocessor:
                     return 22 # Supplements
                 elif row["CMTRT"] == "HUMULIN NPH":
                     return 11 # Diabetes
-                print(f"[DEBUG] Found concomitant med with only CMTRT. Mapping to Other: '{row['CMTRT']}'")
+                logger.debug(f"Found concomitant med with only CMTRT. Mapping to Other: '{row['CMTRT']}'")
                 return 25 # Other
 
             text = row[textc].strip().lower()
@@ -94,7 +97,7 @@ class DataPreprocessor:
         clean_df[indc] = clean_df.apply(unpack_cm, axis=1)
         nulls = clean_df[indc].isnull().sum()
         if nulls > 0:
-            print(f"[WARN] {nulls} concomitant meds haven't mapped to codes!")
+            logger.warning(f"{nulls} concomitant meds haven't mapped to codes!")
         else:
             clean_df[indc] = clean_df[indc].astype(int)
 
@@ -346,13 +349,13 @@ class DataPreprocessor:
                 text_map[text] = 25 # Other
             # Now check for text matches to the indication names
             elif len(match) > 0:
-                #print(f"[DEBUG] Mapping '{text}' to '{match[0][1]}'")
+                logger.debug(f"Mapping '{text}' to '{match[0][1]}'")
                 text_map[text] = match[0][0] # Store code only
             # Now look at the typos and different names
             else:
                 for code in sorted(precise):
                     if text in precise[code]:
-                        #print(f"*** Mapping '{text}' to {indications[code]}")
+                        logger.debug(f"Mapping precise '{text}' to {indications[code]}")
                         text_map[text] = code
 
                     # If we get here, there was no match
@@ -360,7 +363,7 @@ class DataPreprocessor:
                     if text not in text_map:
                         for fragment in fuzzy[code]:
                             if fragment in text:
-                                #print(f"[DEBUG] Mapping '{text}' to {indications[code]}")
+                                logger.debug(f"Mapping '{text}' to {indications[code]}")
                                 text_map[text] = code
                                 break # inner for loop: check again for text in text_map
 
@@ -392,11 +395,11 @@ class DataPreprocessor:
             if not code:
                 unmapped.add((text, row["CMTRT"]))
 
-        print(f"[DEBUG] Number of unmapped codes considered as Other: {len(unmapped)}")
+        logger.debug(f"Number of unmapped codes considered as Other: {len(unmapped)}")
         for text, trt in unmapped:
             text_map[text] = 25
 
         with open("pie/concomitant_meds_indications.json", "w") as f:
-            print(f"[INFO] text_map contains {len(text_map)} entries")
+            logger.info(f"text_map contains {len(text_map)} entries")
             json.dump({"indications": indications, "text_mappings": text_map}, f)
 
