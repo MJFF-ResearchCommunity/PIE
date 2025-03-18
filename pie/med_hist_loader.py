@@ -1,7 +1,10 @@
+import logging
 import glob
 import os
 import pandas as pd
 import numpy as np
+
+logger = logging.getLogger(f"PIE.{__name__}")
 
 # Many medical history files cannot be merged, because data is recorded multiple times per visit,
 # or on a timeline that doesn't correspond to the visits. Examples of the first are Adverse Event
@@ -130,7 +133,7 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
         # Strip directory path, and look only at the filename for the prefix
         matching_files = [f for f in all_csv_files if f.split("/")[-1].startswith(prefix)]
         if not matching_files:
-            print(f"[ERROR] No CSV file found for prefix: {prefix}")
+            logger.warning(f"No CSV file found for prefix: {prefix}")
             continue
 
         for filename in matching_files:
@@ -139,7 +142,7 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
                 df_temp = pd.read_csv(csv_file)
                 found_any_file = True
             except Exception as e:
-                print(f"[ERROR] Could not read file '{csv_file}': {e}")
+                logger.warning(f"Could not read file '{csv_file}': {e}")
                 continue
 
             # 1) Rename any leftover _x / _y columns in df_temp
@@ -149,7 +152,7 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
 
     # Return empty DataFrame if no data was loaded
     if not found_any_file:
-        print("[WARNING] No matching medical history CSV files were loaded - returning empty dict.")
+        logger.warning("No matching medical history CSV files were loaded - returning empty dict.")
 
     return df_dict
 
@@ -157,6 +160,6 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
 def main():
     path_to_med_history = "./PPMI/Medical_History"
     med_history = load_ppmi_medical_history(path_to_med_history)
-    print(sorted(list(med_history.keys())))
+    logger.info(sorted(list(med_history.keys())))
 if __name__ == "__main__":
     main()
