@@ -129,16 +129,16 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
     return df_merged
 
 
-def main():
-    """
-    Example usage of load_ppmi_subject_characteristics:
-    If some CSVs have only PATNO (no EVENT_ID),
-    those columns will be replicated across all event rows for that PATNO.
-    """
-    path_to_subject_characteristics = "./PPMI/_Subject_Characteristics"
-    df_subjects = load_ppmi_subject_characteristics(path_to_subject_characteristics)
-    logger.info(df_subjects.head(25))  # Show first rows to see merge results
-    df_subjects.to_csv("subject_characteristics.csv", index=False)
+# def main():
+#     """
+#     Example usage of load_ppmi_subject_characteristics:
+#     If some CSVs have only PATNO (no EVENT_ID),
+#     those columns will be replicated across all event rows for that PATNO.
+#     """
+#     path_to_subject_characteristics = "./PPMI/_Subject_Characteristics"
+#     df_subjects = load_ppmi_subject_characteristics(path_to_subject_characteristics)
+#     logger.info(df_subjects.head(25))  # Show first rows to see merge results
+#     df_subjects.to_csv("subject_characteristics.csv", index=False)
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

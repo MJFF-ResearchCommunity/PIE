@@ -189,26 +189,26 @@ def load_ppmi_non_motor_assessments(folder_path: str) -> pd.DataFrame:
     return df_merged
 
 
-def main():
-    """
-    Example usage of load_ppmi_non_motor_assessments:
-    Loads and merges all non-motor assessment files from the PPMI/Non-motor_Assessments folder.
-    """
-    path_to_non_motor_assessments = "./PPMI/Non-motor_Assessments"
+# def main():
+#     """
+#     Example usage of load_ppmi_non_motor_assessments:
+#     Loads and merges all non-motor assessment files from the PPMI/Non-motor_Assessments folder.
+#     """
+#     path_to_non_motor_assessments = "./PPMI/Non-motor_Assessments"
     
-    # Print all CSV files in the PPMI directory to help debug
-    print("[INFO] Listing all CSV files in the Non-motor_Assessments directory:")
-    if os.path.exists(path_to_non_motor_assessments):
-        for root, dirs, files in os.walk(path_to_non_motor_assessments):
-            for file in files:
-                if file.lower().endswith('.csv'):
-                    print(f"  - {os.path.join(root, file)}")
-    else:
-        print(f"[WARNING] Directory not found: {path_to_non_motor_assessments}")
+#     # Print all CSV files in the PPMI directory to help debug
+#     print("[INFO] Listing all CSV files in the Non-motor_Assessments directory:")
+#     if os.path.exists(path_to_non_motor_assessments):
+#         for root, dirs, files in os.walk(path_to_non_motor_assessments):
+#             for file in files:
+#                 if file.lower().endswith('.csv'):
+#                     print(f"  - {os.path.join(root, file)}")
+#     else:
+#         print(f"[WARNING] Directory not found: {path_to_non_motor_assessments}")
     
-    df_non_motor = load_ppmi_non_motor_assessments(path_to_non_motor_assessments)
-    print(df_non_motor.head(25))  # Show first rows to see merge results
-    df_non_motor.to_csv("ppmi_non_motor_assessments.csv", index=False)
+#     df_non_motor = load_ppmi_non_motor_assessments(path_to_non_motor_assessments)
+#     print(df_non_motor.head(25))  # Show first rows to see merge results
+#     df_non_motor.to_csv("ppmi_non_motor_assessments.csv", index=False)
 
-if __name__ == "__main__":
-    main() 
+# if __name__ == "__main__":
+#     main() 
