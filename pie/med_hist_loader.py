@@ -157,9 +157,9 @@ def load_ppmi_medical_history(folder_path: str) -> pd.DataFrame:
     return df_dict
 
 
-def main():
-    path_to_med_history = "./PPMI/Medical_History"
-    med_history = load_ppmi_medical_history(path_to_med_history)
-    logger.info(sorted(list(med_history.keys())))
-if __name__ == "__main__":
-    main()
+# def main():
+#     path_to_med_history = "./PPMI/Medical_History"
+#     med_history = load_ppmi_medical_history(path_to_med_history)
+#     logger.info(sorted(list(med_history.keys())))
+# if __name__ == "__main__":
+#     main()

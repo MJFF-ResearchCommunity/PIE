@@ -176,23 +176,23 @@ def load_ppmi_motor_assessments(folder_path: str) -> pd.DataFrame:
     return df_merged
 
 
-def main():
-    """
-    Example usage of load_ppmi_motor_assessments:
-    Loads and merges all motor assessment files from the PPMI/Motor___MDS-UPDRS folder.
-    """
-    path_to_motor_assessments = "./PPMI/Motor___MDS-UPDRS"
+# def main():
+#     """
+#     Example usage of load_ppmi_motor_assessments:
+#     Loads and merges all motor assessment files from the PPMI/Motor___MDS-UPDRS folder.
+#     """
+#     path_to_motor_assessments = "./PPMI/Motor___MDS-UPDRS"
     
-    # Print all CSV files in the PPMI directory to help debug
-    print("[INFO] Listing all CSV files in PPMI directory:")
-    for root, dirs, files in os.walk("./PPMI"):
-        for file in files:
-            if file.lower().endswith('.csv'):
-                print(f"  - {os.path.join(root, file)}")
+#     # Print all CSV files in the PPMI directory to help debug
+#     print("[INFO] Listing all CSV files in PPMI directory:")
+#     for root, dirs, files in os.walk("./PPMI"):
+#         for file in files:
+#             if file.lower().endswith('.csv'):
+#                 print(f"  - {os.path.join(root, file)}")
     
-    df_motor = load_ppmi_motor_assessments(path_to_motor_assessments)
-    print(df_motor.head(25))  # Show first rows to see merge results
-    df_motor.to_csv("ppmi_motor_assessments.csv", index=False)
+#     df_motor = load_ppmi_motor_assessments(path_to_motor_assessments)
+#     print(df_motor.head(25))  # Show first rows to see merge results
+#     df_motor.to_csv("ppmi_motor_assessments.csv", index=False)
 
-if __name__ == "__main__":
-    main() 
+# if __name__ == "__main__":
+#     main() 
