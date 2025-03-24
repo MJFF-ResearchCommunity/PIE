@@ -12,31 +12,21 @@ from pie.clinical_loader import load_clinical_data
 from pie.med_hist_loader import load_ppmi_medical_history
 
 def test_data_loader():
-    data = DataLoader.load("./PPMI", "PPMI")
+    data = DataLoader.load() # All modalities in the standard location
     assert isinstance(data, dict), "Expected a dictionary from the loader."
-    for modality in ["clinical", "biologics", "imaging", "wearables", "exams"]:
+    for modality in DataLoader.ALL_MODALITIES:
         assert modality in data
 
-    # TODO: Fill out this list as specific files and sub-modalities are added
-    assert "med_hist" in data["clinical"]
-
     # Medical history-specific data
-    assert isinstance(data["clinical"]["med_hist"], dict)
-    assert "Concomitant_Medication" in data["clinical"]["med_hist"]
-    assert isinstance(data["clinical"]["med_hist"]["Concomitant_Medication"], pd.DataFrame)
-    assert "CMTRT" in data["clinical"]["med_hist"]["Concomitant_Medication"].columns
+    mh = DataLoader.MEDICAL_HISTORY
+    assert isinstance(data[mh], dict)
+    assert "Concomitant_Medication" in data[mh]
+    assert isinstance(data[mh]["Concomitant_Medication"], pd.DataFrame)
+    assert "CMTRT" in data[mh]["Concomitant_Medication"].columns
 
 # Test specific modality loaders
-def test_load_clinical():
-    data = load_clinical_data("./PPMI", "PPMI")
-    assert isinstance(data, dict)
-    assert "med_hist" in data
-    assert isinstance(data["med_hist"], dict)
-    assert "Concomitant_Medication" in data["med_hist"]
-    assert "CMTRT" in data["med_hist"]["Concomitant_Medication"].columns
-
-    # Load directly as medical history
-    data = load_ppmi_medical_history("./PPMI/Medical History")
+def test_load_ppmi_medical_history():
+    data = load_ppmi_medical_history("./PPMI/Medical_History")
     assert "CMTRT" in data["Concomitant_Medication"].columns
     assert "CMINDC" in data["Concomitant_Medication"].columns
     assert "CMDOSE" in data["Concomitant_Medication"].columns
