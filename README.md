@@ -133,9 +133,10 @@ Contributions are welcome! To contribute:
 2. Create a new branch for your feature: `git checkout -b feature-name`.
 3. Copy the PPMI data into the `PIE/PPMI` directory.
 4. Instead of installing PIE as above, use `pip install -e .` for editable mode.
-5. Commit your changes: `git commit -m 'Add new feature'`.
-6. Push to the branch: `git push origin feature-name`.
-7. Create a pull request.
+5. Make your changes, and ensure the full test suite runs without failures (see below).
+6. Commit your changes: `git commit -m 'Add new feature'`.
+7. Push to the branch: `git push origin feature-name`.
+8. Create a pull request.
 
 ### Running Tests
 Ensure all tests pass before submitting a pull request:
@@ -143,6 +144,8 @@ Ensure all tests pass before submitting a pull request:
 ```bash
 pytest tests/
 ```
+
+Please also add tests to cover the new code or feature in your pull request. The existing tests can be used as a guideline for what and how to test.
 
 ## License
 This project is licensed under the MIT License. See the LICENSE file for details.
