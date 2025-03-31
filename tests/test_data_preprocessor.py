@@ -12,21 +12,19 @@ from pie.data_preprocessor import DataPreprocessor
 
 @pytest.fixture()
 def data_dict():
-    return DataLoader.load("./PPMI", "PPMI")
+    return DataLoader.load()
 
 def test_clean(data_dict):
     clean_dict = DataPreprocessor.clean(data_dict)
     # Test cleaning runs on full dict and returns another dict
     assert isinstance(clean_dict, dict), "Expected a dictionary from cleaning."
-    for modality in ["clinical", "biologics", "imaging", "wearables", "exams"]:
+    for modality in DataLoader.ALL_MODALITIES:
         assert modality in clean_dict
-
-    # Add assertions for individual components of the clean_dict
-    assert "med_hist" in clean_dict["clinical"]
 
 # Now test the actual cleaning code
 def test_clean_concomitant_meds(data_dict):
-    clean_df = DataPreprocessor.clean_concomitant_meds(data_dict["clinical"]["med_hist"]["Concomitant_Medication"])
+    clean_df = DataPreprocessor.clean_concomitant_meds(
+            data_dict[DataLoader.MEDICAL_HISTORY]["Concomitant_Medication"])
     assert "CMTRT" in clean_df.columns
 
     assert clean_df["CMTRT"].notnull().all() # All should have names
@@ -41,4 +39,4 @@ def test_clean_concomitant_meds(data_dict):
 
 @pytest.mark.skip(reason="Don't recreate every time")
 def test_create_concomitant_meds(data_dict):
-    DataPreprocessor.create_concomitant_meds(data_dict["clinical"]["med_hist"]["Concomitant_Medication"])
+    DataPreprocessor.create_concomitant_meds(data_dict[DataLoader.MEDICAL_HISTORY]["Concomitant_Medication"])
