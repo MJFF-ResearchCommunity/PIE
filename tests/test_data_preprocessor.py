@@ -22,6 +22,22 @@ def test_clean(data_dict):
         assert modality in clean_dict
 
 # Now test the actual cleaning code
+def test_clean_vital_signs(data_dict):
+    clean_df = DataPreprocessor.clean_vital_signs(data_dict[DataLoader.MEDICAL_HISTORY]["Vital_Signs"])
+
+    print(clean_df.head(1).transpose())
+    # SYSSUP is in both
+    assert "SYSSUP" in clean_df
+    assert "SYSSUP" in data_dict[DataLoader.MEDICAL_HISTORY]["Vital_Signs"]
+    # The new code and label are only in clean_df
+    assert "Sup BP code" in clean_df
+    assert "Sup BP code" not in data_dict[DataLoader.MEDICAL_HISTORY]["Vital_Signs"]
+    assert "Sup BP label" in clean_df
+    assert "Sup BP label" not in data_dict[DataLoader.MEDICAL_HISTORY]["Vital_Signs"]
+    assert "Stnd BP code" in clean_df
+    assert "Stnd BP label" in clean_df
+
+
 def test_clean_concomitant_meds(data_dict):
     clean_df = DataPreprocessor.clean_concomitant_meds(
             data_dict[DataLoader.MEDICAL_HISTORY]["Concomitant_Medication"])

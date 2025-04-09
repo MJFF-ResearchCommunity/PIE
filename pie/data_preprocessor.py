@@ -10,12 +10,59 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from pie.data_loader import DataLoader
+
 logger = logging.getLogger(f"PIE.{__name__}")
 
 class DataPreprocessor:
     """
     Handles various data cleaning operations.
     """
+
+    # The screening visit can occur any time between BL and 3 months prior to BL
+    EVENT_TIMES = {
+            "SC": -3,
+            "BL": 0,
+            "V01": 3,
+            "V02": 6,
+            "R01": 6,
+            "V03": 9,
+            "V04": 12,
+            "V05": 18,
+            "R04": 18,
+            "V06": 24,
+            "R06": 30,
+            "V07": 30,
+            "V08": 36,
+            "R08": 42,
+            "V09": 42,
+            "V10": 48,
+            "R10": 54,
+            "V11": 54,
+            "V12": 60,
+            "R12": 66,
+            "V13": 72,
+            "R13": 78,
+            "V14": 84,
+            "R14": 90,
+            "V15": 96,
+            "R15": 102,
+            "V16": 108,
+            "R16": 114,
+            "V17": 120,
+            "R17": 126,
+            "V18": 132,
+            "R18": 138,
+            "V19": 144,
+            "R19": 150,
+            "V20": 156,
+            "R20": 162,
+            "V21": 168,
+    }
+
+    @staticmethod
+    def event_id_to_months(eid):
+        return DataPreprocessor.EVENT_TIMES.get(eid, np.nan)
 
     @staticmethod
     def clean(data_dict):
@@ -26,23 +73,44 @@ class DataPreprocessor:
         :return: Cleaned data dictionary or combined DataFrame.
         """
         # TODO: Add modalities as actual cleaning logic is implemented.
-        data_dict["clinical"] = DataPreprocessor.clean_clinical(data_dict["clinical"])
+        data_dict[DataLoader.MEDICAL_HISTORY] = DataPreprocessor.clean_medical_history(data_dict[DataLoader.MEDICAL_HISTORY])
         return data_dict
-
-    @staticmethod
-    def clean_clinical(clin_dict):
-        # TODO: Add sub-modality cleaning functions as implemented
-        # e.g. Subject Characteristics, etc
-        clin_dict["med_hist"] = DataPreprocessor.clean_medical_history(clin_dict["med_hist"])
-
-        return clin_dict
 
     @staticmethod
     def clean_medical_history(med_hist_dict):
         # TODO: Add individual column cleaning functions as implemented
         med_hist_dict["Concomitant_Medication"] = DataPreprocessor.clean_concomitant_meds(
                 med_hist_dict["Concomitant_Medication"])
+        med_hist_dict["Vital_Signs"] = DataPreprocessor.clean_vital_signs(
+                med_hist_dict["Vital_Signs"])
         return med_hist_dict
+
+    @staticmethod
+    def clean_vital_signs(vs_df):
+        clean_df = vs_df.copy()
+
+        clean_df["INFODT"] = pd.to_datetime(clean_df["INFODT"], format="%m/%Y")
+
+        # Convert blood pressures into labelled bands, according to American Heart Association
+        # https://www.heart.org/en/health-topics/high-blood-pressure/understanding-blood-pressure-readings
+        def bp(systolic, diastolic):
+            if systolic < 120 and diastolic < 80:
+                return 0, "Normal"
+            if systolic < 130 and diastolic < 80:
+                return 1, "Elevated"
+            if systolic < 140 or diastolic < 90:
+                return 2, "Stage 1 HTN"
+            if systolic >= 180 or diastolic >= 120:
+                return 4, "Hypertensive crisis"
+            return 3, "Stage 2 HTN" # between stage 1 and crisis
+
+        # Supine and standing
+        clean_df["Sup BP code"], clean_df["Sup BP label"] = zip(*clean_df.apply(
+                lambda row: bp(row["SYSSUP"], row["DIASUP"]), axis=1))
+        clean_df["Stnd BP code"], clean_df["Stnd BP label"] = zip(*clean_df.apply(
+                lambda row: bp(row["SYSSTND"], row["DIASTND"]), axis=1))
+
+        return clean_df
 
     @staticmethod
     def clean_concomitant_meds(concom_meds_df):
