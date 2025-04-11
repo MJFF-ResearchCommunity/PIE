@@ -22,10 +22,45 @@ def test_clean(data_dict):
         assert modality in clean_dict
 
 # Now test the actual cleaning code
+def test_clean_features_of_parkinsonism(data_dict):
+    clean_df = DataPreprocessor.clean_features_of_parkinsonism(
+            data_dict[DataLoader.MEDICAL_HISTORY]["Features_of_Parkinsonism"])
+
+    assert "FEATBRADY" in clean_df
+    # There should be no more Uncertain values of 2
+    assert (clean_df["FEATBRADY"]!=2).all()
+    assert (data_dict[DataLoader.MEDICAL_HISTORY]["Features_of_Parkinsonism"]["FEATBRADY"]==2).any()
+
+    # Try passing NaN as the new value for Uncertain
+    clean_df = DataPreprocessor.clean_features_of_parkinsonism(
+            data_dict[DataLoader.MEDICAL_HISTORY]["Features_of_Parkinsonism"], uncertain=np.nan)
+
+    # There should be no more Uncertain values of 2
+    count = (data_dict[DataLoader.MEDICAL_HISTORY]["Features_of_Parkinsonism"]["FEATBRADY"]==2).sum()
+    assert clean_df["FEATBRADY"].isnull().sum() >= count # might be some pre-existing NaNs
+
+
+def test_clean_gen_physical_exam(data_dict):
+    clean_df = DataPreprocessor.clean_gen_physical_exam(
+            data_dict[DataLoader.MEDICAL_HISTORY]["General_Physical_Exam"])
+
+    assert "ABNORM" in clean_df
+    # There should be no more Could Not Assess values of 2
+    assert (clean_df["ABNORM"]!=2).all()
+    assert (data_dict[DataLoader.MEDICAL_HISTORY]["General_Physical_Exam"]["ABNORM"]==2).any()
+
+    # Try passing NaN as the new Could Not Assess value
+    clean_df = DataPreprocessor.clean_gen_physical_exam(
+            data_dict[DataLoader.MEDICAL_HISTORY]["General_Physical_Exam"], uncertain=np.nan)
+
+    # There should be no more Uncertain values of 2
+    count = (data_dict[DataLoader.MEDICAL_HISTORY]["General_Physical_Exam"]["ABNORM"]==2).sum()
+    assert clean_df["ABNORM"].isnull().sum() >= count # might be some pre-existing NaNs
+
+
 def test_clean_vital_signs(data_dict):
     clean_df = DataPreprocessor.clean_vital_signs(data_dict[DataLoader.MEDICAL_HISTORY]["Vital_Signs"])
 
-    print(clean_df.head(1).transpose())
     # SYSSUP is in both
     assert "SYSSUP" in clean_df
     assert "SYSSUP" in data_dict[DataLoader.MEDICAL_HISTORY]["Vital_Signs"]
