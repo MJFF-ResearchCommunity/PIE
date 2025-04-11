@@ -62,7 +62,19 @@ class DataPreprocessor:
 
     @staticmethod
     def event_id_to_months(eid):
+        """
+        Convert an EVENT_ID string into number of months into PPMI.
+        Applies to scheduled events only, such as BL.
+        """
         return DataPreprocessor.EVENT_TIMES.get(eid, np.nan)
+
+    @staticmethod
+    def dt_to_datetime(dt_ser):
+        """
+        Convert a Series of DT strings into a Series of pd.datetimes
+        """
+        return pd.to_datetime(dt_ser, format="%m/%Y")
+
 
     @staticmethod
     def clean(data_dict):
@@ -83,13 +95,15 @@ class DataPreprocessor:
                 med_hist_dict["Concomitant_Medication"])
         med_hist_dict["Vital_Signs"] = DataPreprocessor.clean_vital_signs(
                 med_hist_dict["Vital_Signs"])
+        med_hist_dict["Features_of_Parkinsonism"] = DataPreprocessor.clean_features_of_parkinsonism(
+                med_hist_dict["Features_of_Parkinsonism"])
+        med_hist_dict["General_Physical_Exam"] = DataPreprocessor.clean_gen_physical_exam(
+                med_hist_dict["General_Physical_Exam"])
         return med_hist_dict
 
     @staticmethod
     def clean_vital_signs(vs_df):
         clean_df = vs_df.copy()
-
-        clean_df["INFODT"] = pd.to_datetime(clean_df["INFODT"], format="%m/%Y")
 
         # Convert blood pressures into labelled bands, according to American Heart Association
         # https://www.heart.org/en/health-topics/high-blood-pressure/understanding-blood-pressure-readings
@@ -113,12 +127,33 @@ class DataPreprocessor:
         return clean_df
 
     @staticmethod
+    def clean_features_of_parkinsonism(fop_df, uncertain=0.5):
+        clean_df = fop_df.copy()
+
+        # Features are ranked as 0: No, 1: Yes, 2: Uncertain.
+        # Convert the Uncertain values to something more conducive for analysis
+        for feat in ["FEATBRADY", "FEATPOSINS", "FEATRIGID", "FEATTREMOR"]:
+            clean_df[feat] = clean_df[feat].apply(lambda v: v if v != 2 else uncertain)
+
+        return clean_df
+
+    @ staticmethod
+    def clean_gen_physical_exam(gpe_df, uncertain=0.5):
+        clean_df = gpe_df.copy()
+
+        # Abnormality is ranked as 0: No, 1: Yes, 2: Cannot assess.
+        # Convert the uncertain values to something more conducive for analysis
+        clean_df["ABNORM"] = clean_df["ABNORM"].apply(lambda v: v if v != 2 else uncertain)
+
+        return clean_df
+
+    @staticmethod
     def clean_concomitant_meds(concom_meds_df):
         clean_df = concom_meds_df.copy()
 
         # Clean the start and stop dates
-        clean_df["STARTDT"] = pd.to_datetime(clean_df["STARTDT"], format="%m/%Y")
-        clean_df["STOPDT"] = pd.to_datetime(clean_df["STOPDT"], format="%m/%Y")
+        clean_df["STARTDT"] = DataPreprocessor.dt_to_datetime(clean_df["STARTDT"])
+        clean_df["STOPDT"] = DataPreprocessor.dt_to_datetime(clean_df["STOPDT"])
 
         # Not all have start date: assume prior to PPMI enrollment.
         # Not all have stop date: assume still on medication as of date of last visit.
