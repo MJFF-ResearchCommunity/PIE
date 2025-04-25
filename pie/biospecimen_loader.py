@@ -66,12 +66,6 @@ Completed Data Files:
 - Blood_Chemistry___Hematology
 
 
-Data Files Requiring Individual Loading Functions:
-- IUSM_ASSAY_DEV_CATALOG
-- IUSM_CATALOG
-
-
-
 Data Files Not Requiring Individual Loading Functions:
 - Clinical_Labs
 - Genetic_Testing_Results
@@ -1729,6 +1723,7 @@ def load_biospecimen_data(data_path: str, source: str):
     
     return biospecimen_data
 
+
 def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, output_filename: str = "biospecimen.csv", output_dir: str = None) -> Union[pd.DataFrame, dict]:
     """
     Merge all biospecimen data into either a single DataFrame or keep as separate DataFrames.
@@ -1743,11 +1738,39 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
         If merge_all is True: A single DataFrame with all biospecimen data merged on PATNO and EVENT_ID
         If merge_all is False: The original dictionary of DataFrames with potential file saving
     """
+    # Import only when needed for memory tracking
+    import psutil
+    import gc
+    
+    process = psutil.Process()
+    
+    def log_memory_usage(label):
+        """Log current memory usage with a label"""
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / 1024 / 1024  # Convert to MB
+        logger.info(f"Memory usage ({label}): {memory_mb:.2f} MB")
+    
+    log_memory_usage("start")
+    
     if merge_all:
         logger.info("Merging all biospecimen data into a single DataFrame")
         
-        # Start with an empty DataFrame with PATNO and EVENT_ID columns
-        merged_df = pd.DataFrame(columns=["PATNO", "EVENT_ID"])
+        # Get unique PATNO/EVENT_ID combinations first to create base DataFrame
+        all_pairs = set()
+        for source_name, df in biospecimen_data.items():
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                continue
+            if "PATNO" not in df.columns or "EVENT_ID" not in df.columns:
+                continue
+            
+            # Collect unique pairs
+            for _, row in df[["PATNO", "EVENT_ID"]].iterrows():
+                all_pairs.add((str(row["PATNO"]), row["EVENT_ID"]))
+        
+        # Create base DataFrame from unique pairs
+        merged_df = pd.DataFrame(all_pairs, columns=["PATNO", "EVENT_ID"])
+        logger.info(f"Created base DataFrame with {len(merged_df)} unique PATNO/EVENT_ID pairs")
+        log_memory_usage("after creating base DataFrame")
         
         # Track the number of rows and columns from each source
         source_stats = {}
@@ -1762,30 +1785,23 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
                 logger.warning(f"Skipping {source_name}: Missing PATNO or EVENT_ID columns")
                 continue
             
-            # Record stats before merging
+            # Record stats
             source_stats[source_name] = {
                 "rows": len(df),
                 "columns": len(df.columns) - 2  # Subtract PATNO and EVENT_ID
             }
             
-            # Convert PATNO to string type to ensure consistent types for merging
+            logger.info(f"Merging {source_name} ({len(df)} rows, {len(df.columns)} columns)")
+            
+            # Convert PATNO to string type for consistent merging
             df = df.copy()
             df["PATNO"] = df["PATNO"].astype(str)
             
-            # If this is our first real DataFrame, use it as the base
-            if len(merged_df) == 0:
-                merged_df = df.copy()
-                logger.info(f"Using {source_name} as the base DataFrame ({len(merged_df)} rows)")
-                continue
-            
-            # Ensure consistent types in the merged DataFrame too
-            merged_df["PATNO"] = merged_df["PATNO"].astype(str)
-            
-            # Check for duplicate column names (excluding PATNO and EVENT_ID)
+            # Handle duplicate columns by renaming in the df being merged
             duplicate_cols = [col for col in df.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
             if duplicate_cols:
                 logger.warning(f"Found {len(duplicate_cols)} duplicate columns when merging {source_name}")
-                # Add source prefix to duplicate columns to avoid conflicts
+                # Add source prefix to duplicate columns
                 rename_dict = {col: f"{source_name}_{col}" for col in duplicate_cols}
                 df = df.rename(columns=rename_dict)
                 
@@ -1795,18 +1811,25 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
                 if len(rename_dict) > 3:
                     logger.info(f"... and {len(rename_dict) - 3} more")
             
-            # Merge with outer join to keep all PATNO/EVENT_ID combinations
-            pre_merge_rows = len(merged_df)
+            # Keep only columns not already in merged_df to minimize memory
+            new_cols = [col for col in df.columns if col not in merged_df.columns or col in ["PATNO", "EVENT_ID"]]
+            df_subset = df[new_cols]
+            
+            # Merge with left join to maintain the rows we already have
+            # This is more memory efficient than outer join in this case
             merged_df = pd.merge(
                 merged_df, 
-                df, 
+                df_subset, 
                 on=["PATNO", "EVENT_ID"], 
-                how="outer"
+                how="left"
             )
             
-            # Log merge results
-            new_rows = len(merged_df) - pre_merge_rows
-            logger.info(f"Merged {source_name}: Added {len(df.columns) - 2} columns and {new_rows} new rows")
+            # Force garbage collection
+            del df_subset
+            gc.collect()
+            
+            logger.info(f"Merged {source_name}: Added {len(new_cols) - 2} columns")
+            log_memory_usage(f"after merging {source_name}")
         
         # Log final stats
         logger.info(f"Final merged DataFrame: {len(merged_df)} rows, {len(merged_df.columns)} columns")
@@ -1823,8 +1846,22 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
             
             output_path = os.path.join(output_dir, output_filename)
             logger.info(f"Saving merged data to {output_path}")
-            merged_df.to_csv(output_path, index=False)
+            
+            # Save in chunks to reduce memory usage
+            chunk_size = 10000
+            for i in range(0, len(merged_df), chunk_size):
+                logger.info(f"Saving chunk {i//chunk_size + 1} of {(len(merged_df) + chunk_size - 1)//chunk_size}")
+                chunk = merged_df.iloc[i:i+chunk_size]
+                if i == 0:
+                    # First chunk, write with header
+                    chunk.to_csv(output_path, index=False, mode='w')
+                else:
+                    # Append without header
+                    chunk.to_csv(output_path, index=False, mode='a', header=False)
+                del chunk
+                gc.collect()
         
+        log_memory_usage("end")
         return merged_df
     
     else:
@@ -1849,6 +1886,9 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
                 file_path = os.path.join(individual_dir, f"{source_name}.csv")
                 logger.info(f"Saving {source_name} data to {file_path}")
                 df.to_csv(file_path, index=False)
+                
+                # Force garbage collection after saving each file
+                gc.collect()
         
         return biospecimen_data
 
