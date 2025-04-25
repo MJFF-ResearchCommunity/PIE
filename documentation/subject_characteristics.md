@@ -7,8 +7,8 @@ The `sub_char_loader.py` module provides functionality for loading and processin
 ## Key Features
 
 - Load subject characteristic data from multiple file types
-- Intelligently merge data based on available join keys (PATNO and/or EVENT_ID)
-- Handle duplicate columns through sophisticated value combination logic
+- Merge data based on available join keys (PATNO and/or EVENT_ID)
+- Handle duplicate columns through value combination logic
 - Preserve data integrity when merging from different source files
 - Consistent logging for debugging and monitoring
 
