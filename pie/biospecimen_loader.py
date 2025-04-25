@@ -62,11 +62,11 @@ Completed Data Files:
 - PPMI_Project_196_Plasma_Cardio_NPX
 - PPMI_Project_177_Untargeted_Proteomics
 - Project_214_Olink
+- Current_Biospecimen_Analysis_Results
+- Blood_Chemistry___Hematology
 
 
 Data Files Requiring Individual Loading Functions:
-- Blood_Chemistry___Hematology
-- Current_Biospecimen_Analysis_Results
 - IUSM_ASSAY_DEV_CATALOG
 - IUSM_CATALOG
 
@@ -88,6 +88,7 @@ import glob
 import pandas as pd
 import logging
 import numpy as np
+from typing import Union
 
 logger = logging.getLogger(f"PIE.{__name__}")
 
@@ -1030,7 +1031,7 @@ def load_project_214_olink(folder_path: str) -> pd.DataFrame:
     
     # First, get unique PATNO/EVENT_ID combinations and their SEX and COHORT values
     logger.info("Creating base dataframe with unique PATNO/EVENT_ID combinations")
-    patno_event_data = {}  # Will store {(patno, event_id): {'SEX': sex, 'COHORT': cohort}}
+    patno_event_pairs = set()  # Initialize the set here
     
     # Process files one by one to avoid loading all data at once
     for file_path in matching_files:
@@ -1043,7 +1044,7 @@ def load_project_214_olink(folder_path: str) -> pd.DataFrame:
                 df_base = df_base.rename(columns={"CLINICAL_EVENT": "EVENT_ID"})
             
             # Ensure we have the required columns for the base dataframe
-            if not all(col in df_base.columns for col in ["PATNO", "EVENT_ID", "SEX", "COHORT"]):
+            if not all(col in df_base.columns for col in ["PATNO", "EVENT_ID"]):
                 logger.warning(f"Missing required base columns in {file_path}")
                 continue
             
@@ -1053,26 +1054,15 @@ def load_project_214_olink(folder_path: str) -> pd.DataFrame:
                 if isinstance(patno, str) and patno.startswith("PPMI-"):
                     patno = patno[5:]  # Remove first 5 characters ("PPMI-")
                 
-                event_id = row["EVENT_ID"]
-                key = (patno, event_id)
-                
-                # Store SEX and COHORT values
-                if key not in patno_event_data:
-                    patno_event_data[key] = {
-                        'SEX': row["SEX"],
-                        'COHORT': row["COHORT"]
-                    }
+                patno_event_pairs.add((patno, row["EVENT_ID"]))
         except Exception as e:
-            logger.error(f"Error reading base data from {file_path}: {e}")
+            logger.error(f"Error reading PATNO/EVENT_ID from {file_path}: {e}")
     
     # Create a dictionary to collect all data
     # Structure: {(patno, event_id): {column_name: value}}
     data_dict = {}
-    for key, base_data in patno_event_data.items():
-        data_dict[key] = {
-            'SEX': base_data['SEX'],
-            'COHORT': base_data['COHORT']
-        }
+    for pair in patno_event_pairs:
+        data_dict[pair] = {}
     
     # Process each file separately to reduce memory usage
     for file_path in matching_files:
@@ -1251,6 +1241,331 @@ def load_current_biospecimen_analysis(folder_path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def load_blood_chemistry_hematology(folder_path: str) -> pd.DataFrame:
+    """
+    Load and process Blood_Chemistry___Hematology data files.
+    
+    This function:
+    1. Finds all files with the prefix "Blood_Chemistry___Hematology"
+    2. For each unique LTSTCODE-LTSTNAME combination, creates three columns:
+       - LTSTCODE_LTSTNAME_LSIRES (result value)
+       - LTSTCODE_LTSTNAME_LSILORNG (lower range)
+       - LTSTCODE_LTSTNAME_LSIHIRNG (higher range)
+    3. Adds "BCH_" prefix to each created column
+    4. Replaces spaces with underscores in the column names
+    5. Keeps only PATNO, EVENT_ID, and the newly created columns
+    6. Removes "PPMI-" prefix from PATNO values if present
+    
+    Args:
+        folder_path: Path to the Biospecimen folder containing the CSV files
+    
+    Returns:
+        A DataFrame with one row per PATNO/EVENT_ID and columns for each test metric
+    """
+    # Find all CSV files in the folder and its subdirectories
+    all_csv_files = []
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            if file.lower().endswith('.csv'):
+                all_csv_files.append(os.path.join(root, file))
+    
+    # Filter files based on prefix
+    matching_files = []
+    for file_path in all_csv_files:
+        filename = os.path.basename(file_path)
+        if filename.startswith("Blood_Chemistry___Hematology"):
+            matching_files.append(file_path)
+    
+    if not matching_files:
+        logger.warning(f"No Blood_Chemistry___Hematology files found in {folder_path}")
+        return pd.DataFrame()
+    
+    # First, get unique PATNO/EVENT_ID combinations to create the base dataframe
+    logger.info("Creating base dataframe with unique PATNO/EVENT_ID combinations")
+    patno_event_pairs = set()
+    
+    # Process files one by one to avoid loading all data at once
+    for file_path in matching_files:
+        try:
+            # Read only PATNO and EVENT_ID columns to get unique combinations
+            df_ids = pd.read_csv(file_path, usecols=["PATNO", "EVENT_ID"])
+            
+            for _, row in df_ids.iterrows():
+                # Remove "PPMI-" prefix from PATNO if it exists
+                patno = row["PATNO"]
+                if isinstance(patno, str) and patno.startswith("PPMI-"):
+                    patno = patno[5:]  # Remove first 5 characters ("PPMI-")
+                
+                patno_event_pairs.add((patno, row["EVENT_ID"]))
+        except Exception as e:
+            logger.error(f"Error reading PATNO/EVENT_ID from {file_path}: {e}")
+    
+    # Create a dictionary to collect all data
+    # Structure: {(patno, event_id): {column_name: value}}
+    data_dict = {pair: {} for pair in patno_event_pairs}
+    
+    # Process each file separately to reduce memory usage
+    for file_path in matching_files:
+        try:
+            logger.info(f"Processing file: {file_path}")
+            
+            # Read the file in chunks to reduce memory usage
+            chunk_size = 50000  # Increased chunk size for better performance
+            for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+                # Check if required columns exist
+                required_columns = ["PATNO", "EVENT_ID", "LTSTCODE", "LTSTNAME", "LSIRES", "LSILORNG", "LSIHIRNG"]
+                if not all(col in chunk.columns for col in required_columns):
+                    missing = [col for col in required_columns if col not in chunk.columns]
+                    logger.error(f"Required columns {missing} not found in {file_path}")
+                    continue
+                
+                # Process each row efficiently
+                for _, row in chunk.iterrows():
+                    # Remove "PPMI-" prefix from PATNO if it exists
+                    patno = row["PATNO"]
+                    if isinstance(patno, str) and patno.startswith("PPMI-"):
+                        patno = patno[5:]  # Remove first 5 characters ("PPMI-")
+                    
+                    event_id = row["EVENT_ID"]
+                    key = (patno, event_id)
+                    
+                    # Skip if this PATNO/EVENT_ID combination wasn't in our original set
+                    if key not in data_dict:
+                        continue
+                    
+                    # Create a combined key for LTSTCODE and LTSTNAME
+                    # Replace spaces with underscores
+                    test_code = str(row["LTSTCODE"]).strip()
+                    test_name = str(row["LTSTNAME"]).strip().replace(" ", "_")
+                    combined_name = f"{test_code}_{test_name}"
+                    
+                    # Add each metric to the dictionary
+                    for metric, column in [
+                        ("LSIRES", "LSIRES"), 
+                        ("LSILORNG", "LSILORNG"), 
+                        ("LSIHIRNG", "LSIHIRNG")
+                    ]:
+                        col_name = f"BCH_{combined_name}_{metric}"
+                        
+                        # Only update if we don't have a value yet or if the current value is not NaN
+                        # and the existing one is NaN
+                        if (col_name not in data_dict[key] or 
+                            (pd.notna(row[column]) and pd.isna(data_dict[key].get(col_name)))):
+                            data_dict[key][col_name] = row[column]
+                
+                logger.info(f"Processed chunk with {len(chunk)} rows")
+            
+        except Exception as e:
+            logger.error(f"Error processing file {file_path}: {e}")
+    
+    # Convert the dictionary to a DataFrame efficiently
+    logger.info("Converting collected data to DataFrame")
+    
+    # Create a list of dictionaries, each representing a row
+    rows = []
+    for (patno, event_id), values in data_dict.items():
+        row_dict = {"PATNO": patno, "EVENT_ID": event_id}
+        row_dict.update(values)
+        rows.append(row_dict)
+    
+    # Create DataFrame from the list of dictionaries
+    result_df = pd.DataFrame(rows)
+    
+    # Force garbage collection to free memory
+    import gc
+    gc.collect()
+    
+    logger.info(f"Successfully processed Blood Chemistry & Hematology data: {len(result_df)} rows, {len(result_df.columns)} columns")
+    return result_df
+
+
+def load_and_join_biospecimen_files(folder_path: str, file_prefixes: list, combine_duplicates: bool = True) -> pd.DataFrame:
+    """
+    Load and join multiple biospecimen data files based on PATNO and EVENT_ID.
+    
+    This function:
+    1. Finds all CSV files matching the provided prefixes
+    2. Loads each file and ensures it has PATNO and EVENT_ID columns
+    3. Joins all dataframes on PATNO and EVENT_ID
+    4. For duplicate columns, either:
+       - Combines values with a pipe separator (|) if combine_duplicates=True
+       - Adds numeric suffixes if combine_duplicates=False
+    5. Logs any duplicate column names that are encountered during merging
+    
+    Args:
+        folder_path: Path to the Biospecimen folder containing the CSV files
+        file_prefixes: List of file prefixes to include (e.g., ["Clinical_Labs", "Genetic_Testing_Results"])
+        combine_duplicates: If True, combine duplicate column values with a pipe separator;
+                           if False, add numeric suffixes to duplicate columns
+    
+    Returns:
+        A DataFrame with one row per PATNO/EVENT_ID and columns from all matching files
+    """
+    # Find all CSV files in the folder and its subdirectories
+    all_csv_files = []
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            if file.lower().endswith('.csv'):
+                all_csv_files.append(os.path.join(root, file))
+    
+    # Filter files based on prefixes
+    matching_files = []
+    for file_path in all_csv_files:
+        filename = os.path.basename(file_path)
+        for prefix in file_prefixes:
+            if filename.startswith(prefix):
+                matching_files.append((prefix, file_path))
+                break
+    
+    if not matching_files:
+        logger.warning(f"No files matching the provided prefixes found in {folder_path}")
+        return pd.DataFrame()
+    
+    # Group files by prefix for logging purposes
+    files_by_prefix = {}
+    for prefix, file_path in matching_files:
+        if prefix not in files_by_prefix:
+            files_by_prefix[prefix] = []
+        files_by_prefix[prefix].append(file_path)
+    
+    # Log the files found for each prefix
+    for prefix, files in files_by_prefix.items():
+        logger.info(f"Found {len(files)} files for prefix '{prefix}'")
+    
+    # Load each file and prepare for merging
+    dataframes = []
+    column_sources = {}  # Track which file each column came from
+    
+    for prefix, file_path in matching_files:
+        try:
+            logger.info(f"Loading file: {file_path}")
+            df = pd.read_csv(file_path)
+            
+            # Rename CLINICAL_EVENT to EVENT_ID if it exists
+            if "CLINICAL_EVENT" in df.columns and "EVENT_ID" not in df.columns:
+                df = df.rename(columns={"CLINICAL_EVENT": "EVENT_ID"})
+            
+            # Check if required columns exist
+            if "PATNO" not in df.columns or "EVENT_ID" not in df.columns:
+                logger.warning(f"File {file_path} is missing PATNO or EVENT_ID columns, skipping")
+                continue
+            
+            # Remove "PPMI-" prefix from PATNO if it exists
+            if df["PATNO"].dtype == object:  # Only process if PATNO is a string type
+                df["PATNO"] = df["PATNO"].apply(
+                    lambda x: x[5:] if isinstance(x, str) and x.startswith("PPMI-") else x
+                )
+            
+            # Track the source of each column
+            filename = os.path.basename(file_path)
+            for col in df.columns:
+                if col not in ["PATNO", "EVENT_ID"]:  # Don't track join columns
+                    if col in column_sources:
+                        column_sources[col].append(filename)
+                    else:
+                        column_sources[col] = [filename]
+            
+            dataframes.append(df)
+            logger.info(f"Successfully loaded {filename} with {len(df)} rows and {len(df.columns)} columns")
+        
+        except Exception as e:
+            logger.error(f"Error loading file {file_path}: {e}")
+    
+    if not dataframes:
+        logger.warning("No files were successfully loaded")
+        return pd.DataFrame()
+    
+    # Check for duplicate columns across dataframes
+    duplicate_columns = {col: sources for col, sources in column_sources.items() if len(sources) > 1}
+    if duplicate_columns:
+        logger.warning(f"Found {len(duplicate_columns)} duplicate column names across files:")
+        for col, sources in duplicate_columns.items():
+            logger.warning(f"  Column '{col}' appears in: {', '.join(sources)}")
+    
+    if combine_duplicates and duplicate_columns:
+        logger.info("Will combine duplicate column values with pipe separator (|)")
+        
+        # Create a dictionary to store the combined data
+        # Structure: {(patno, event_id): {column_name: [values]}}
+        combined_data = {}
+        
+        # Process each dataframe to collect all values
+        for df_idx, df in enumerate(dataframes):
+            for _, row in df.iterrows():
+                patno = row["PATNO"]
+                event_id = row["EVENT_ID"]
+                key = (patno, event_id)
+                
+                if key not in combined_data:
+                    combined_data[key] = {"PATNO": patno, "EVENT_ID": event_id}
+                
+                # Add all other columns
+                for col in df.columns:
+                    if col not in ["PATNO", "EVENT_ID"]:
+                        value = row[col]
+                        
+                        # Skip NaN values
+                        if pd.isna(value):
+                            continue
+                            
+                        # Convert to string
+                        value_str = str(value)
+                        
+                        # If column already exists, append the value
+                        if col in combined_data[key]:
+                            # Only append if it's a new value
+                            if value_str not in combined_data[key][col].split("|"):
+                                combined_data[key][col] += f"|{value_str}"
+                        else:
+                            combined_data[key][col] = value_str
+        
+        # Convert the combined data to a DataFrame
+        result_rows = []
+        for key, row_data in combined_data.items():
+            result_rows.append(row_data)
+        
+        result_df = pd.DataFrame(result_rows)
+        
+        # Log the final result
+        logger.info(f"Successfully merged {len(dataframes)} dataframes with combined duplicate values")
+        logger.info(f"Final dataframe has {len(result_df)} rows and {len(result_df.columns)} columns")
+        
+        return result_df
+    
+    else:
+        # Merge all dataframes using the original method with suffixes
+        logger.info("Merging dataframes on PATNO and EVENT_ID")
+        
+        # Start with the first dataframe
+        result_df = dataframes[0]
+        
+        # Merge with each subsequent dataframe
+        for i, df in enumerate(dataframes[1:], 1):
+            # Use outer join to keep all PATNO/EVENT_ID combinations
+            result_df = pd.merge(
+                result_df, 
+                df, 
+                on=["PATNO", "EVENT_ID"], 
+                how="outer",
+                suffixes=("", f"_{i}")  # Add suffix only to duplicate columns from right dataframe
+            )
+            
+            # Check if any columns were renamed due to duplicates
+            renamed_columns = [col for col in result_df.columns if col.endswith(f"_{i}")]
+            if renamed_columns:
+                logger.warning(f"After merging dataframe {i+1}, {len(renamed_columns)} columns were renamed:")
+                for col in renamed_columns[:5]:  # Show first 5 as examples
+                    logger.warning(f"  '{col[:-len(f'_{i}')]}' renamed to '{col}'")
+                if len(renamed_columns) > 5:
+                    logger.warning(f"  ... and {len(renamed_columns) - 5} more")
+        
+        # Log the final result
+        logger.info(f"Successfully merged {len(dataframes)} dataframes with suffixed duplicate columns")
+        logger.info(f"Final dataframe has {len(result_df)} rows and {len(result_df.columns)} columns")
+        
+        return result_df
+
+
 def load_biospecimen_data(data_path: str, source: str):
     """
     Load biospecimen data from the specified path.
@@ -1383,9 +1698,159 @@ def load_biospecimen_data(data_path: str, source: str):
         logger.error(f"Error loading Current Biospecimen Analysis data: {e}")
         biospecimen_data["current_biospecimen"] = pd.DataFrame()
     
-    # TODO: Add loaders for other biospecimen data types
+    # Load Blood_Chemistry___Hematology data
+    try:
+        biospecimen_data["blood_chemistry_hematology"] = load_blood_chemistry_hematology(biospecimen_path)
+        logger.info(f"Loaded Blood Chemistry & Hematology data: {len(biospecimen_data['blood_chemistry_hematology'])} rows")
+    except Exception as e:
+        logger.error(f"Error loading Blood Chemistry & Hematology data: {e}")
+        biospecimen_data["blood_chemistry_hematology"] = pd.DataFrame()
+    
+    # Load files that don't require individual processing
+    try:
+        standard_file_prefixes = [
+            "Clinical_Labs",
+            "Genetic_Testing_Results",
+            "Skin_Biopsy",
+            "Research_Biospecimens",
+            "Lumbar_Puncture",
+            "Laboratory_Procedures_with_Elapsed_Times"
+        ]
+        
+        biospecimen_data["standard_files"] = load_and_join_biospecimen_files(
+            biospecimen_path,
+            standard_file_prefixes,
+            combine_duplicates=True  # Use the new parameter to combine duplicate values
+        )
+        logger.info(f"Loaded standard biospecimen files: {len(biospecimen_data['standard_files'])} rows")
+    except Exception as e:
+        logger.error(f"Error loading standard biospecimen files: {e}")
+        biospecimen_data["standard_files"] = pd.DataFrame()
     
     return biospecimen_data
+
+def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, output_filename: str = "biospecimen.csv", output_dir: str = None) -> Union[pd.DataFrame, dict]:
+    """
+    Merge all biospecimen data into either a single DataFrame or keep as separate DataFrames.
+    
+    Args:
+        biospecimen_data: Dictionary containing loaded biospecimen data from load_biospecimen_data()
+        merge_all: If True, merge all DataFrames on PATNO and EVENT_ID; if False, return dictionary of DataFrames
+        output_filename: Name of the output CSV file (default: "biospecimen.csv")
+        output_dir: Directory to save the output file(s); if None, files are not saved
+    
+    Returns:
+        If merge_all is True: A single DataFrame with all biospecimen data merged on PATNO and EVENT_ID
+        If merge_all is False: The original dictionary of DataFrames with potential file saving
+    """
+    if merge_all:
+        logger.info("Merging all biospecimen data into a single DataFrame")
+        
+        # Start with an empty DataFrame with PATNO and EVENT_ID columns
+        merged_df = pd.DataFrame(columns=["PATNO", "EVENT_ID"])
+        
+        # Track the number of rows and columns from each source
+        source_stats = {}
+        
+        # Merge each DataFrame one by one
+        for source_name, df in biospecimen_data.items():
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                logger.warning(f"Skipping {source_name}: No data available")
+                continue
+                
+            if "PATNO" not in df.columns or "EVENT_ID" not in df.columns:
+                logger.warning(f"Skipping {source_name}: Missing PATNO or EVENT_ID columns")
+                continue
+            
+            # Record stats before merging
+            source_stats[source_name] = {
+                "rows": len(df),
+                "columns": len(df.columns) - 2  # Subtract PATNO and EVENT_ID
+            }
+            
+            # Convert PATNO to string type to ensure consistent types for merging
+            df = df.copy()
+            df["PATNO"] = df["PATNO"].astype(str)
+            
+            # If this is our first real DataFrame, use it as the base
+            if len(merged_df) == 0:
+                merged_df = df.copy()
+                logger.info(f"Using {source_name} as the base DataFrame ({len(merged_df)} rows)")
+                continue
+            
+            # Ensure consistent types in the merged DataFrame too
+            merged_df["PATNO"] = merged_df["PATNO"].astype(str)
+            
+            # Check for duplicate column names (excluding PATNO and EVENT_ID)
+            duplicate_cols = [col for col in df.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
+            if duplicate_cols:
+                logger.warning(f"Found {len(duplicate_cols)} duplicate columns when merging {source_name}")
+                # Add source prefix to duplicate columns to avoid conflicts
+                rename_dict = {col: f"{source_name}_{col}" for col in duplicate_cols}
+                df = df.rename(columns=rename_dict)
+                
+                # Log a few examples of renamed columns
+                examples = list(rename_dict.items())[:3]
+                logger.info(f"Renamed columns (examples): {examples}")
+                if len(rename_dict) > 3:
+                    logger.info(f"... and {len(rename_dict) - 3} more")
+            
+            # Merge with outer join to keep all PATNO/EVENT_ID combinations
+            pre_merge_rows = len(merged_df)
+            merged_df = pd.merge(
+                merged_df, 
+                df, 
+                on=["PATNO", "EVENT_ID"], 
+                how="outer"
+            )
+            
+            # Log merge results
+            new_rows = len(merged_df) - pre_merge_rows
+            logger.info(f"Merged {source_name}: Added {len(df.columns) - 2} columns and {new_rows} new rows")
+        
+        # Log final stats
+        logger.info(f"Final merged DataFrame: {len(merged_df)} rows, {len(merged_df.columns)} columns")
+        
+        # Log contribution from each source
+        logger.info("Data contribution from each source:")
+        for source, stats in source_stats.items():
+            logger.info(f"  {source}: {stats['rows']} rows, {stats['columns']} columns")
+        
+        # Save to CSV if output_dir is provided
+        if output_dir is not None:
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            output_path = os.path.join(output_dir, output_filename)
+            logger.info(f"Saving merged data to {output_path}")
+            merged_df.to_csv(output_path, index=False)
+        
+        return merged_df
+    
+    else:
+        logger.info("Keeping biospecimen data as separate DataFrames")
+        
+        # Save individual DataFrames if output_dir is provided
+        if output_dir is not None:
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            # Create a subdirectory for individual files
+            individual_dir = os.path.join(output_dir, "individual_biospecimen")
+            if not os.path.exists(individual_dir):
+                os.makedirs(individual_dir)
+            
+            # Save each DataFrame to a separate CSV file
+            for source_name, df in biospecimen_data.items():
+                if not isinstance(df, pd.DataFrame) or df.empty:
+                    logger.warning(f"Skipping {source_name}: No data available")
+                    continue
+                
+                file_path = os.path.join(individual_dir, f"{source_name}.csv")
+                logger.info(f"Saving {source_name} data to {file_path}")
+                df.to_csv(file_path, index=False)
+        
+        return biospecimen_data
 
 def main():
     """
@@ -1399,46 +1864,48 @@ def main():
     
     # Path to the data directory
     data_path = "./PPMI"
-    biospecimen_path = os.path.join(data_path, "Biospecimen")
+    output_dir = "./output"
     
-    # Test the load_current_biospecimen_analysis function directly
-    print("\n" + "="*80)
-    print("TESTING CURRENT BIOSPECIMEN ANALYSIS LOADER")
-    print("="*80 + "\n")
-    
-    biospecimen_df = load_current_biospecimen_analysis(biospecimen_path)
-    
-    if not biospecimen_df.empty:
-        rows, cols = biospecimen_df.shape
-        print(f"Shape: {rows} rows × {cols} columns")
-        
-        # Print first few column names as a sample
-        sample_columns = list(biospecimen_df.columns)[:10]
-        print(f"Sample columns (first 10): {sample_columns}")
-        
-        # Count the number of columns with the BIO_ prefix
-        bio_cols = [col for col in biospecimen_df.columns if col.startswith("BIO_")]
-        print(f"\nNumber of columns with BIO_ prefix: {len(bio_cols)}")
-        
-        # Print first 10 rows
-        print("\nFirst 10 rows:")
-        print(biospecimen_df.head(10))
-    else:
-        print("No Current Biospecimen Analysis data found or loaded.")
-    
-    print("\n" + "="*80)
-    
-    # Optional: Also run the full biospecimen data loader
-    print("\nRUNNING FULL BIOSPECIMEN DATA LOADER:")
+    # Load all biospecimen data
+    logger.info("Loading all biospecimen data...")
     biospecimen_data = load_biospecimen_data(data_path, "PPMI")
     
     # Print summary of loaded data
+    logger.info("Summary of loaded biospecimen data:")
     for key, df in biospecimen_data.items():
         if isinstance(df, pd.DataFrame) and not df.empty:
             rows, cols = df.shape
-            print(f"{key}: Shape = {rows} rows × {cols} columns")
+            logger.info(f"{key}: {rows} rows × {cols} columns")
         else:
-            print(f"{key}: No data loaded")
+            logger.info(f"{key}: No data loaded")
+    
+    # Merge all biospecimen data and save to CSV
+    logger.info("Merging all biospecimen data...")
+    merged_df = merge_biospecimen_data(
+        biospecimen_data,
+        merge_all=True,
+        output_filename="biospecimen.csv",
+        output_dir=output_dir
+    )
+    
+    # Print information about the merged data
+    if isinstance(merged_df, pd.DataFrame) and not merged_df.empty:
+        rows, cols = merged_df.shape
+        logger.info(f"Final merged biospecimen data: {rows} rows × {cols} columns")
+        logger.info(f"Saved to {os.path.join(output_dir, 'biospecimen.csv')}")
+    else:
+        logger.warning("No biospecimen data was merged")
+    
+    # Optionally, also save individual files
+    logger.info("Saving individual biospecimen files...")
+    merge_biospecimen_data(
+        biospecimen_data,
+        merge_all=False,
+        output_dir=output_dir
+    )
+    logger.info(f"Individual files saved to {os.path.join(output_dir, 'individual_biospecimen')}")
+    
+    logger.info("Biospecimen data processing complete")
 
 if __name__ == "__main__":
     main() 
