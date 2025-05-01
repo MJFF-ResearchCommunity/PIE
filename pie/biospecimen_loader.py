@@ -1560,17 +1560,25 @@ def load_and_join_biospecimen_files(folder_path: str, file_prefixes: list, combi
         return result_df
 
 
-def load_biospecimen_data(data_path: str, source: str):
+def load_biospecimen_data(data_path: str, source: str, exclude: list = None) -> dict:
     """
     Load biospecimen data from the specified path.
     
     Args:
         data_path: Path to the data directory
         source: The data source (e.g., PPMI)
+        exclude: List of biospecimen data sources to exclude (e.g., ['project_9000', 'project_222'])
         
     Returns:
         A dictionary containing loaded biospecimen data
     """
+    # Initialize exclude if None
+    if exclude is None:
+        exclude = []
+    
+    if exclude:
+        logger.info(f"Will exclude the following projects: {exclude}")
+    
     biospecimen_data = {}
     
     # Path to the Biospecimen folder
@@ -1581,150 +1589,191 @@ def load_biospecimen_data(data_path: str, source: str):
         return biospecimen_data
     
     # Load Project_151_pQTL_in_CSF data (non-batch-corrected)
-    try:
-        biospecimen_data["project_151_pQTL_CSF"] = load_project_151_pQTL_CSF(
-            biospecimen_path, 
-            batch_corrected=False
-        )
-        logger.info(f"Loaded Project_151_pQTL_in_CSF data: {len(biospecimen_data['project_151_pQTL_CSF'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Project_151_pQTL_in_CSF data: {e}")
-        biospecimen_data["project_151_pQTL_CSF"] = pd.DataFrame()
+    if "project_151_pQTL_CSF" not in exclude:
+        try:
+            biospecimen_data["project_151_pQTL_CSF"] = load_project_151_pQTL_CSF(
+                biospecimen_path, 
+                batch_corrected=False
+            )
+            logger.info(f"Loaded Project_151_pQTL_in_CSF data: {len(biospecimen_data['project_151_pQTL_CSF'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Project_151_pQTL_in_CSF data: {e}")
+            biospecimen_data["project_151_pQTL_CSF"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Project_151_pQTL_in_CSF (excluded)")
     
     # Load Project_151_pQTL_in_CSF data (batch-corrected)
-    try:
-        biospecimen_data["project_151_pQTL_CSF_batch_corrected"] = load_project_151_pQTL_CSF(
-            biospecimen_path, 
-            batch_corrected=True
-        )
-        logger.info(f"Loaded batch-corrected Project_151_pQTL_in_CSF data: {len(biospecimen_data['project_151_pQTL_CSF_batch_corrected'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading batch-corrected Project_151_pQTL_in_CSF data: {e}")
-        biospecimen_data["project_151_pQTL_CSF_batch_corrected"] = pd.DataFrame()
+    if "project_151_pQTL_CSF_batch_corrected" not in exclude:
+        try:
+            biospecimen_data["project_151_pQTL_CSF_batch_corrected"] = load_project_151_pQTL_CSF(
+                biospecimen_path, 
+                batch_corrected=True
+            )
+            logger.info(f"Loaded batch-corrected Project_151_pQTL_in_CSF data: {len(biospecimen_data['project_151_pQTL_CSF_batch_corrected'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading batch-corrected Project_151_pQTL_in_CSF data: {e}")
+            biospecimen_data["project_151_pQTL_CSF_batch_corrected"] = pd.DataFrame()
+    else:
+        logger.info("Skipping batch-corrected Project_151_pQTL_in_CSF (excluded)")
     
     # Load Metabolomic_Analysis_of_LRRK2 data (excluding CSF)
-    try:
-        biospecimen_data["metabolomic_lrrk2"] = load_metabolomic_lrrk2(
-            biospecimen_path, 
-            include_csf=False
-        )
-        logger.info(f"Loaded Metabolomic_Analysis_of_LRRK2 data: {len(biospecimen_data['metabolomic_lrrk2'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Metabolomic_Analysis_of_LRRK2 data: {e}")
-        biospecimen_data["metabolomic_lrrk2"] = pd.DataFrame()
+    if "metabolomic_lrrk2" not in exclude:
+        try:
+            biospecimen_data["metabolomic_lrrk2"] = load_metabolomic_lrrk2(
+                biospecimen_path, 
+                include_csf=False
+            )
+            logger.info(f"Loaded Metabolomic_Analysis_of_LRRK2 data: {len(biospecimen_data['metabolomic_lrrk2'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Metabolomic_Analysis_of_LRRK2 data: {e}")
+            biospecimen_data["metabolomic_lrrk2"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Metabolomic_Analysis_of_LRRK2 (excluded)")
     
     # Load Metabolomic_Analysis_of_LRRK2_CSF data
-    try:
-        biospecimen_data["metabolomic_lrrk2_csf"] = load_metabolomic_lrrk2(
-            biospecimen_path, 
-            include_csf=True
-        )
-        # Filter to only include CSF files
-        if not biospecimen_data["metabolomic_lrrk2_csf"].empty:
-            csf_columns = [col for col in biospecimen_data["metabolomic_lrrk2_csf"].columns if col.startswith("LRRK2_") and "_CSF_" in col]
-            if csf_columns:
-                keep_cols = ["PATNO", "EVENT_ID"]
-                if "SEX" in biospecimen_data["metabolomic_lrrk2_csf"].columns:
-                    keep_cols.append("SEX")
-                if "COHORT" in biospecimen_data["metabolomic_lrrk2_csf"].columns:
-                    keep_cols.append("COHORT")
-                keep_cols.extend(csf_columns)
-                biospecimen_data["metabolomic_lrrk2_csf"] = biospecimen_data["metabolomic_lrrk2_csf"][keep_cols]
-        
-        logger.info(f"Loaded Metabolomic_Analysis_of_LRRK2_CSF data: {len(biospecimen_data['metabolomic_lrrk2_csf'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Metabolomic_Analysis_of_LRRK2_CSF data: {e}")
-        biospecimen_data["metabolomic_lrrk2_csf"] = pd.DataFrame()
+    if "metabolomic_lrrk2_csf" not in exclude:
+        try:
+            biospecimen_data["metabolomic_lrrk2_csf"] = load_metabolomic_lrrk2(
+                biospecimen_path, 
+                include_csf=True
+            )
+            # Filter to only include CSF files
+            if not biospecimen_data["metabolomic_lrrk2_csf"].empty:
+                csf_columns = [col for col in biospecimen_data["metabolomic_lrrk2_csf"].columns if col.startswith("LRRK2_") and "_CSF_" in col]
+                if csf_columns:
+                    keep_cols = ["PATNO", "EVENT_ID"]
+                    if "SEX" in biospecimen_data["metabolomic_lrrk2_csf"].columns:
+                        keep_cols.append("SEX")
+                    if "COHORT" in biospecimen_data["metabolomic_lrrk2_csf"].columns:
+                        keep_cols.append("COHORT")
+                    keep_cols.extend(csf_columns)
+                    biospecimen_data["metabolomic_lrrk2_csf"] = biospecimen_data["metabolomic_lrrk2_csf"][keep_cols]
+            
+            logger.info(f"Loaded Metabolomic_Analysis_of_LRRK2_CSF data: {len(biospecimen_data['metabolomic_lrrk2_csf'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Metabolomic_Analysis_of_LRRK2_CSF data: {e}")
+            biospecimen_data["metabolomic_lrrk2_csf"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Metabolomic_Analysis_of_LRRK2_CSF (excluded)")
     
     # Load Targeted___untargeted_MS-based_proteomics_of_urine_in_PD data
-    try:
-        biospecimen_data["urine_proteomics"] = load_urine_proteomics(biospecimen_path)
-        logger.info(f"Loaded urine proteomics data: {len(biospecimen_data['urine_proteomics'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading urine proteomics data: {e}")
-        biospecimen_data["urine_proteomics"] = pd.DataFrame()
+    if "urine_proteomics" not in exclude:
+        try:
+            biospecimen_data["urine_proteomics"] = load_urine_proteomics(biospecimen_path)
+            logger.info(f"Loaded urine proteomics data: {len(biospecimen_data['urine_proteomics'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading urine proteomics data: {e}")
+            biospecimen_data["urine_proteomics"] = pd.DataFrame()
+    else:
+        logger.info("Skipping urine proteomics (excluded)")
     
     # Load PPMI_Project_9000 data
-    try:
-        biospecimen_data["project_9000"] = load_project_9000(biospecimen_path)
-        logger.info(f"Loaded Project 9000 data: {len(biospecimen_data['project_9000'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Project 9000 data: {e}")
-        biospecimen_data["project_9000"] = pd.DataFrame()
+    if "project_9000" not in exclude:
+        try:
+            biospecimen_data["project_9000"] = load_project_9000(biospecimen_path)
+            logger.info(f"Loaded Project 9000 data: {len(biospecimen_data['project_9000'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Project 9000 data: {e}")
+            biospecimen_data["project_9000"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Project 9000 (excluded)")
     
     # Load PPMI_Project_222 data
-    try:
-        biospecimen_data["project_222"] = load_project_222(biospecimen_path)
-        logger.info(f"Loaded Project 222 data: {len(biospecimen_data['project_222'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Project 222 data: {e}")
-        biospecimen_data["project_222"] = pd.DataFrame()
+    if "project_222" not in exclude:
+        try:
+            biospecimen_data["project_222"] = load_project_222(biospecimen_path)
+            logger.info(f"Loaded Project 222 data: {len(biospecimen_data['project_222'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Project 222 data: {e}")
+            biospecimen_data["project_222"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Project 222 (excluded)")
     
     # Load PPMI_Project_196 data
-    try:
-        biospecimen_data["project_196"] = load_project_196(biospecimen_path)
-        logger.info(f"Loaded Project 196 data: {len(biospecimen_data['project_196'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Project 196 data: {e}")
-        biospecimen_data["project_196"] = pd.DataFrame()
+    if "project_196" not in exclude:
+        try:
+            biospecimen_data["project_196"] = load_project_196(biospecimen_path)
+            logger.info(f"Loaded Project 196 data: {len(biospecimen_data['project_196'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Project 196 data: {e}")
+            biospecimen_data["project_196"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Project 196 (excluded)")
     
     # Load PPMI_Project_177 data
-    try:
-        biospecimen_data["project_177"] = load_project_177_untargeted_proteomics(biospecimen_path)
-        logger.info(f"Loaded Project 177 data: {len(biospecimen_data['project_177'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Project 177 data: {e}")
-        biospecimen_data["project_177"] = pd.DataFrame()
+    if "project_177" not in exclude:
+        try:
+            biospecimen_data["project_177"] = load_project_177_untargeted_proteomics(biospecimen_path)
+            logger.info(f"Loaded Project 177 data: {len(biospecimen_data['project_177'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Project 177 data: {e}")
+            biospecimen_data["project_177"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Project 177 (excluded)")
     
     # Load Project_214_Olink data
-    try:
-        biospecimen_data["project_214"] = load_project_214_olink(biospecimen_path)
-        logger.info(f"Loaded Project 214 data: {len(biospecimen_data['project_214'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Project 214 data: {e}")
-        biospecimen_data["project_214"] = pd.DataFrame()
+    if "project_214" not in exclude:
+        try:
+            biospecimen_data["project_214"] = load_project_214_olink(biospecimen_path)
+            logger.info(f"Loaded Project 214 data: {len(biospecimen_data['project_214'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Project 214 data: {e}")
+            biospecimen_data["project_214"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Project 214 (excluded)")
     
     # Load Current_Biospecimen_Analysis_Results data
-    try:
-        biospecimen_data["current_biospecimen"] = load_current_biospecimen_analysis(biospecimen_path)
-        logger.info(f"Loaded Current Biospecimen Analysis data: {len(biospecimen_data['current_biospecimen'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Current Biospecimen Analysis data: {e}")
-        biospecimen_data["current_biospecimen"] = pd.DataFrame()
+    if "current_biospecimen" not in exclude:
+        try:
+            biospecimen_data["current_biospecimen"] = load_current_biospecimen_analysis(biospecimen_path)
+            logger.info(f"Loaded Current Biospecimen Analysis data: {len(biospecimen_data['current_biospecimen'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Current Biospecimen Analysis data: {e}")
+            biospecimen_data["current_biospecimen"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Current Biospecimen Analysis (excluded)")
     
     # Load Blood_Chemistry___Hematology data
-    try:
-        biospecimen_data["blood_chemistry_hematology"] = load_blood_chemistry_hematology(biospecimen_path)
-        logger.info(f"Loaded Blood Chemistry & Hematology data: {len(biospecimen_data['blood_chemistry_hematology'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading Blood Chemistry & Hematology data: {e}")
-        biospecimen_data["blood_chemistry_hematology"] = pd.DataFrame()
+    if "blood_chemistry_hematology" not in exclude:
+        try:
+            biospecimen_data["blood_chemistry_hematology"] = load_blood_chemistry_hematology(biospecimen_path)
+            logger.info(f"Loaded Blood Chemistry & Hematology data: {len(biospecimen_data['blood_chemistry_hematology'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading Blood Chemistry & Hematology data: {e}")
+            biospecimen_data["blood_chemistry_hematology"] = pd.DataFrame()
+    else:
+        logger.info("Skipping Blood Chemistry & Hematology (excluded)")
     
     # Load files that don't require individual processing
-    try:
-        standard_file_prefixes = [
-            "Clinical_Labs",
-            "Genetic_Testing_Results",
-            "Skin_Biopsy",
-            "Research_Biospecimens",
-            "Lumbar_Puncture",
-            "Laboratory_Procedures_with_Elapsed_Times"
-        ]
-        
-        biospecimen_data["standard_files"] = load_and_join_biospecimen_files(
-            biospecimen_path,
-            standard_file_prefixes,
-            combine_duplicates=True  # Use the new parameter to combine duplicate values
-        )
-        logger.info(f"Loaded standard biospecimen files: {len(biospecimen_data['standard_files'])} rows")
-    except Exception as e:
-        logger.error(f"Error loading standard biospecimen files: {e}")
-        biospecimen_data["standard_files"] = pd.DataFrame()
+    if "standard_files" not in exclude:
+        try:
+            standard_file_prefixes = [
+                "Clinical_Labs",
+                "Genetic_Testing_Results",
+                "Skin_Biopsy",
+                "Research_Biospecimens",
+                "Lumbar_Puncture",
+                "Laboratory_Procedures_with_Elapsed_Times"
+            ]
+            
+            biospecimen_data["standard_files"] = load_and_join_biospecimen_files(
+                biospecimen_path,
+                standard_file_prefixes,
+                combine_duplicates=True  # Use the new parameter to combine duplicate values
+            )
+            logger.info(f"Loaded standard biospecimen files: {len(biospecimen_data['standard_files'])} rows")
+        except Exception as e:
+            logger.error(f"Error loading standard biospecimen files: {e}")
+            biospecimen_data["standard_files"] = pd.DataFrame()
+    else:
+        logger.info("Skipping standard files (excluded)")
     
     return biospecimen_data
 
 
-def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, output_filename: str = "biospecimen.csv", output_dir: str = None) -> Union[pd.DataFrame, dict]:
+def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, 
+                          output_filename: str = "biospecimen.csv", output_dir: str = None,
+                          include: list = None, exclude: list = None) -> Union[pd.DataFrame, dict]:
     """
     Merge all biospecimen data into either a single DataFrame or keep as separate DataFrames.
     
@@ -1733,6 +1782,10 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
         merge_all: If True, merge all DataFrames on PATNO and EVENT_ID; if False, return dictionary of DataFrames
         output_filename: Name of the output CSV file (default: "biospecimen.csv")
         output_dir: Directory to save the output file(s); if None, files are not saved
+        include: List of specific data sources to include (e.g., ['project_151', 'metabolomic_lrrk2'])
+                 If provided, only these sources will be used
+        exclude: List of specific data sources to exclude
+                 Only used if include is None or empty
     
     Returns:
         If merge_all is True: A single DataFrame with all biospecimen data merged on PATNO and EVENT_ID
@@ -1741,6 +1794,46 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
     # Import only when needed for memory tracking
     import psutil
     import gc
+    
+    # Initialize include/exclude to empty lists if None
+    if include is None:
+        include = []
+    if exclude is None:
+        exclude = []
+    
+    # Filter the biospecimen_data dictionary based on include/exclude
+    filtered_data = {}
+    
+    if include:
+        # If include is provided, only use those sources
+        logger.info(f"Including only specified sources: {include}")
+        for source_name in include:
+            if source_name in biospecimen_data:
+                filtered_data[source_name] = biospecimen_data[source_name]
+            else:
+                logger.warning(f"Requested source '{source_name}' not found in biospecimen_data")
+    elif exclude:
+        # If exclude is provided but include is not, use all sources except those excluded
+        logger.info(f"Excluding specified sources: {exclude}")
+        for source_name, df in biospecimen_data.items():
+            if source_name not in exclude:
+                filtered_data[source_name] = df
+            else:
+                logger.info(f"Excluding source: {source_name}")
+    else:
+        # If neither include nor exclude are provided, use all sources
+        logger.info("Using all available data sources")
+        filtered_data = biospecimen_data.copy()
+    
+    if not filtered_data:
+        logger.warning("No data sources remain after applying include/exclude filters")
+        if merge_all:
+            return pd.DataFrame()
+        else:
+            return {}
+    
+    # Log the sources that will be processed
+    logger.info(f"Processing {len(filtered_data)} data sources: {list(filtered_data.keys())}")
     
     process = psutil.Process()
     
@@ -1753,11 +1846,11 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
     log_memory_usage("start")
     
     if merge_all:
-        logger.info("Merging all biospecimen data into a single DataFrame")
+        logger.info("Merging filtered biospecimen data into a single DataFrame")
         
         # Get unique PATNO/EVENT_ID combinations first to create base DataFrame
         all_pairs = set()
-        for source_name, df in biospecimen_data.items():
+        for source_name, df in filtered_data.items():
             if not isinstance(df, pd.DataFrame) or df.empty:
                 continue
             if "PATNO" not in df.columns or "EVENT_ID" not in df.columns:
@@ -1776,7 +1869,7 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
         source_stats = {}
         
         # Merge each DataFrame one by one
-        for source_name, df in biospecimen_data.items():
+        for source_name, df in filtered_data.items():
             if not isinstance(df, pd.DataFrame) or df.empty:
                 logger.warning(f"Skipping {source_name}: No data available")
                 continue
@@ -1878,7 +1971,7 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
                 os.makedirs(individual_dir)
             
             # Save each DataFrame to a separate CSV file
-            for source_name, df in biospecimen_data.items():
+            for source_name, df in filtered_data.items():
                 if not isinstance(df, pd.DataFrame) or df.empty:
                     logger.warning(f"Skipping {source_name}: No data available")
                     continue
@@ -1890,11 +1983,13 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True, outpu
                 # Force garbage collection after saving each file
                 gc.collect()
         
-        return biospecimen_data
+        # Return filtered dictionary instead of original
+        return filtered_data
+
 
 def main():
     """
-    Example usage of biospecimen data loading functions.
+    Test the biospecimen data loading functions with exclusion.
     """
     # Configure logging
     logging.basicConfig(
@@ -1904,48 +1999,137 @@ def main():
     
     # Path to the data directory
     data_path = "./PPMI"
-    output_dir = "./output"
     
-    # Load all biospecimen data
-    logger.info("Loading all biospecimen data...")
-    biospecimen_data = load_biospecimen_data(data_path, "PPMI")
+    # Define projects to exclude
+    exclude_projects = ['project_9000', 'project_222', 'project_196']
     
-    # Print summary of loaded data
-    logger.info("Summary of loaded biospecimen data:")
-    for key, df in biospecimen_data.items():
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            rows, cols = df.shape
-            logger.info(f"{key}: {rows} rows × {cols} columns")
+    # Step 1: Load with exclusion directly in load_biospecimen_data
+    logger.info("STEP 1: Testing direct exclusion in load_biospecimen_data")
+    biospecimen_data_excluded = load_biospecimen_data(
+        data_path=data_path, 
+        source="PPMI", 
+        exclude=exclude_projects
+    )
+    
+    # Verify exclusion
+    for project in exclude_projects:
+        if project in biospecimen_data_excluded:
+            logger.error(f"FAILURE: {project} was loaded despite being explicitly excluded")
         else:
-            logger.info(f"{key}: No data loaded")
+            logger.info(f"SUCCESS: {project} was properly excluded during loading")
     
-    # Merge all biospecimen data and save to CSV
-    logger.info("Merging all biospecimen data...")
-    merged_df = merge_biospecimen_data(
-        biospecimen_data,
+    logger.info(f"Loaded {len(biospecimen_data_excluded)} biospecimen data sources with exclusion")
+    
+    # Step 2: Compare with the traditional approach (exclude during merge)
+    logger.info("\nSTEP 2: Comparing with traditional approach (exclude during merge)")
+    
+    # Load without exclusion first
+    biospecimen_data_all = load_biospecimen_data(
+        data_path=data_path, 
+        source="PPMI",
+        exclude=None  # No exclusion during loading
+    )
+    
+    logger.info(f"Loaded {len(biospecimen_data_all)} total biospecimen data sources without exclusion")
+    
+    # Verify the excluded projects are present in the unfiltered data
+    for project in exclude_projects:
+        if project in biospecimen_data_all:
+            logger.info(f"Confirmed: {project} is present in the unfiltered data")
+            if isinstance(biospecimen_data_all[project], pd.DataFrame):
+                logger.info(f"  - Contains {len(biospecimen_data_all[project])} rows")
+        else:
+            logger.warning(f"NOTE: {project} not found in the unfiltered data - may not exist in dataset")
+    
+    # Now merge with exclusion
+    merged_with_exclusion = merge_biospecimen_data(
+        biospecimen_data_all,
         merge_all=True,
-        output_filename="biospecimen.csv",
-        output_dir=output_dir
+        output_filename=None,
+        exclude=exclude_projects
     )
     
-    # Print information about the merged data
-    if isinstance(merged_df, pd.DataFrame) and not merged_df.empty:
-        rows, cols = merged_df.shape
-        logger.info(f"Final merged biospecimen data: {rows} rows × {cols} columns")
-        logger.info(f"Saved to {os.path.join(output_dir, 'biospecimen.csv')}")
+    logger.info(f"Merged data with exclusion during merge: {len(merged_with_exclusion)} rows, {len(merged_with_exclusion.columns)} columns")
+    
+    # Step 3: Compare results between the two approaches
+    logger.info("\nSTEP 3: Comparing results between the two approaches")
+    
+    # Merge the pre-filtered data
+    merged_pre_filtered = merge_biospecimen_data(
+        biospecimen_data_excluded,
+        merge_all=True,
+        output_filename=None
+    )
+    
+    logger.info(f"Merged data with pre-filtered approach: {len(merged_pre_filtered)} rows, {len(merged_pre_filtered.columns)} columns")
+    
+    # Compare the results
+    logger.info("\nCOMPARISON RESULTS:")
+    logger.info(f"1. Traditional approach (exclude during merge): {len(merged_with_exclusion)} rows, {len(merged_with_exclusion.columns)} columns")
+    logger.info(f"2. New approach (exclude during loading): {len(merged_pre_filtered)} rows, {len(merged_pre_filtered.columns)} columns")
+    
+    # Check if the results are the same
+    rows_match = len(merged_with_exclusion) == len(merged_pre_filtered)
+    cols_match = len(merged_with_exclusion.columns) == len(merged_pre_filtered.columns)
+    
+    if rows_match and cols_match:
+        logger.info("SUCCESS: Both approaches produced the same size result")
     else:
-        logger.warning("No biospecimen data was merged")
+        if not rows_match:
+            logger.error(f"DIFFERENCE: Row counts differ: {len(merged_with_exclusion)} vs {len(merged_pre_filtered)}")
+        if not cols_match:
+            logger.error(f"DIFFERENCE: Column counts differ: {len(merged_with_exclusion.columns)} vs {len(merged_pre_filtered.columns)}")
     
-    # Optionally, also save individual files
-    logger.info("Saving individual biospecimen files...")
-    merge_biospecimen_data(
-        biospecimen_data,
-        merge_all=False,
-        output_dir=output_dir
+    # Step 4: Test passing exclude to both functions (should be idempotent)
+    logger.info("\nSTEP 4: Testing exclude parameter passed to both functions")
+    
+    # Load with exclusion and then merge with the same exclusion
+    biospecimen_data_double_exclude = load_biospecimen_data(
+        data_path=data_path, 
+        source="PPMI", 
+        exclude=exclude_projects
     )
-    logger.info(f"Individual files saved to {os.path.join(output_dir, 'individual_biospecimen')}")
     
-    logger.info("Biospecimen data processing complete")
+    merged_double_exclude = merge_biospecimen_data(
+        biospecimen_data_double_exclude,
+        merge_all=True,
+        output_filename=None,
+        exclude=exclude_projects  # Same exclusion list
+    )
+    
+    logger.info(f"Merged data with double exclusion: {len(merged_double_exclude)} rows, {len(merged_double_exclude.columns)} columns")
+    
+    # Compare with the pre-filtered approach
+    if len(merged_double_exclude) == len(merged_pre_filtered) and len(merged_double_exclude.columns) == len(merged_pre_filtered.columns):
+        logger.info("SUCCESS: Double exclusion is idempotent (same as excluding once)")
+    else:
+        logger.error(f"ERROR: Double exclusion produced different results: {len(merged_double_exclude)}x{len(merged_double_exclude.columns)} vs {len(merged_pre_filtered)}x{len(merged_pre_filtered.columns)}")
+    
+    # Step 5: Demonstrate the fix in DataLoader.py
+    logger.info("\nSTEP 5: Demonstrating how this fix works with DataLoader.load()")
+    logger.info("To apply this fix properly in DataLoader.py, modify the BIOSPECIMEN section:")
+    logger.info("""
+    elif modality == DataLoader.BIOSPECIMEN:
+        # Old code:
+        # biospec_data = load_biospecimen_data(data_path, source)
+        
+        # New code with exclude parameter:
+        biospec_data = load_biospecimen_data(data_path, source, exclude=biospec_exclude)
+        
+        if merge_output:
+            # If we will merge everything later, just store the dictionary
+            data_dict[modality] = biospec_data
+        else:
+            # If we're not merging everything, merge just the biospecimen data
+            data_dict[modality] = merge_biospecimen_data(
+                biospec_data, 
+                merge_all=True,
+                output_filename=None,
+                exclude=biospec_exclude  # This is now redundant but harmless
+            )
+    """)
+    
+    logger.info("\nBiospecimen exclusion test complete")
 
 if __name__ == "__main__":
-    main() 
+    main()

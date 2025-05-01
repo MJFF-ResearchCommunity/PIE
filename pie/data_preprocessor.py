@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pie.data_loader import DataLoader
+from pie.constants import MEDICAL_HISTORY  # Import from constants instead of data_loader
 
 logger = logging.getLogger(f"PIE.{__name__}")
 
@@ -85,7 +85,7 @@ class DataPreprocessor:
         :return: Cleaned data dictionary or combined DataFrame.
         """
         # TODO: Add modalities as actual cleaning logic is implemented.
-        data_dict[DataLoader.MEDICAL_HISTORY] = DataPreprocessor.clean_medical_history(data_dict[DataLoader.MEDICAL_HISTORY])
+        data_dict[MEDICAL_HISTORY] = DataPreprocessor.clean_medical_history(data_dict[MEDICAL_HISTORY])
         return data_dict
 
     @staticmethod
