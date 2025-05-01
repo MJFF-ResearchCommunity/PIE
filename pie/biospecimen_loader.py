@@ -83,6 +83,7 @@ import pandas as pd
 import logging
 import numpy as np
 from typing import Union
+import gc # <--- IMPORT GARBAGE COLLECTOR
 
 logger = logging.getLogger(f"PIE.{__name__}")
 
@@ -469,7 +470,8 @@ def load_project_9000(folder_path: str) -> pd.DataFrame:
     for file_path in matching_files:
         try:
             # Read only PATNO and EVENT_ID columns to get unique combinations
-            df_ids = pd.read_csv(file_path, usecols=["PATNO", "EVENT_ID"])
+            # Specify dtype for PATNO here too
+            df_ids = pd.read_csv(file_path, usecols=["PATNO", "EVENT_ID"], dtype={'PATNO': 'string'}) 
             
             for _, row in df_ids.iterrows():
                 # Remove "PPMI-" prefix from PATNO if it exists
@@ -491,8 +493,9 @@ def load_project_9000(folder_path: str) -> pd.DataFrame:
             logger.info(f"Processing file: {file_path}")
             
             # Read the file in chunks to reduce memory usage
-            chunk_size = 50000  # Increased chunk size for better performance
-            for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+            chunk_size = 50000
+            # Use specified dtypes and low_memory=False
+            for chunk in pd.read_csv(file_path, chunksize=chunk_size, dtype=dtypes, low_memory=False):
                 # Check if required columns exist
                 required_columns = ["PATNO", "EVENT_ID", "UNIPROT", "ASSAY", "MISSINGFREQ", "LOD", "NPX"]
                 if not all(col in chunk.columns for col in required_columns):
@@ -530,6 +533,10 @@ def load_project_9000(folder_path: str) -> pd.DataFrame:
                             data_dict[key][col_name] = row[metric]
                 
                 logger.info(f"Processed chunk with {len(chunk)} rows")
+                
+                # Explicitly delete chunk after processing
+                del chunk
+                gc.collect() # Collect garbage after each chunk
             
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {e}")
@@ -547,8 +554,8 @@ def load_project_9000(folder_path: str) -> pd.DataFrame:
     # Create DataFrame from the list of dictionaries (much more efficient than adding columns one by one)
     result_df = pd.DataFrame(rows)
     
-    # Force garbage collection to free memory
-    import gc
+    # Explicit garbage collection before returning
+    del data_dict # Delete the large intermediate dict
     gc.collect()
     
     logger.info(f"Successfully processed Project 9000 data: {len(result_df)} rows, {len(result_df.columns)} columns")
@@ -601,7 +608,8 @@ def load_project_222(folder_path: str) -> pd.DataFrame:
     for file_path in matching_files:
         try:
             # Read only PATNO and EVENT_ID columns to get unique combinations
-            df_ids = pd.read_csv(file_path, usecols=["PATNO", "EVENT_ID"])
+            # Specify dtype for PATNO here too
+            df_ids = pd.read_csv(file_path, usecols=["PATNO", "EVENT_ID"], dtype={'PATNO': 'string'}) 
             
             for _, row in df_ids.iterrows():
                 # Remove "PPMI-" prefix from PATNO if it exists
@@ -623,8 +631,9 @@ def load_project_222(folder_path: str) -> pd.DataFrame:
             logger.info(f"Processing file: {file_path}")
             
             # Read the file in chunks to reduce memory usage
-            chunk_size = 50000  # Increased chunk size for better performance
-            for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+            chunk_size = 50000
+            # Use specified dtypes and low_memory=False
+            for chunk in pd.read_csv(file_path, chunksize=chunk_size, dtype=dtypes, low_memory=False):
                 # Check if required columns exist
                 required_columns = ["PATNO", "EVENT_ID", "UNIPROT", "ASSAY", "MISSINGFREQ", "LOD", "NPX"]
                 if not all(col in chunk.columns for col in required_columns):
@@ -662,6 +671,10 @@ def load_project_222(folder_path: str) -> pd.DataFrame:
                             data_dict[key][col_name] = row[metric]
                 
                 logger.info(f"Processed chunk with {len(chunk)} rows")
+                
+                # Explicitly delete chunk after processing
+                del chunk
+                gc.collect() # Collect garbage after each chunk
             
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {e}")
@@ -679,8 +692,8 @@ def load_project_222(folder_path: str) -> pd.DataFrame:
     # Create DataFrame from the list of dictionaries (much more efficient than adding columns one by one)
     result_df = pd.DataFrame(rows)
     
-    # Force garbage collection to free memory
-    import gc
+    # Explicit garbage collection before returning
+    del data_dict # Delete the large intermediate dict
     gc.collect()
     
     logger.info(f"Successfully processed Project 222 data: {len(result_df)} rows, {len(result_df.columns)} columns")
@@ -739,7 +752,8 @@ def load_project_196(folder_path: str) -> pd.DataFrame:
     for file_path in matching_files:
         try:
             # Read only PATNO and EVENT_ID columns to get unique combinations
-            df_ids = pd.read_csv(file_path, usecols=["PATNO", "EVENT_ID"])
+            # Specify dtype for PATNO here too
+            df_ids = pd.read_csv(file_path, usecols=["PATNO", "EVENT_ID"], dtype={'PATNO': 'string'}) 
             
             for _, row in df_ids.iterrows():
                 # Remove "PPMI-" prefix from PATNO if it exists
@@ -762,7 +776,8 @@ def load_project_196(folder_path: str) -> pd.DataFrame:
             
             # Read the file in chunks to reduce memory usage
             chunk_size = 50000
-            for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+            # Use specified dtypes and low_memory=False
+            for chunk in pd.read_csv(file_path, chunksize=chunk_size, dtype=npx_dtypes, low_memory=False):
                 # Check if required columns exist
                 required_columns = ["PATNO", "EVENT_ID", "UNIPROT", "ASSAY", "MISSINGFREQ", "LOD", "NPX"]
                 if not all(col in chunk.columns for col in required_columns):
@@ -800,6 +815,10 @@ def load_project_196(folder_path: str) -> pd.DataFrame:
                             data_dict[key][col_name] = row[metric]
                 
                 logger.info(f"Processed NPX chunk with {len(chunk)} rows")
+                
+                # Explicitly delete chunk after processing
+                del chunk
+                gc.collect() # Collect garbage after each chunk
             
         except Exception as e:
             logger.error(f"Error processing NPX file {file_path}: {e}")
@@ -811,7 +830,8 @@ def load_project_196(folder_path: str) -> pd.DataFrame:
             
             # Read the file in chunks to reduce memory usage
             chunk_size = 50000
-            for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+            # Use specified dtypes and low_memory=False
+            for chunk in pd.read_csv(file_path, chunksize=chunk_size, dtype=counts_dtypes, low_memory=False):
                 # Check if required columns exist
                 required_columns = ["PATNO", "EVENT_ID", "UNIPROT", "ASSAY", "COUNT", 
                                    "INCUBATIONCONTROLCOUNT", "AMPLIFICATIONCONTROLCOUNT", 
@@ -859,6 +879,10 @@ def load_project_196(folder_path: str) -> pd.DataFrame:
                             data_dict[key][col_name] = row[long_name]
                 
                 logger.info(f"Processed Counts chunk with {len(chunk)} rows")
+                
+                # Explicitly delete chunk after processing
+                del chunk
+                gc.collect() # Collect garbage after each chunk
             
         except Exception as e:
             logger.error(f"Error processing Counts file {file_path}: {e}")
@@ -876,8 +900,8 @@ def load_project_196(folder_path: str) -> pd.DataFrame:
     # Create DataFrame from the list of dictionaries
     result_df = pd.DataFrame(rows)
     
-    # Force garbage collection to free memory
-    import gc
+    # Explicit garbage collection before returning
+    del data_dict # Delete the large intermediate dict
     gc.collect()
     
     logger.info(f"Successfully processed Project 196 data: {len(result_df)} rows, {len(result_df.columns)} columns")
@@ -1111,6 +1135,10 @@ def load_project_214_olink(folder_path: str) -> pd.DataFrame:
                             data_dict[key][col_name] = row[metric]
                 
                 logger.info(f"Processed chunk with {len(chunk)} rows")
+                
+                # Explicitly delete chunk after processing
+                del chunk
+                gc.collect() # Collect garbage after each chunk
             
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {e}")
@@ -1128,8 +1156,8 @@ def load_project_214_olink(folder_path: str) -> pd.DataFrame:
     # Create DataFrame from the list of dictionaries
     result_df = pd.DataFrame(rows)
     
-    # Force garbage collection to free memory
-    import gc
+    # Explicit garbage collection before returning
+    del data_dict # Delete the large intermediate dict
     gc.collect()
     
     logger.info(f"Successfully processed Project 214 data: {len(result_df)} rows, {len(result_df.columns)} columns")
@@ -1348,6 +1376,10 @@ def load_blood_chemistry_hematology(folder_path: str) -> pd.DataFrame:
                             data_dict[key][col_name] = row[column]
                 
                 logger.info(f"Processed chunk with {len(chunk)} rows")
+                
+                # Explicitly delete chunk after processing
+                del chunk
+                gc.collect() # Collect garbage after each chunk
             
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {e}")
@@ -1365,8 +1397,8 @@ def load_blood_chemistry_hematology(folder_path: str) -> pd.DataFrame:
     # Create DataFrame from the list of dictionaries
     result_df = pd.DataFrame(rows)
     
-    # Force garbage collection to free memory
-    import gc
+    # Explicit garbage collection before returning
+    del data_dict # Delete the large intermediate dict
     gc.collect()
     
     logger.info(f"Successfully processed Blood Chemistry & Hematology data: {len(result_df)} rows, {len(result_df.columns)} columns")
@@ -1908,8 +1940,10 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True,
             new_cols = [col for col in df.columns if col not in merged_df.columns or col in ["PATNO", "EVENT_ID"]]
             df_subset = df[new_cols]
             
-            # Merge with left join to maintain the rows we already have
-            # This is more memory efficient than outer join in this case
+            # Store current merged_df size
+            rows_before, cols_before = merged_df.shape
+            
+            # Merge
             merged_df = pd.merge(
                 merged_df, 
                 df_subset, 
@@ -1917,12 +1951,14 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True,
                 how="left"
             )
             
-            # Force garbage collection
-            del df_subset
-            gc.collect()
+            # *** ADDED GC and Memory Check ***
+            del df_subset # Delete the subset immediately
+            del df # Delete the copied df
+            gc.collect() # Force garbage collection
             
-            logger.info(f"Merged {source_name}: Added {len(new_cols) - 2} columns")
-            log_memory_usage(f"after merging {source_name}")
+            rows_after, cols_after = merged_df.shape
+            logger.info(f"Merged {source_name}: Added {cols_after - cols_before} columns. New shape: {rows_after}x{cols_after}")
+            log_memory_usage(f"after merging {source_name}") # Uses the helper function defined earlier
         
         # Log final stats
         logger.info(f"Final merged DataFrame: {len(merged_df)} rows, {len(merged_df.columns)} columns")

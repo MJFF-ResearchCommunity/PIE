@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Union, Optional
+import gc # Make sure gc is imported at the top
 
 # Import constants
 from pie.constants import (
@@ -117,6 +118,11 @@ class DataLoader:
         # Track all pairs of PATNO/EVENT_ID for potential merging
         all_pairs = set()
         
+        # *** ADDED LOGGING FOR EXCLUSION ***
+        if BIOSPECIMEN in valid_modalities:
+            logger.info(f"Biospecimen modality requested. Exclusion list: {biospec_exclude}")
+        # *** END ADDED LOGGING ***
+        
         # Load each requested modality
         for modality in valid_modalities:
             logger.info(f"Loading {modality} data...")
@@ -175,6 +181,8 @@ class DataLoader:
             
             elif modality == DataLoader.BIOSPECIMEN:
                 # Pass the biospec_exclude parameter to load_biospecimen_data
+                # Log the call to be sure
+                logger.debug(f"Calling load_biospecimen_data with exclude={biospec_exclude}")
                 biospec_data = load_biospecimen_data(data_path, source, exclude=biospec_exclude)
                 
                 if merge_output:
@@ -197,94 +205,189 @@ class DataLoader:
                             all_pairs.add((str(row["PATNO"]), row["EVENT_ID"]))
                 
                 logger.info(f"Loaded {modality} data")
+            
+            # After loading each modality into data_dict[modality] or handling medical history:
+            
+            current_data = data_dict.get(modality)
+            
+            # --- OPTIMIZED all_pairs COLLECTION ---
+            if isinstance(current_data, pd.DataFrame):
+                if not current_data.empty and "PATNO" in current_data.columns and "EVENT_ID" in current_data.columns:
+                    unique_pairs_df = current_data[["PATNO", "EVENT_ID"]].drop_duplicates()
+                    # Convert to tuples of strings for consistent hashing
+                    new_pairs = set(map(lambda x: (str(x[0]), x[1]), unique_pairs_df.itertuples(index=False, name=None)))
+                    all_pairs.update(new_pairs)
+                    del unique_pairs_df # Free memory
+                    del new_pairs
+            elif isinstance(current_data, dict) and modality == DataLoader.MEDICAL_HISTORY:
+                for table_name, df in current_data.items():
+                    if isinstance(df, pd.DataFrame) and not df.empty and "PATNO" in df.columns and "EVENT_ID" in df.columns:
+                        unique_pairs_df = df[["PATNO", "EVENT_ID"]].drop_duplicates()
+                        new_pairs = set(map(lambda x: (str(x[0]), x[1]), unique_pairs_df.itertuples(index=False, name=None)))
+                        all_pairs.update(new_pairs)
+                        del unique_pairs_df # Free memory
+                        del new_pairs
+            # --- END OPTIMIZED all_pairs COLLECTION ---
         
         # Handle output for dictionary or merged DataFrame
         if merge_output:
-            logger.info("Merging all loaded modalities into a single DataFrame")
+            logger.info("Loading and incrementally merging modalities into a single DataFrame")
             
-            # Create a base DataFrame with all unique PATNO/EVENT_ID combinations
+            # Use a temporary dictionary to hold data just before merging
+            loaded_data = {}
+            all_pairs = set() # Still collect pairs to build the initial base_df
+
+            # First pass: Load data and collect all_pairs
+            for modality in valid_modalities:
+                logger.info(f"Loading {modality} data...")
+                folder_path = os.path.join(data_path, DataLoader.FOLDER_PATHS[modality])
+                
+                if not os.path.exists(folder_path):
+                    logger.warning(f"Directory not found: {folder_path}")
+                    if modality == DataLoader.MEDICAL_HISTORY:
+                        loaded_data[modality] = {}
+                    # Store empty DF for non-found non-medical history to avoid key errors later
+                    elif modality != DataLoader.BIOSPECIMEN: 
+                         loaded_data[modality] = pd.DataFrame()
+                    continue
+
+                # Load data based on modality
+                data_to_process = None
+                if modality == DataLoader.SUBJECT_CHARACTERISTICS:
+                    data_to_process = load_ppmi_subject_characteristics(folder_path)
+                    loaded_data[modality] = data_to_process
+                elif modality == DataLoader.MEDICAL_HISTORY:
+                    med_hist_data = load_ppmi_medical_history(folder_path)
+                    if clean_data and med_hist_data:
+                        med_hist_data = DataPreprocessor.clean_medical_history(med_hist_data)
+                    loaded_data[modality] = med_hist_data
+                    data_to_process = med_hist_data # Process this dict below
+                elif modality == DataLoader.MOTOR_ASSESSMENTS:
+                    data_to_process = load_ppmi_motor_assessments(folder_path)
+                    loaded_data[modality] = data_to_process
+                elif modality == DataLoader.NON_MOTOR_ASSESSMENTS:
+                    data_to_process = load_ppmi_non_motor_assessments(folder_path)
+                    loaded_data[modality] = data_to_process
+                elif modality == DataLoader.BIOSPECIMEN:
+                    logger.debug(f"Calling load_biospecimen_data with exclude={biospec_exclude}")
+                    data_to_process = load_biospecimen_data(data_path, source, exclude=biospec_exclude)
+                    loaded_data[modality] = data_to_process
+                    # Biospecimen often returns a dict, handle below
+
+                logger.info(f"Loaded {modality}")
+
+                # Collect PATNO/EVENT_ID pairs
+                if isinstance(data_to_process, pd.DataFrame):
+                    if not data_to_process.empty and "PATNO" in data_to_process.columns and "EVENT_ID" in data_to_process.columns:
+                        unique_pairs_df = data_to_process[["PATNO", "EVENT_ID"]].drop_duplicates()
+                        new_pairs = set(map(lambda x: (str(x[0]), x[1]), unique_pairs_df.itertuples(index=False, name=None)))
+                        all_pairs.update(new_pairs)
+                        del unique_pairs_df, new_pairs
+                        gc.collect()
+                elif isinstance(data_to_process, dict): # Handles Medical History and Biospecimen (if not merged yet)
+                     for key, df_or_dict in data_to_process.items():
+                         # Handle nested dicts for biospecimen if needed
+                         if isinstance(df_or_dict, dict): 
+                              for sub_key, df in df_or_dict.items():
+                                   if isinstance(df, pd.DataFrame) and not df.empty and "PATNO" in df.columns and "EVENT_ID" in df.columns:
+                                        unique_pairs_df = df[["PATNO", "EVENT_ID"]].drop_duplicates()
+                                        new_pairs = set(map(lambda x: (str(x[0]), x[1]), unique_pairs_df.itertuples(index=False, name=None)))
+                                        all_pairs.update(new_pairs)
+                                        del unique_pairs_df, new_pairs
+                                        gc.collect()
+                         elif isinstance(df_or_dict, pd.DataFrame):
+                             df = df_or_dict
+                             if not df.empty and "PATNO" in df.columns and "EVENT_ID" in df.columns:
+                                 unique_pairs_df = df[["PATNO", "EVENT_ID"]].drop_duplicates()
+                                 new_pairs = set(map(lambda x: (str(x[0]), x[1]), unique_pairs_df.itertuples(index=False, name=None)))
+                                 all_pairs.update(new_pairs)
+                                 del unique_pairs_df, new_pairs
+                                 gc.collect()
+            
+            # Create the base DataFrame
+            if not all_pairs:
+                 logger.warning("No PATNO/EVENT_ID pairs found across any modalities. Returning empty DataFrame.")
+                 return pd.DataFrame()
+                 
             base_df = pd.DataFrame(list(all_pairs), columns=["PATNO", "EVENT_ID"])
+            # Optional: Convert types for efficiency before merging
+            # base_df['PATNO'] = base_df['PATNO'].astype('category') 
+            # base_df['EVENT_ID'] = base_df['EVENT_ID'].astype('category')
             logger.info(f"Created base DataFrame with {len(base_df)} unique PATNO/EVENT_ID pairs")
-            
-            # Initialize merged DataFrame with the base DataFrame
             merged_df = base_df.copy()
-            
-            # Merge each modality one by one
-            for modality, data in data_dict.items():
+            del base_df, all_pairs # Free memory
+            gc.collect()
+
+            # Second pass: Merge data incrementally
+            for modality in valid_modalities:
+                data = loaded_data.get(modality)
+                if data is None: # Should not happen if we store empty DFs above
+                     logger.warning(f"No data loaded for modality {modality}, skipping merge.")
+                     continue
+
+                logger.info(f"Merging {modality} data...")
+                
                 if modality == DataLoader.MEDICAL_HISTORY:
-                    # Handle medical history tables separately
                     for table_name, df in data.items():
                         if isinstance(df, pd.DataFrame) and not df.empty and "PATNO" in df.columns and "EVENT_ID" in df.columns:
-                            # Convert PATNO to string for consistent joining
                             df = df.copy()
                             df["PATNO"] = df["PATNO"].astype(str)
-                            
-                            # Handle duplicate columns
                             duplicate_cols = [col for col in df.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
                             if duplicate_cols:
-                                rename_dict = {col: f"{table_name}_{col}" for col in duplicate_cols}
-                                df = df.rename(columns=rename_dict)
+                                df.rename(columns={col: f"{table_name}_{col}" for col in duplicate_cols}, inplace=True)
                             
-                            # Merge with left join to maintain rows in the base DataFrame
-                            merged_df = pd.merge(
-                                merged_df, 
-                                df, 
-                                on=["PATNO", "EVENT_ID"], 
-                                how="left"
-                            )
-                            
+                            merged_df = pd.merge(merged_df, df, on=["PATNO", "EVENT_ID"], how="left")
                             logger.info(f"Merged {table_name} table from {modality}")
-                
+                            # del df # Free memory for the specific table
+                            gc.collect()
+
                 elif modality == DataLoader.BIOSPECIMEN:
-                    # For biospecimen, use merge_biospecimen_data to get a single DataFrame
-                    biospec_merged = merge_biospecimen_data(
-                        data, 
-                        merge_all=True,
-                        output_filename=None,
-                        exclude=biospec_exclude  # Pass the biospec_exclude parameter
-                    )
-                    
-                    if not biospec_merged.empty and "PATNO" in biospec_merged.columns and "EVENT_ID" in biospec_merged.columns:
-                        # Convert PATNO to string for consistent joining
-                        biospec_merged["PATNO"] = biospec_merged["PATNO"].astype(str)
-                        
-                        # Handle duplicate columns
-                        duplicate_cols = [col for col in biospec_merged.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
+                     # If biospec data is a dict, merge it first
+                     if isinstance(data, dict):
+                          biospec_merged = merge_biospecimen_data(
+                              data, 
+                              merge_all=True,
+                              output_filename=None,
+                              exclude=biospec_exclude # Redundant but harmless
+                          )
+                     elif isinstance(data, pd.DataFrame):
+                          # This case might happen if load_biospecimen_data is modified to return a single DF
+                          biospec_merged = data 
+                     else:
+                          logger.warning(f"Unexpected data type for biospecimen: {type(data)}. Skipping merge.")
+                          biospec_merged = pd.DataFrame()
+
+                     if not biospec_merged.empty and "PATNO" in biospec_merged.columns and "EVENT_ID" in biospec_merged.columns:
+                         biospec_merged = biospec_merged.copy()
+                         biospec_merged["PATNO"] = biospec_merged["PATNO"].astype(str)
+                         duplicate_cols = [col for col in biospec_merged.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
+                         if duplicate_cols:
+                             biospec_merged.rename(columns={col: f"{modality}_{col}" for col in duplicate_cols}, inplace=True)
+                             
+                         merged_df = pd.merge(merged_df, biospec_merged, on=["PATNO", "EVENT_ID"], how="left")
+                         logger.info(f"Merged {modality} data")
+                         del biospec_merged # Free memory
+                         gc.collect()
+
+                elif isinstance(data, pd.DataFrame): # Handle other modalities
+                    if not data.empty and "PATNO" in data.columns and "EVENT_ID" in data.columns:
+                        data_copy = data.copy()
+                        data_copy["PATNO"] = data_copy["PATNO"].astype(str)
+                        duplicate_cols = [col for col in data_copy.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
                         if duplicate_cols:
-                            rename_dict = {col: f"{modality}_{col}" for col in duplicate_cols}
-                            biospec_merged = biospec_merged.rename(columns=rename_dict)
+                            data_copy.rename(columns={col: f"{modality}_{col}" for col in duplicate_cols}, inplace=True)
                         
-                        # Merge with left join to maintain rows in the base DataFrame
-                        merged_df = pd.merge(
-                            merged_df, 
-                            biospec_merged, 
-                            on=["PATNO", "EVENT_ID"], 
-                            how="left"
-                        )
-                        
+                        merged_df = pd.merge(merged_df, data_copy, on=["PATNO", "EVENT_ID"], how="left")
                         logger.info(f"Merged {modality} data")
+                        del data_copy # Free memory
+                        gc.collect()
                 
-                elif isinstance(data, pd.DataFrame) and not data.empty and "PATNO" in data.columns and "EVENT_ID" in data.columns:
-                    # Convert PATNO to string for consistent joining
-                    data_copy = data.copy()
-                    data_copy["PATNO"] = data_copy["PATNO"].astype(str)
-                    
-                    # Handle duplicate columns
-                    duplicate_cols = [col for col in data_copy.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
-                    if duplicate_cols:
-                        rename_dict = {col: f"{modality}_{col}" for col in duplicate_cols}
-                        data_copy = data_copy.rename(columns=rename_dict)
-                    
-                    # Merge with left join to maintain rows in the base DataFrame
-                    merged_df = pd.merge(
-                        merged_df, 
-                        data_copy, 
-                        on=["PATNO", "EVENT_ID"], 
-                        how="left"
-                    )
-                    
-                    logger.info(f"Merged {modality} data")
-            
+                # Remove the modality from the temporary dictionary after merging
+                if modality in loaded_data:
+                     del loaded_data[modality]
+                     gc.collect()
+
+
             # Save to output file if specified
             if output_file:
                 output_dir = os.path.dirname(output_file)
@@ -370,65 +473,65 @@ class DataLoader:
         )
 
 
-def main():
-    """
-    Example usage of the DataLoader class.
-    """
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+# def main():
+#     """
+#     Example usage of the DataLoader class.
+#     """
+#     # Configure logging
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+#     )
     
-    # Example 1: Load all data as a merged DataFrame
-    logger.info("\nExample 2: Loading all data as a merged DataFrame")
-    all_data_merged = DataLoader.load(merge_output=True)
+#     # Example 1: Load all data as a merged DataFrame
+#     logger.info("\nExample 2: Loading all data as a merged DataFrame")
+#     all_data_merged = DataLoader.load(merge_output=True)
 
-    # Example 2: Load all data as a dictionary
-    logger.info("Example 1: Loading all data as a dictionary")
-    all_data_dict = DataLoader.load(merge_output=False)
+#     # Example 2: Load all data as a dictionary
+#     logger.info("Example 1: Loading all data as a dictionary")
+#     all_data_dict = DataLoader.load(merge_output=False)
     
 
-    # Example 3: Load only subject characteristics and motor assessments
-    logger.info("\nExample 3: Loading specific modalities")
-    specific_data = DataLoader.load(
-        modalities=[
-            DataLoader.SUBJECT_CHARACTERISTICS,
-            DataLoader.MOTOR_ASSESSMENTS
-        ]
-    )
+#     # Example 3: Load only subject characteristics and motor assessments
+#     logger.info("\nExample 3: Loading specific modalities")
+#     specific_data = DataLoader.load(
+#         modalities=[
+#             DataLoader.SUBJECT_CHARACTERISTICS,
+#             DataLoader.MOTOR_ASSESSMENTS
+#         ]
+#     )
     
-    # Example 4: Load and save merged data to a file
-    logger.info("\nExample 4: Loading and saving merged data to a file")
-    DataLoader.load(
-        modalities=[
-            DataLoader.SUBJECT_CHARACTERISTICS,
-            DataLoader.MOTOR_ASSESSMENTS,
-            DataLoader.NON_MOTOR_ASSESSMENTS
-        ],
-        merge_output=True,
-        output_file="./output/merged_data.csv"
-    )
+#     # Example 4: Load and save merged data to a file
+#     logger.info("\nExample 4: Loading and saving merged data to a file")
+#     DataLoader.load(
+#         modalities=[
+#             DataLoader.SUBJECT_CHARACTERISTICS,
+#             DataLoader.MOTOR_ASSESSMENTS,
+#             DataLoader.NON_MOTOR_ASSESSMENTS
+#         ],
+#         merge_output=True,
+#         output_file="./output/merged_data.csv"
+#     )
     
-    # Print summary of loaded data from Example 1
-    logger.info("\nSummary of loaded data (Example 1):")
+#     # Print summary of loaded data from Example 1
+#     logger.info("\nSummary of loaded data (Example 1):")
     
-    for modality, data in all_data_dict.items():
-        if modality == DataLoader.MEDICAL_HISTORY:
-            logger.info(f"Medical history tables: {len(data)}")
-            for table_name, df in data.items():
-                if isinstance(df, pd.DataFrame) and not df.empty:
-                    logger.info(f"  - {table_name}: {len(df)} rows")
-        elif isinstance(data, pd.DataFrame) and not data.empty:
-            logger.info(f"{modality}: {len(data)} rows, {len(data.columns)} columns")
-        else:
-            logger.info(f"{modality}: No data loaded or empty")
+#     for modality, data in all_data_dict.items():
+#         if modality == DataLoader.MEDICAL_HISTORY:
+#             logger.info(f"Medical history tables: {len(data)}")
+#             for table_name, df in data.items():
+#                 if isinstance(df, pd.DataFrame) and not df.empty:
+#                     logger.info(f"  - {table_name}: {len(df)} rows")
+#         elif isinstance(data, pd.DataFrame) and not data.empty:
+#             logger.info(f"{modality}: {len(data)} rows, {len(data.columns)} columns")
+#         else:
+#             logger.info(f"{modality}: No data loaded or empty")
     
-    # Print summary of merged data from Example 2
-    if isinstance(all_data_merged, pd.DataFrame) and not all_data_merged.empty:
-        logger.info(f"\nMerged data: {len(all_data_merged)} rows, {len(all_data_merged.columns)} columns")
-    else:
-        logger.info("\nMerged data: No data loaded or empty")
+#     # Print summary of merged data from Example 2
+#     if isinstance(all_data_merged, pd.DataFrame) and not all_data_merged.empty:
+#         logger.info(f"\nMerged data: {len(all_data_merged)} rows, {len(all_data_merged.columns)} columns")
+#     else:
+#         logger.info("\nMerged data: No data loaded or empty")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
