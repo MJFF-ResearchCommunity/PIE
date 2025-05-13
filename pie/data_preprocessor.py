@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pie.constants import MEDICAL_HISTORY  # Import from constants instead of data_loader
+from pie.constants import MEDICAL_HISTORY
 
 logger = logging.getLogger(f"PIE.{__name__}")
 
@@ -91,6 +91,8 @@ class DataPreprocessor:
     @staticmethod
     def clean_medical_history(med_hist_dict):
         # TODO: Add individual column cleaning functions as implemented
+        med_hist_dict["LEDD_Concomitant_Medication"] = DataPreprocessor.clean_ledd_meds(
+                med_hist_dict["LEDD_Concomitant_Medication"])
         med_hist_dict["Concomitant_Medication"] = DataPreprocessor.clean_concomitant_meds(
                 med_hist_dict["Concomitant_Medication"])
         med_hist_dict["Vital_Signs"] = DataPreprocessor.clean_vital_signs(
@@ -146,6 +148,107 @@ class DataPreprocessor:
         clean_df["ABNORM"] = clean_df["ABNORM"].apply(lambda v: v if v != 2 else uncertain)
 
         return clean_df
+
+    @staticmethod
+    def clean_ledd_meds(ledd_meds_df):
+        clean_df = ledd_meds_df.copy()
+
+        # Clean the start and stop dates
+        clean_df["STARTDT"] = DataPreprocessor.dt_to_datetime(clean_df["STARTDT"])
+        clean_df["STOPDT"] = DataPreprocessor.dt_to_datetime(clean_df["STOPDT"])
+
+        # Some drugs are not to be included, but sometimes inadvertently make it in
+        clean_df = clean_df[clean_df.apply(DataPreprocessor._exclude_non_ledd, axis=1)]
+        clean_df["LEDD"] = clean_df.apply(DataPreprocessor._calc_equivalent_dose, axis=1)
+        logger.info(f"There are {clean_df['LEDD'].isnull().sum()} null LEDD values remaining after cleaning")
+
+        return clean_df
+
+    @staticmethod
+    def _calc_dose_value(row):
+        return row["LEDDSTRMG"] * row["LEDDOSE"] * row["LEDDOSFRQ"]
+
+    @staticmethod
+    def _exclude_non_ledd(row):
+        name = row["LEDTRT"].lower()
+
+        if "benztropine" in name or "cogentin" in name or "biperden" in name or \
+                "akineton" in name or "budipin" in name or "parkinsan" in name:
+            return False
+
+        return True
+
+    @staticmethod
+    def _calc_equivalent_dose(row):
+        if not pd.isnull(row["LEDD"]):
+            return row["LEDD"]
+
+        name = row["LEDTRT"].lower()
+
+        ## Fixed amounts
+        if "safinamide" in name or "xadago" in name:
+            return 150
+        elif "zonisamide" in name or "trihex" in name:
+            # Lots of mis-spellings of trihexiphenidyl, so catch them all
+            return 100
+
+        ## Combos and complex names first, to catch them correctly
+        elif "infusion" in name or "duopa" in name:
+            return 1.1 * DataPreprocessor._calc_dose_value(row)
+        elif "inhal" in name or "inbrija" in name:
+            return 0.69 * DataPreprocessor._calc_dose_value(row)
+        elif "madopar" in name or "benseraz" in name: # Some entries cut off Benserazide
+            return 0.85 * DataPreprocessor._calc_dose_value(row)
+
+        ## LD amounts: entacapone by itself if it made it through above
+        elif "istradefylline" in name or "nourianz" in name:
+            return "LD x 0.2"
+        elif "tolcapone" in name or "opicapone" in name:
+            return "LD x 0.5"
+        elif "entacapone" in name:
+            return "LD x 0.33"
+
+        ## Dopamine agonists and MAOB inhibitors
+        elif "prami" in name or "rasa" in name or "azil" in name:
+            return 100 * DataPreprocessor._calc_dose_value(row)
+        elif "ropini" in name or "requip" in name:
+            return 20 * DataPreprocessor._calc_dose_value(row)
+        elif "rotigo" in name or "neupro" in name:
+            return 30.3 * DataPreprocessor._calc_dose_value(row)
+        elif "piri" in name:
+            return DataPreprocessor._calc_dose_value(row) # no scaling
+        elif ("apomorph" in name and "pen" in name) or \
+             ("seleg" in name and "PO" in row["LEDDOSSTR"]): # oral route only
+            return 10 * DataPreprocessor._calc_dose_value(row)
+        elif ("apomorph" in name and "film" in name) or "kynmobi" in name:
+            return 1.5 * DataPreprocessor._calc_dose_value(row)
+        # sublingual is valid and has a different scale, but no instances in data
+        elif ("seleg" in name and "subling" in str(row["LEDDOSSTR"]).lower()):
+            return 80 * DataPreprocessor._calc_dose_value(row)
+
+        ## Amantadine order is important
+        elif "osmolex" in name: # also "Amantadine ER"
+            return DataPreprocessor._calc_dose_value(row) # no scaling
+        elif "gocovri" in name or ("amantad" in name and " cr" in name):
+            return 1.25 * DataPreprocessor._calc_dose_value(row)
+        elif "amantad" in name:
+            return DataPreprocessor._calc_dose_value(row) # no scaling
+
+        ## Various levodopas
+        elif "rytary" in name or \
+                ("extended" in name and "levodopa" in name) or \
+                (" er" in name and "levodopa" in name) or \
+                ("prolonged" in name and "levodopa" in name):
+            return 0.5 * DataPreprocessor._calc_dose_value(row)
+        elif ("control" in name and "levodopa" in name) or \
+                (" cr" in name and "levodopa" in name) or \
+                ("retard" in name and "sinemet" in name):
+            return 0.75 * DataPreprocessor._calc_dose_value(row)
+
+        elif "carbidopa/levodopa" in name:
+            return DataPreprocessor._calc_dose_value(row) # no scaling
+
+        return np.nan
 
     @staticmethod
     def clean_concomitant_meds(concom_meds_df):
