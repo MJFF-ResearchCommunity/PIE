@@ -160,6 +160,7 @@ The `data_preprocessor.py` module provides cleaning functions that work with the
 The `DataPreprocessor.clean_medical_history()` function takes the dictionary returned by `load_ppmi_medical_history()` and applies specific cleaning functions to each type of medical history data.
 
 Currently implemented cleaners include:
+- `clean_ledd_meds`: Processes levodopa-equivalent medication data, including start/stop dates and LEDD calculation
 - `clean_concomitant_meds`: Processes medication data, including start/stop dates and indication mapping
 - `clean_vital_signs`: Calculates blood pressure categories from raw values
 - `clean_features_of_parkinsonism`: Standardizes feature classifications
@@ -227,15 +228,14 @@ plt.xlabel('Number of Medications')
 plt.tight_layout()
 plt.savefig('medication_indications.png')
 
-# Analyze PD-specific medications
-pd_meds = conmeds[conmeds["CMTRT"].str.contains("LEVODOPA|CARBIDOPA|PRAMIPEXOLE|ROPINIROLE|SELEGILINE", 
-                                               case=False, na=False)]
-print(f"Found {len(pd_meds)} Parkinson's disease medication entries")
+# Analyze REM Behavior Disorder-specific medications
+rbd_meds = conmeds[conmeds["CMINDC"]==18]
+print(f"Found {len(rbd_meds)} RBD medication entries")
 
 # Analyze how many patients are on PD medications
-pd_patients = pd_meds["PATNO"].nunique()
+rbd_patients = rbd_meds["PATNO"].nunique()
 total_patients = conmeds["PATNO"].nunique()
-print(f"{pd_patients} out of {total_patients} patients ({pd_patients/total_patients:.1%}) are on PD medications")
+print(f"{rbd_patients} out of {total_patients} patients ({rbd_patients/total_patients:.1%}) are on RBD medications")
 ```
 
 ### Example 2: Analyzing Vital Signs Over Time
@@ -437,11 +437,11 @@ After cleaning, this data includes:
 # Access concomitant medications
 conmeds = cleaned_med_history["Concomitant_Medication"]
 
-# Find patients on specific medications
-levodopa_patients = conmeds[conmeds["CMTRT"].str.contains("LEVODOPA", case=False, na=False)]["PATNO"].unique()
-print(f"Found {len(levodopa_patients)} patients on levodopa")
+# Find patients on specific medications. NOTE: this does not take account of typos, of which there are many!
+lorazepam_patients = conmeds[conmeds["CMTRT"].str.contains("lorazepam", case=False, na=False)]["PATNO"].unique()
+print(f"Found {len(lorazepam_patients)} patients on lorazepam")
 
-# Analyze medication indications
+# Analyze medication indications. This is much more robust than searching by name.
 anxiety_meds = conmeds[conmeds["CMINDC_TEXT"] == "Anxiety"]
 print(f"Found {len(anxiety_meds)} medication entries for anxiety")
 ```
@@ -502,11 +502,12 @@ for feature, prevalence in feature_prevalence.items():
 
 ## Best Practices
 
-1. **Keep Medical History Files Separate**: Unlike other data types, medical history data is best kept as separate files rather than merged into a single table.
+1. **Keep Medical History Files Separate**: Unlike other data types, medical history data is best kept as separate tables rather than merged into a single table.
 
 2. **Use Appropriate Joins**: When joining medical history data with other data types, consider the temporal nature of the data:
    - Some medical history data is associated with specific visits (use EVENT_ID)
    - Other data spans multiple visits (use date ranges or custom logic)
+   - See the `notebooks` for examples of how to work with temporal data.
 
 3. **Handle Duplicates Carefully**: Some medical history files may have multiple entries per patient per visit.
 
@@ -549,5 +550,4 @@ If date parsing fails in concomitant medications:
 conmeds = med_history["Concomitant_Medication"]
 print("Start date format examples:")
 print(conmeds["STARTDT"].dropna().head())
-```
 ```
