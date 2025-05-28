@@ -1,6 +1,9 @@
 # Ignore the entire PPMI and data folder and all their contents:
 PPMI/
 data/
+output/
+Imaging/
+venv_py311/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
