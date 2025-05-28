@@ -84,8 +84,65 @@ import logging
 import numpy as np
 from typing import Union
 import gc # <--- IMPORT GARBAGE COLLECTOR
+import psutil # Keep existing import
 
 logger = logging.getLogger(f"PIE.{__name__}")
+
+# --- Add the _aggregate_by_patno_eventid helper ---
+def _aggregate_by_patno_eventid(df: pd.DataFrame, df_name_for_log: str = "Biospecimen Data") -> pd.DataFrame:
+    """
+    Ensures (PATNO, EVENT_ID) pairs are unique by grouping and aggregating.
+    For non-grouping columns, it combines unique non-null string values with a pipe.
+    If only one unique non-null value exists, it's used directly (attempting to keep original type).
+    """
+    if df.empty:
+        return df
+
+    group_cols = ["PATNO", "EVENT_ID"]
+    if not all(gc in df.columns for gc in group_cols):
+        logger.warning(f"{df_name_for_log}: Cannot aggregate by {group_cols} as one or more are missing. Returning original DataFrame.")
+        return df
+
+    # Ensure PATNO is string type before checking duplicates and grouping
+    # This is crucial for consistent duplicate detection and merging.
+    df['PATNO'] = df['PATNO'].astype(str)
+
+    if not df.duplicated(subset=group_cols).any():
+        return df
+
+    logger.info(
+        f"{df_name_for_log}: Consolidating rows with duplicate (PATNO, EVENT_ID) pairs. "
+        "Non-null values for other columns will be pipe-separated if different."
+    )
+
+    def combine_series_values(series):
+        unique_non_null_strs = series.dropna().astype(str).unique()
+        if len(unique_non_null_strs) == 0:
+            return np.nan
+        elif len(unique_non_null_strs) == 1:
+            original_non_null_values = series.dropna()
+            if original_non_null_values.nunique() == 1:
+                return original_non_null_values.iloc[0]
+            else: 
+                return unique_non_null_strs[0]
+        else:
+            return "|".join(sorted(unique_non_null_strs))
+
+    agg_cols = [col for col in df.columns if col not in group_cols]
+    if not agg_cols: # Only PATNO, EVENT_ID exist
+        return df.drop_duplicates(subset=group_cols, keep='first')
+
+    agg_dict = {col: combine_series_values for col in agg_cols}
+    
+    # Groupby and aggregate
+    df_aggregated = df.groupby(group_cols, as_index=False).agg(agg_dict)
+    
+    # Preserve original column order as much as possible
+    ordered_cols = group_cols + [col for col in df.columns if col in df_aggregated.columns and col not in group_cols]
+    # Ensure all columns in ordered_cols are actually in df_aggregated
+    final_ordered_cols = [col for col in ordered_cols if col in df_aggregated.columns]
+    
+    return df_aggregated[final_ordered_cols]
 
 
 def load_project_151_pQTL_CSF(folder_path: str, batch_corrected: bool = False) -> pd.DataFrame:
@@ -1824,8 +1881,8 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True,
         If merge_all is False: The original dictionary of DataFrames with potential file saving
     """
     # Import only when needed for memory tracking
-    import psutil
-    import gc
+    # import psutil # Already imported at module level if needed elsewhere, or can be local
+    # import gc # Already imported at module level
     
     # Initialize include/exclude to empty lists if None
     if include is None:
@@ -1875,100 +1932,105 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True,
         memory_mb = memory_info.rss / 1024 / 1024  # Convert to MB
         logger.info(f"Memory usage ({label}): {memory_mb:.2f} MB")
     
-    log_memory_usage("start")
+    log_memory_usage("start of merge_biospecimen_data")
     
     if merge_all:
         logger.info("Merging filtered biospecimen data into a single DataFrame")
         
-        # Get unique PATNO/EVENT_ID combinations first to create base DataFrame
         all_pairs = set()
-        for source_name, df in filtered_data.items():
-            if not isinstance(df, pd.DataFrame) or df.empty:
+        prepared_dfs = []
+
+        for source_name, df_original in filtered_data.items():
+            if not isinstance(df_original, pd.DataFrame) or df_original.empty:
+                logger.debug(f"Skipping {source_name}: No data or not a DataFrame.")
                 continue
-            if "PATNO" not in df.columns or "EVENT_ID" not in df.columns:
+            if "PATNO" not in df_original.columns or "EVENT_ID" not in df_original.columns:
+                logger.warning(f"Skipping {source_name}: Missing PATNO or EVENT_ID columns.")
                 continue
             
-            # Collect unique pairs
-            for _, row in df[["PATNO", "EVENT_ID"]].iterrows():
-                all_pairs.add((str(row["PATNO"]), row["EVENT_ID"]))
+            df = df_original.copy()
+            df["PATNO"] = df["PATNO"].astype(str) # Ensure PATNO is string for consistent merging
+
+            # Aggregate duplicates within this specific source DataFrame *before* prefixing and merging globally
+            # This is an important step if individual loaders don't guarantee uniqueness
+            df = _aggregate_by_patno_eventid(df, df_name_for_log=f"Source: {source_name}")
+
+            current_pairs = set(map(lambda x: (x[0], x[1]), 
+                                    df[["PATNO", "EVENT_ID"]].drop_duplicates().itertuples(index=False, name=None)))
+            all_pairs.update(current_pairs)
+
+            # Prefix columns other than PATNO, EVENT_ID
+            # This happens *after* internal aggregation for the source
+            rename_dict = {
+                col: f"{source_name}_{col}" 
+                for col in df.columns if col not in ["PATNO", "EVENT_ID"]
+            }
+            df.rename(columns=rename_dict, inplace=True)
+            prepared_dfs.append({'df': df, 'name': source_name})
+
+        if not all_pairs:
+            logger.warning("No PATNO/EVENT_ID pairs found across any biospecimen sources. Returning empty DataFrame.")
+            return pd.DataFrame()
+            
+        merged_df = pd.DataFrame(list(all_pairs), columns=["PATNO", "EVENT_ID"])
+        merged_df["PATNO"] = merged_df["PATNO"].astype(str)
+        logger.info(f"Created base DataFrame for biospecimen merge with {len(merged_df)} unique PATNO/EVENT_ID pairs")
+        log_memory_usage("biospecimen base_df created")
         
-        # Create base DataFrame from unique pairs
-        merged_df = pd.DataFrame(all_pairs, columns=["PATNO", "EVENT_ID"])
-        logger.info(f"Created base DataFrame with {len(merged_df)} unique PATNO/EVENT_ID pairs")
-        log_memory_usage("after creating base DataFrame")
-        
-        # Track the number of rows and columns from each source
         source_stats = {}
         
-        # Merge each DataFrame one by one
-        for source_name, df in filtered_data.items():
-            if not isinstance(df, pd.DataFrame) or df.empty:
-                logger.warning(f"Skipping {source_name}: No data available")
+        for item in prepared_dfs:
+            df_to_merge = item['df']
+            source_name = item['name']
+
+            if df_to_merge.empty: # Should be caught by earlier checks, but good to have
+                logger.warning(f"Skipping {source_name} during final merge: Empty post-preparation.")
                 continue
-                
-            if "PATNO" not in df.columns or "EVENT_ID" not in df.columns:
-                logger.warning(f"Skipping {source_name}: Missing PATNO or EVENT_ID columns")
-                continue
-            
-            # Record stats
+
             source_stats[source_name] = {
-                "rows": len(df),
-                "columns": len(df.columns) - 2  # Subtract PATNO and EVENT_ID
+                "rows": len(df_to_merge), # Rows after internal aggregation
+                "columns": len([col for col in df_to_merge.columns if col not in ["PATNO", "EVENT_ID"]])
             }
             
-            logger.info(f"Merging {source_name} ({len(df)} rows, {len(df.columns)} columns)")
+            logger.info(f"Merging {source_name} ({source_stats[source_name]['rows']} rows, {source_stats[source_name]['columns'] + 2} total cols) into main biospecimen DataFrame")
             
-            # Convert PATNO to string type for consistent merging
-            df = df.copy()
-            df["PATNO"] = df["PATNO"].astype(str)
-            
-            # Handle duplicate columns by renaming in the df being merged
-            duplicate_cols = [col for col in df.columns if col in merged_df.columns and col not in ["PATNO", "EVENT_ID"]]
-            if duplicate_cols:
-                logger.warning(f"Found {len(duplicate_cols)} duplicate columns when merging {source_name}")
-                # Add source prefix to duplicate columns
-                rename_dict = {col: f"{source_name}_{col}" for col in duplicate_cols}
-                df = df.rename(columns=rename_dict)
-                
-                # Log a few examples of renamed columns
-                examples = list(rename_dict.items())[:3]
-                logger.info(f"Renamed columns (examples): {examples}")
-                if len(rename_dict) > 3:
-                    logger.info(f"... and {len(rename_dict) - 3} more")
-            
-            # Keep only columns not already in merged_df to minimize memory
-            new_cols = [col for col in df.columns if col not in merged_df.columns or col in ["PATNO", "EVENT_ID"]]
-            df_subset = df[new_cols]
-            
-            # Store current merged_df size
-            rows_before, cols_before = merged_df.shape
-            
-            # Merge
+            # PATNO is already string in both merged_df and df_to_merge
             merged_df = pd.merge(
                 merged_df, 
-                df_subset, 
+                df_to_merge, 
                 on=["PATNO", "EVENT_ID"], 
-                how="left"
+                how="left",
+                suffixes=('', f'_{source_name}_dup') # Suffix if somehow prefixes weren't unique
             )
             
-            # *** ADDED GC and Memory Check ***
-            del df_subset # Delete the subset immediately
-            del df # Delete the copied df
-            gc.collect() # Force garbage collection
+            unexpected_dup_cols = [col for col in merged_df.columns if col.endswith(f'_{source_name}_dup')]
+            if unexpected_dup_cols:
+                logger.error(f"Unexpected duplicate columns after merging {source_name}: {unexpected_dup_cols}. "
+                               "This indicates a column name collision despite prefixing. Please investigate.")
             
-            rows_after, cols_after = merged_df.shape
-            logger.info(f"Merged {source_name}: Added {cols_after - cols_before} columns. New shape: {rows_after}x{cols_after}")
-            log_memory_usage(f"after merging {source_name}") # Uses the helper function defined earlier
+            del df_to_merge 
+            gc.collect()
+            log_memory_usage(f"after merging {source_name}")
         
-        # Log final stats
-        logger.info(f"Final merged DataFrame: {len(merged_df)} rows, {len(merged_df.columns)} columns")
+        # Final aggregation pass on the fully merged biospecimen DataFrame
+        # This acts as a safeguard if the merge process itself introduced duplicates or if
+        # PATNO/EVENT_ID combinations were present in all_pairs but not fully resolved.
+        logger.info("Performing final aggregation on the fully merged biospecimen DataFrame...")
+        merged_df = _aggregate_by_patno_eventid(merged_df, df_name_for_log="Fully Merged Biospecimen")
+
+        logger.info(f"Final merged biospecimen DataFrame: {merged_df.shape[0]} rows, {merged_df.shape[1]} columns")
         
-        # Log contribution from each source
-        logger.info("Data contribution from each source:")
+        if merged_df.duplicated(subset=["PATNO", "EVENT_ID"]).any():
+            num_duplicates = merged_df.duplicated(subset=["PATNO", "EVENT_ID"]).sum()
+            logger.error(f"CRITICAL: Final merged biospecimen DataFrame STILL contains {num_duplicates} duplicate (PATNO, EVENT_ID) pairs!")
+        else:
+            logger.info("Confirmed: Final merged biospecimen DataFrame has unique (PATNO, EVENT_ID) pairs.")
+
+
+        logger.info("Data contribution from each source (post-internal aggregation):")
         for source, stats in source_stats.items():
-            logger.info(f"  {source}: {stats['rows']} rows, {stats['columns']} columns")
+            logger.info(f"  {source}: {stats['rows']} rows, {stats['columns']} data columns")
         
-        # Save to CSV if output_dir is provided
         if output_dir is not None:
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
@@ -1990,10 +2052,10 @@ def merge_biospecimen_data(biospecimen_data: dict, merge_all: bool = True,
                 del chunk
                 gc.collect()
         
-        log_memory_usage("end")
+        log_memory_usage("end of merge_biospecimen_data (merged)")
         return merged_df
     
-    else:
+    else: # merge_all is False
         logger.info("Keeping biospecimen data as separate DataFrames")
         
         # Save individual DataFrames if output_dir is provided

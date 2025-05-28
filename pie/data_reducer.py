@@ -445,3 +445,76 @@ class DataReducer:
                 logger.error(f"Failed to save merged DataFrame to {output_filename}: {e}", exc_info=True)
 
         return merged_df
+
+    def consolidate_cohort_columns(self, dataframe: pd.DataFrame,
+                                   target_cohort_col_name: str = "COHORT") -> pd.DataFrame:
+        """
+        Consolidates multiple columns containing "COHORT" in their name into a single
+        target COHORT column. For each row, the value for the new COHORT column
+        will be the first non-null/non-empty value found across the identified
+        source cohort columns.
+
+        Args:
+            dataframe: The input DataFrame (e.g., the output of merge_reduced_data).
+            target_cohort_col_name: The name of the final, consolidated COHORT column.
+
+        Returns:
+            The DataFrame with a single consolidated COHORT column and original
+            cohort-related columns (except the target if it pre-existed) dropped.
+        """
+        if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
+            logger.warning("Input DataFrame is empty or not a DataFrame. Skipping COHORT consolidation.")
+            return dataframe
+
+        df_copy = dataframe.copy()
+
+        # Identify columns that contain "COHORT" (case-insensitive)
+        cohort_related_cols = [
+            col for col in df_copy.columns
+            if "COHORT" in col.upper()
+        ]
+
+        # Exclude the target column itself if it's already one of the cohort_related_cols
+        # and we intend to populate it. If it doesn't exist, it will be created.
+        # If it exists and is part of cohort_related_cols, we use it as a source too.
+        source_cohort_cols = [col for col in cohort_related_cols if col != target_cohort_col_name]
+        if not source_cohort_cols and target_cohort_col_name in cohort_related_cols:
+            # This means only the target_cohort_col_name itself matches "COHORT". No consolidation needed from others.
+             if target_cohort_col_name in df_copy.columns:
+                logger.info(f"Only target COHORT column '{target_cohort_col_name}' found. No other COHORT columns to consolidate.")
+                return df_copy # Return as is if only the target column name exists
+        elif not source_cohort_cols and target_cohort_col_name not in cohort_related_cols:
+            # This means NO columns with "COHORT" in their name were found at all.
+            logger.info("No columns containing 'COHORT' found. Skipping consolidation.")
+            return df_copy
+
+
+        # If the target column doesn't exist yet, or if it does and it's also a source,
+        # we need to apply the logic.
+        # The effective source columns are all 'cohort_related_cols'.
+        # The target is 'target_cohort_col_name'.
+
+        logger.info(f"Consolidating COHORT information from columns: {cohort_related_cols} into '{target_cohort_col_name}'.")
+
+        def get_first_valid_cohort(row):
+            for col in cohort_related_cols: # Check all identified cohort columns
+                val = row[col]
+                if pd.notna(val) and str(val).strip() != "":
+                    return val
+            return np.nan
+
+        df_copy[target_cohort_col_name] = df_copy.apply(get_first_valid_cohort, axis=1)
+
+        # Columns to drop: all identified cohort_related_cols EXCEPT the target_cohort_col_name
+        cols_to_drop_after_consolidation = [
+            col for col in cohort_related_cols if col != target_cohort_col_name and col in df_copy.columns
+        ]
+
+        if cols_to_drop_after_consolidation:
+            logger.info(f"Dropping original cohort-related columns: {cols_to_drop_after_consolidation}")
+            df_copy.drop(columns=cols_to_drop_after_consolidation, inplace=True)
+        
+        final_cohort_counts = df_copy[target_cohort_col_name].value_counts(dropna=False)
+        logger.info(f"Value counts for the new '{target_cohort_col_name}' column:\n{final_cohort_counts}")
+
+        return df_copy
