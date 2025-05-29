@@ -9,6 +9,7 @@ import webbrowser
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
+from typing import List, Union, Optional, Any, Dict, Tuple
 
 # Add the parent directory to the Python path to make the pie module importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -87,9 +88,29 @@ def generate_classification_report_html(
                     <tr><td>Target Variable</td><td><span class="highlight">{report_data.get('target_column', 'N/A')}</span></td></tr>
                     <tr><td>Target Classes</td><td>{report_data.get('n_classes', 'N/A')} classes</td></tr>
                     <tr><td>Train/Test Split</td><td>{report_data.get('train_size', 0.8) * 100:.0f}% / {(1 - report_data.get('train_size', 0.8)) * 100:.0f}%</td></tr>
+                    <tr><td>Excluded Features</td><td>{report_data.get('excluded_features_count', 0)} features excluded</td></tr>
                     <tr><td>Feature Selection Applied</td><td>{'Yes' if report_data.get('feature_selection_applied', False) else 'No'}</td></tr>
                     <tr><td>Final Feature Count</td><td><span class="metric-value">{report_data.get('n_features', 'N/A')}</span></td></tr>
                 </table>
+            </div>
+    """
+
+    # Add excluded features details if any were excluded
+    if report_data.get('excluded_features'):
+        html_content += f"""
+                <h3>🚫 Excluded Features (Data Leakage Prevention)</h3>
+                <p>The following features were excluded to prevent data leakage:</p>
+                <ul>
+        """
+        for feature in report_data.get('excluded_features', []):
+            html_content += f"<li><span class='code'>{feature}</span></li>"
+        html_content += """
+                </ul>
+                <p><em>These features were excluded because they may be too closely related to the target variable 
+                or contain information that would not be available at prediction time.</em></p>
+        """
+    
+    html_content += """
             </div>
     """
 
@@ -131,20 +152,31 @@ def generate_classification_report_html(
             </div>
         """
 
-    # Best model details
+    # Best model details - FIX: Ensure metrics are displayed
     if report_data.get('best_model_name'):
         html_content += f"""
             <div class="best-model">
                 <h2>🌟 4. Best Model Details</h2>
                 <h3>Selected Model: <span class="highlight">{report_data.get('best_model_name', 'N/A')}</span></h3>
+        """
+        
+        # Add metrics table if available
+        best_metrics = report_data.get('best_model_metrics', {})
+        if best_metrics:
+            html_content += """
                 <table>
                     <tr><th>Metric</th><th>Value</th></tr>
-        """
-        for metric, value in report_data.get('best_model_metrics', {}).items():
-            if isinstance(value, (int, float)):
-                html_content += f"<tr><td>{metric}</td><td class='metric-value'>{value:.4f}</td></tr>"
-        html_content += """
+            """
+            for metric, value in best_metrics.items():
+                if isinstance(value, (int, float)):
+                    html_content += f"<tr><td>{metric}</td><td class='metric-value'>{value:.4f}</td></tr>"
+            html_content += """
                 </table>
+            """
+        else:
+            html_content += "<p><em>Metrics data not available</em></p>"
+            
+        html_content += """
             </div>
         """
 
@@ -169,34 +201,47 @@ def generate_classification_report_html(
             </div>
         """
 
-    # Model plots
+    # Model plots - FIX: Include additional plot types
     html_content += """
             <div class="summary-box">
                 <h2>📈 6. Model Performance Visualizations</h2>
     """
     
-    # Add each plot
-    plot_descriptions = {
-        'auc': 'ROC Curve - Shows the trade-off between true positive rate and false positive rate',
-        'confusion_matrix': 'Confusion Matrix - Shows the classification results in detail',
-        'pr': 'Precision-Recall Curve - Important for imbalanced datasets',
-        'feature': 'Feature Importance - Shows which features contribute most to predictions',
-        'learning': 'Learning Curve - Shows if the model is overfitting or underfitting',
-        'calibration': 'Calibration Plot - Shows how well the predicted probabilities are calibrated',
-        'boundary': 'Decision Boundary - Visualizes the classification boundaries (if applicable)',
-        'error': 'Prediction Error Plot - Shows the distribution of prediction errors'
-    }
+    # Check for all possible plots
+    all_possible_plots = [
+        ('confusion_matrix', 'Confusion Matrix'),
+        ('auc', 'ROC Curve'), 
+        ('pr', 'Precision-Recall Curve'),
+        ('feature', 'Feature Importance'),
+        ('learning', 'Learning Curve'),
+        ('multiclass_roc', 'Multiclass ROC Curves'),
+        ('class_distribution', 'Class Distribution'),
+        ('feature_correlation', 'Feature Correlation Heatmap'),
+        ('high_correlation_pairs', 'High Correlation Feature Pairs'),  # Add this line
+        ('pca_visualization', 'PCA Visualization (2D)'),
+        ('pca_3d_visualization', '3D PCA Visualization'),
+        ('tsne_visualization_perp30', 't-SNE Visualization (Perplexity 30)'),
+        ('tsne_visualization_perp50', 't-SNE Visualization (Perplexity 50)'),
+        ('pca_vs_tsne_comparison', 'PCA vs t-SNE Comparison'),
+        ('umap_visualization', 'UMAP Visualization'),
+        ('prediction_confidence', 'Prediction Confidence Distribution')
+    ]
     
-    for plot_name in ['auc', 'confusion_matrix', 'pr', 'feature', 'learning', 'calibration']:
-        plot_path = Path(plots_dir) / f"{plot_name}.png"
+    plots_found = False
+    for plot_file, plot_title in all_possible_plots:
+        plot_path = Path(plots_dir) / f"{plot_file}.png"
         if plot_path.exists():
+            plots_found = True
+            relative_plot_path = f"plots/{plot_file}.png"
             html_content += f"""
                 <div class="plot-container">
-                    <div class="plot-title">{plot_name.upper().replace('_', ' ')}</div>
-                    <p><em>{plot_descriptions.get(plot_name, '')}</em></p>
-                    <img src="{plot_path.name}" alt="{plot_name} plot">
+                    <div class="plot-title">{plot_title.upper()}</div>
+                    <img src="{relative_plot_path}" alt="{plot_title}">
                 </div>
             """
+    
+    if not plots_found:
+        html_content += "<p><em>No visualization plots were generated successfully.</em></p>"
     
     html_content += """
             </div>
@@ -218,44 +263,74 @@ def generate_classification_report_html(
             </div>
         """
 
-    # Model interpretation
+    # Model interpretation - FIX: Check for different interpretation plot types
     html_content += """
             <div class="summary-box">
                 <h2>🔬 8. Model Interpretation</h2>
-                <p>SHAP (SHapley Additive exPlanations) analysis provides insights into how the model makes predictions:</p>
     """
     
-    # Add SHAP plots if they exist
-    for shap_plot in ['shap_summary', 'shap_waterfall', 'shap_dependence']:
-        plot_path = Path(plots_dir) / f"{shap_plot}.png"
+    # Check for different types of interpretation plots
+    interpretation_plots = [
+        ('shap_summary.png', 'SHAP Summary', 'SHAP (SHapley Additive exPlanations) shows feature contributions to predictions'),
+        ('feature_importance_plot.png', 'Permutation Feature Importance', 'Shows the decrease in model performance when each feature is randomly shuffled'),
+        ('interpretation_plot.png', 'Feature Importance', 'Shows the relative importance of features in the model'),
+        ('feature.png', 'Feature Importance', 'Basic feature importance from the model')
+    ]
+    
+    interpretation_found = False
+    for plot_file, plot_title, plot_description in interpretation_plots:
+        plot_path = Path(plots_dir) / plot_file
         if plot_path.exists():
             html_content += f"""
+                <p>{plot_description}:</p>
                 <div class="plot-container">
-                    <div class="plot-title">{shap_plot.replace('_', ' ').upper()}</div>
-                    <img src="{plot_path.name}" alt="{shap_plot}">
+                    <div class="plot-title">{plot_title.upper()}</div>
+                    <img src="plots/{plot_file}" alt="{plot_title}">
                 </div>
             """
+            interpretation_found = True
+            break
+    
+    if not interpretation_found:
+        html_content += f"""
+            <p><em>Model interpretation plots could not be generated. This can happen when:</em></p>
+            <ul>
+                <li>The selected model type ({report_data.get('best_model_name', 'Unknown')}) doesn't support SHAP interpretation</li>
+                <li>The model is not tree-based (SHAP summary plots only work with tree-based models in PyCaret)</li>
+                <li>Technical limitations with the interpretation libraries</li>
+            </ul>
+            <p><em>Consider using tree-based models (Random Forest, XGBoost, etc.) for better interpretability.</em></p>
+        """
     
     html_content += """
             </div>
     """
 
-    # Test set performance
-    if report_data.get('test_metrics'):
-        html_content += """
+    # Test set performance - FIX: Always include this section
+    html_content += """
             <div class="summary-box">
                 <h2>✅ 9. Final Test Set Performance</h2>
+    """
+    
+    test_metrics = report_data.get('test_metrics', {})
+    if test_metrics:
+        html_content += """
                 <p>Performance metrics on the held-out test set:</p>
                 <table>
                     <tr><th>Metric</th><th>Value</th></tr>
         """
-        for metric, value in report_data.get('test_metrics', {}).items():
+        for metric, value in test_metrics.items():
             if isinstance(value, (int, float)):
                 html_content += f"<tr><td>{metric}</td><td class='metric-value'>{value:.4f}</td></tr>"
         html_content += """
                 </table>
-            </div>
         """
+    else:
+        html_content += "<p><em>Test set performance metrics are not available. This may be due to the model evaluation approach used.</em></p>"
+    
+    html_content += """
+            </div>
+    """
 
     # Recommendations
     html_content += """
@@ -313,11 +388,12 @@ def test_classification_pipeline(
     use_feature_selection: bool = True,
     feature_selection_method: str = 'univariate_kbest',
     target_column: str = "COHORT",
+    exclude_features: List[str] = None,
     output_dir: str = "output",
     n_models_to_compare: int = 5,
     tune_best_model: bool = True,
     generate_plots: bool = True,
-    budget_time_minutes: float = 30.0  # Add budget time parameter
+    budget_time_minutes: float = 30.0
 ):
     """
     Tests the complete classification pipeline including optional feature selection,
@@ -337,6 +413,10 @@ def test_classification_pipeline(
         Method for feature selection if use_feature_selection is True
     target_column : str
         Name of the target column
+    exclude_features : List[str], optional
+        List of feature names to exclude from training, validation, and testing.
+        Useful for removing features that may cause data leakage or are too closely
+        related to the target variable (e.g., "Enrollment in Parkinson's Treatment")
     output_dir : str
         Directory to save outputs
     n_models_to_compare : int
@@ -349,6 +429,10 @@ def test_classification_pipeline(
         Maximum time in minutes for model comparison (prevents hanging)
     """
     logger.info("Starting classification pipeline test...")
+    
+    # Initialize exclude_features if None
+    if exclude_features is None:
+        exclude_features = []
     
     # Validate input parameters
     if input_csv_path is None and (train_csv_path is None or test_csv_path is None):
@@ -422,11 +506,55 @@ def test_classification_pipeline(
         logger.error(f"Target column '{target_column}' not found in data")
         return
     
+    # EXCLUDE SPECIFIED FEATURES EARLY IN THE PIPELINE
+    if exclude_features:
+        logger.info(f"Excluding {len(exclude_features)} specified features from analysis...")
+        
+        # Check which excluded features actually exist in the data
+        existing_excluded_features = [feat for feat in exclude_features if feat in df.columns]
+        missing_excluded_features = [feat for feat in exclude_features if feat not in df.columns]
+        
+        if existing_excluded_features:
+            logger.info(f"Excluding features: {existing_excluded_features}")
+            df = df.drop(columns=existing_excluded_features)
+            logger.info(f"Data shape after feature exclusion: {df.shape}")
+        
+        if missing_excluded_features:
+            logger.warning(f"Specified features not found in data (will be ignored): {missing_excluded_features}")
+        
+        # Update report data
+        report_data['excluded_features'] = existing_excluded_features
+        report_data['excluded_features_count'] = len(existing_excluded_features)
+    else:
+        report_data['excluded_features'] = []
+        report_data['excluded_features_count'] = 0
+    
     # Handle missing target values
     initial_rows = len(df)
     df = df.dropna(subset=[target_column])
     if len(df) < initial_rows:
         logger.info(f"Dropped {initial_rows - len(df)} rows with missing target values")
+    
+    # Verify target contains actual class names, not encoded numbers
+    unique_targets = df[target_column].unique()
+    logger.info(f"Target column values: {unique_targets}")
+    
+    # If we detect numeric targets instead of class names, this indicates an issue
+    if all(isinstance(target, (int, float, np.integer, np.floating)) for target in unique_targets if pd.notna(target)):
+        logger.warning("Target column contains numeric values instead of class names!")
+        logger.warning("This suggests the data may have been saved with encoded labels instead of original labels.")
+        
+        # Try to map back to original labels if we know the mapping
+        expected_labels = ["Parkinson's Disease", "Healthy Control", "Prodromal", "SWEDD"]
+        if len(unique_targets) == len(expected_labels):
+            # Create mapping from encoded to original
+            target_mapping = dict(zip(sorted(unique_targets), expected_labels))
+            logger.info(f"Attempting to map encoded targets back to original labels: {target_mapping}")
+            df[target_column] = df[target_column].map(target_mapping)
+            logger.info("Target column mapped back to original class names")
+        else:
+            logger.error("Cannot map targets back to original labels - length mismatch")
+            return
     
     # Get target statistics
     report_data['n_classes'] = df[target_column].nunique()
@@ -535,6 +663,17 @@ def test_classification_pipeline(
     # Setup experiment
     logger.info("Setting up PyCaret classification experiment...")
     try:
+        # Ensure target column has proper class names, not just values
+        if target_column in df.columns:
+            target_mapping = None
+            unique_targets = df[target_column].unique()
+            logger.info(f"Target classes found: {unique_targets}")
+            
+            # If we have the expected cohort names, no mapping needed
+            expected_cohorts = ["Parkinson's Disease", "Prodromal", "Healthy Control", "SWEDD"]
+            if all(target in expected_cohorts for target in unique_targets if pd.notna(target)):
+                logger.info("Target column already has proper class names")
+            
         experiment = classifier.setup_experiment(**setup_params)
     except Exception as e:
         logger.error(f"Failed to setup experiment: {e}")
@@ -557,7 +696,7 @@ def test_classification_pipeline(
     
     if n_samples > 5000 or n_features_check > 100:
         logger.info(f"Large dataset detected ({n_samples} samples, {n_features_check} features). Excluding slow models...")
-        exclude_models.extend(['svm', 'rbfsvm', 'gpc'])
+        exclude_models.extend(['svm', 'rbfsvm', 'gpc','qda','lightgbm'])
     
     if n_samples > 10000:
         logger.info("Very large dataset. Also excluding MLP...")
@@ -597,6 +736,13 @@ def test_classification_pipeline(
         report_data['best_model_name'] = type(best_model).__name__
         
         logger.info(f"Best model: {report_data['best_model_name']}")
+        logger.info(f"Best model class: {best_model.__class__}")
+        logger.info(f"Best model module: {best_model.__class__.__module__}")
+        
+        # Check if it's tree-based for interpretation compatibility
+        tree_based_patterns = ['RandomForest', 'ExtraTrees', 'GradientBoosting', 'XGB', 'xgb', 'XGBoost', 'LGBM', 'CatBoost', 'DecisionTree', 'AdaBoost']
+        is_tree_based = any(pattern.lower() in report_data['best_model_name'].lower() for pattern in tree_based_patterns)
+        logger.info(f"Model supports SHAP interpretation: {is_tree_based}")
         
     except Exception as e:
         logger.error(f"Failed to compare models: {e}")
@@ -654,52 +800,154 @@ def test_classification_pipeline(
             logger.warning(f"Failed to tune model: {e}. Using untuned model.")
             report_data['tuning_results'] = False
     
-    # Get final model metrics
+    # Get final model metrics - FIX: Use evaluation approach instead of predict_model
     try:
-        # Get predictions on test set
-        final_predictions = classifier.predict_model(estimator=best_model, verbose=False)
-        if not final_predictions.empty:
-            # Extract metrics from the predictions
-            test_metrics = {}
-            for col in final_predictions.columns:
-                if col not in ['Label', 'Score', target_column] and pd.api.types.is_numeric_dtype(final_predictions[col]):
-                    # These are likely metric columns
-                    test_metrics[col] = final_predictions[col].iloc[0] if len(final_predictions) > 0 else final_predictions[col].mean()
+        logger.info("Extracting model performance metrics...")
+        
+        # Get the leaderboard/comparison results which contain CV metrics
+        if hasattr(classifier, 'comparison_results') and classifier.comparison_results is not None:
+            # Extract metrics for the best model from the comparison results
+            best_model_row = classifier.comparison_results.iloc[0]  # First row is best model
+            test_metrics = best_model_row.to_dict()
+            
+            # Clean up the metrics (remove non-numeric entries)
+            test_metrics = {k: v for k, v in test_metrics.items() 
+                          if isinstance(v, (int, float)) and not pd.isna(v)}
             
             report_data['best_model_metrics'] = test_metrics
             report_data['test_metrics'] = test_metrics
             
-            logger.info(f"Test set metrics: {test_metrics}")
+            logger.info(f"Best model metrics: {test_metrics}")
+        else:
+            logger.warning("No comparison results available for metrics extraction")
+            
     except Exception as e:
         logger.warning(f"Failed to get model metrics: {e}")
     
-    # Generate plots
+    # Generate plots - FIX: Ensure proper plot generation and paths with correct class labels
     if generate_plots:
         logger.info("Generating model visualizations...")
         
-        plot_types = ['auc', 'confusion_matrix', 'pr', 'feature', 'learning', 'calibration']
+        # Check if this is a multiclass problem
+        is_multiclass = report_data.get('n_classes', 2) > 2
+        
+        # Define plot types based on whether it's multiclass or binary
+        if is_multiclass:
+            # For multiclass, exclude plots that don't support it
+            plot_types = ['confusion_matrix', 'feature', 'learning']
+            logger.info("Multiclass classification detected. Using multiclass-compatible plots only.")
+        else:
+            # For binary classification, use all plots
+            plot_types = ['auc', 'confusion_matrix', 'pr', 'feature', 'learning']
+        
+        # Get the actual class labels for proper display
+        try:
+            # Get the original class labels from the data
+            original_class_labels = sorted(df[target_column].unique())
+            logger.info(f"Original class labels: {original_class_labels}")
+            
+            # Get PyCaret's internal label mapping if it exists
+            try:
+                label_encoded_mapping = classifier.get_config('label_encoded')
+                if label_encoded_mapping:
+                    logger.info(f"PyCaret label encoding detected: {label_encoded_mapping}")
+            except:
+                label_encoded_mapping = None
+                
+        except Exception as e:
+            logger.warning(f"Could not extract class labels: {e}")
+            original_class_labels = None
         
         for plot_type in plot_types:
             try:
                 logger.info(f"Generating {plot_type} plot...")
-                plot_path = plots_dir / f"{plot_type}.png"
                 
                 # Use matplotlib backend to save plots
                 import matplotlib
                 matplotlib.use('Agg')
                 
-                # Generate and save plot
-                classifier.plot_model(
-                    estimator=best_model,
-                    plot=plot_type,
-                    save=True,
-                    verbose=False
-                )
+                # For confusion matrix, we need special handling to get proper labels
+                if plot_type == 'confusion_matrix' and original_class_labels:
+                    try:
+                        # Generate confusion matrix with custom labeling
+                        from sklearn.metrics import confusion_matrix
+                        import matplotlib.pyplot as plt
+                        import seaborn as sns
+                        
+                        # Get predictions on the holdout set
+                        holdout_pred = classifier.predict_model(estimator=best_model, verbose=False)
+                        
+                        # Extract actual and predicted labels
+                        y_true = holdout_pred[target_column]
+                        y_pred = holdout_pred['prediction_label']
+                        
+                        # Create confusion matrix
+                        cm = confusion_matrix(y_true, y_pred, labels=original_class_labels)
+                        
+                        # Create a custom confusion matrix plot
+                        plt.figure(figsize=(10, 8))
+                        sns.heatmap(cm, 
+                                  annot=True, 
+                                  fmt='d', 
+                                  cmap='Blues',
+                                  xticklabels=original_class_labels,
+                                  yticklabels=original_class_labels,
+                                  cbar_kws={'label': 'Count'})
+                        
+                        plt.title(f'{type(best_model).__name__} Confusion Matrix', fontsize=16, fontweight='bold')
+                        plt.xlabel('Predicted Class', fontsize=12)
+                        plt.ylabel('True Class', fontsize=12)
+                        
+                        # Rotate labels if they're long
+                        plt.xticks(rotation=45, ha='right')
+                        plt.yticks(rotation=0)
+                        
+                        # Adjust layout to prevent label cutoff
+                        plt.tight_layout()
+                        
+                        # Save the plot
+                        confusion_matrix_path = plots_dir / 'confusion_matrix.png'
+                        plt.savefig(confusion_matrix_path, dpi=300, bbox_inches='tight')
+                        plt.close()
+                        
+                        logger.info(f"Custom confusion matrix saved to {confusion_matrix_path}")
+                        
+                    except Exception as cm_error:
+                        logger.warning(f"Custom confusion matrix generation failed: {cm_error}")
+                        # Fallback to PyCaret's default
+                        classifier.plot_model(
+                            estimator=best_model,
+                            plot=plot_type,
+                            save=True,
+                            verbose=False
+                        )
+                else:
+                    # Generate and save plot directly to our plots directory
+                    classifier.plot_model(
+                        estimator=best_model,
+                        plot=plot_type,
+                        save=True,
+                        verbose=False
+                    )
                 
-                # Move the saved plot to our directory
-                default_plot_name = f"{plot_type}.png"
-                if Path(default_plot_name).exists():
-                    Path(default_plot_name).rename(plot_path)
+                # Move PyCaret generated plots to our plots directory (if not already handled above)
+                if plot_type != 'confusion_matrix' or not original_class_labels:
+                    default_plot_names = [
+                        f"{plot_type}.png",
+                        f"{plot_type}.html",
+                        f"AUC.png" if plot_type == 'auc' else None,
+                        f"Confusion Matrix.png" if plot_type == 'confusion_matrix' else None,
+                        f"Precision Recall.png" if plot_type == 'pr' else None,
+                        f"Feature Importance.png" if plot_type == 'feature' else None,
+                        f"Learning Curve.png" if plot_type == 'learning' else None
+                    ]
+                    
+                    for default_name in default_plot_names:
+                        if default_name and Path(default_name).exists():
+                            target_path = plots_dir / f"{plot_type}.png"
+                            Path(default_name).rename(target_path)
+                            logger.info(f"Moved {default_name} to {target_path}")
+                            break
                 
             except Exception as e:
                 logger.warning(f"Failed to generate {plot_type} plot: {e}")
@@ -721,22 +969,595 @@ def test_classification_pipeline(
         except Exception as e:
             logger.warning(f"Could not extract feature importance: {e}")
         
-        # Generate SHAP plots for interpretation
+        # Generate SHAP plots for interpretation - FIX: Better XGBoost detection and error handling with proper class labels
         try:
             logger.info("Generating model interpretation plots...")
             
-            # Save current plot
-            plt.figure(figsize=(10, 6))
-            classifier.interpret_model(
-                estimator=best_model,
-                plot='summary',
-                save=True
-            )
-            plt.savefig(plots_dir / 'shap_summary.png', dpi=150, bbox_inches='tight')
-            plt.close()
+            # Get the actual model type and log it
+            model_type = type(best_model).__name__
+            logger.info(f"Actual model type detected: '{model_type}'")
             
+            # More comprehensive tree-based model detection
+            tree_based_patterns = [
+                'RandomForest', 'ExtraTrees', 'GradientBoosting', 'AdaBoost', 'DecisionTree',
+                'XGB', 'xgb', 'XGBoost', 'xgboost',
+                'LGBM', 'lgb', 'LightGBM', 'lightgbm', 
+                'CatBoost', 'catboost', 'Cat',
+                'RandomForestClassifier', 'ExtraTreesClassifier', 'GradientBoostingClassifier',
+                'XGBClassifier', 'LGBMClassifier', 'CatBoostClassifier', 
+                'DecisionTreeClassifier', 'AdaBoostClassifier'
+            ]
+            
+            # Check if model is tree-based (case-insensitive)
+            is_tree_based = any(pattern.lower() in model_type.lower() for pattern in tree_based_patterns)
+            
+            logger.info(f"Tree-based model detected: {is_tree_based}")
+            
+            # Save current matplotlib backend
+            import matplotlib
+            current_backend = matplotlib.get_backend()
+            matplotlib.use('Agg')
+            
+            interpretation_generated = False
+            
+            # Generate custom SHAP plot with proper class labels for tree-based models
+            if is_tree_based or 'xgb' in model_type.lower() or 'boost' in model_type.lower():
+                try:
+                    logger.info(f"Attempting custom SHAP interpretation with proper class labels for model: {model_type}")
+                    
+                    # Import SHAP
+                    import shap
+                    
+                    # Get the training data and model for SHAP
+                    X_train = classifier.get_config('X_train')
+                    
+                    # Finalize the model to ensure it's ready for SHAP
+                    try:
+                        finalized_model = classifier.finalize_model(best_model)
+                        logger.info("Model finalized successfully for SHAP")
+                        model_for_shap = finalized_model
+                    except Exception as finalize_error:
+                        logger.warning(f"Could not finalize model: {finalize_error}. Using original model.")
+                        model_for_shap = best_model
+                    
+                    # Create SHAP explainer
+                    if 'xgb' in model_type.lower() or 'XGB' in model_type:
+                        explainer = shap.TreeExplainer(model_for_shap)
+                    else:
+                        # For other tree-based models
+                        explainer = shap.TreeExplainer(model_for_shap)
+                    
+                    # Get SHAP values (use a sample of data for performance)
+                    sample_size = min(100, len(X_train))  # Use up to 100 samples for SHAP
+                    X_sample = X_train.sample(n=sample_size, random_state=42)
+                    
+                    logger.info(f"Computing SHAP values for {sample_size} samples...")
+                    shap_values = explainer.shap_values(X_sample)
+                    
+                    # Get the class labels in the correct order
+                    class_labels = original_class_labels if original_class_labels else [f"Class {i}" for i in range(len(shap_values))]
+                    
+                    logger.info(f"Creating SHAP summary plot with class labels: {class_labels}")
+                    
+                    # Create custom SHAP summary plot
+                    plt.figure(figsize=(12, 8))
+                    
+                    # For multiclass, shap_values is a list of arrays (one per class)
+                    if isinstance(shap_values, list) and len(shap_values) > 2:
+                        # Multiclass case - create summary plot
+                        shap.summary_plot(
+                            shap_values, 
+                            X_sample, 
+                            class_names=class_labels,
+                            show=False,
+                            max_display=20  # Show top 20 features
+                        )
+                        
+                        # Customize the plot
+                        plt.title('SHAP Summary Plot - Feature Impact by Class', fontsize=16, fontweight='bold', pad=20)
+                        
+                        # Adjust legend to show full class names
+                        legend = plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                        for i, text in enumerate(legend.get_texts()):
+                            if i < len(class_labels):
+                                text.set_text(class_labels[i])
+                        
+                    else:
+                        # Binary case or single array
+                        if isinstance(shap_values, list):
+                            shap_values_to_plot = shap_values[1]  # Use positive class for binary
+                        else:
+                            shap_values_to_plot = shap_values
+                            
+                        shap.summary_plot(
+                            shap_values_to_plot,
+                            X_sample,
+                            show=False,
+                            max_display=20
+                        )
+                        
+                        plt.title('SHAP Summary Plot - Feature Impact', fontsize=16, fontweight='bold', pad=20)
+                    
+                    # Improve layout and save
+                    plt.tight_layout()
+                    shap_path = plots_dir / 'shap_summary.png'
+                    plt.savefig(shap_path, dpi=300, bbox_inches='tight')
+                    plt.close()
+                    
+                    logger.info(f"Custom SHAP plot with class labels saved to {shap_path}")
+                    interpretation_generated = True
+                    
+                    # Also create a SHAP waterfall plot for a single prediction example
+                    try:
+                        logger.info("Creating SHAP waterfall plot for single prediction example...")
+                        
+                        # Get one example from each class
+                        plt.figure(figsize=(12, 8))
+                        
+                        if isinstance(shap_values, list) and len(shap_values) > 2:
+                            # For multiclass, create subplots for each class
+                            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+                            axes = axes.flatten()
+                            
+                            for class_idx, class_name in enumerate(class_labels[:4]):  # Limit to 4 classes for layout
+                                if class_idx < len(shap_values):
+                                    plt.sca(axes[class_idx])
+                                    
+                                    # Use the first sample for this example
+                                    expected_value = explainer.expected_value[class_idx] if isinstance(explainer.expected_value, (list, np.ndarray)) else explainer.expected_value
+                                    
+                                    # Create a simplified waterfall-style plot
+                                    sample_idx = 0
+                                    shap_vals = shap_values[class_idx][sample_idx]
+                                    feature_names = X_sample.columns
+                                    
+                                    # Get top 10 features by absolute SHAP value
+                                    top_indices = np.argsort(np.abs(shap_vals))[-10:]
+                                    top_shap_vals = shap_vals[top_indices]
+                                    top_features = [feature_names[i] for i in top_indices]
+                                    
+                                    # Create horizontal bar plot
+                                    colors = ['red' if val < 0 else 'blue' for val in top_shap_vals]
+                                    bars = plt.barh(range(len(top_shap_vals)), top_shap_vals, color=colors, alpha=0.7)
+                                    plt.yticks(range(len(top_shap_vals)), [f[:30] + '...' if len(f) > 30 else f for f in top_features])
+                                    plt.xlabel('SHAP Value')
+                                    plt.title(f'Feature Impact - {class_name}', fontsize=12, fontweight='bold')
+                                    plt.grid(axis='x', alpha=0.3)
+                            
+                            plt.suptitle('SHAP Feature Impact by Class', fontsize=16, fontweight='bold')
+                            plt.tight_layout()
+                            
+                        waterfall_path = plots_dir / 'shap_waterfall.png'
+                        plt.savefig(waterfall_path, dpi=300, bbox_inches='tight')
+                        plt.close()
+                        
+                        logger.info(f"SHAP waterfall plot saved to {waterfall_path}")
+                        
+                    except Exception as waterfall_error:
+                        logger.warning(f"Could not create SHAP waterfall plot: {waterfall_error}")
+                        
+                except ImportError:
+                    logger.warning("SHAP library not available. Install with: pip install shap")
+                    # Fallback to PyCaret's interpretation
+                    try:
+                        classifier.interpret_model(
+                            estimator=best_model,
+                            plot='summary',
+                            save=True
+                        )
+                        
+                        # Look for generated files
+                        possible_shap_files = [
+                            "SHAP Summary.png", "summary.png", "SHAP.png", "Summary Plot.png"
+                        ]
+                        
+                        for shap_file in possible_shap_files:
+                            if Path(shap_file).exists():
+                                target_path = plots_dir / 'shap_summary.png'
+                                Path(shap_file).rename(target_path)
+                                logger.info(f"Fallback SHAP plot moved: {shap_file} -> {target_path}")
+                                interpretation_generated = True
+                                break
+                                
+                    except Exception as fallback_error:
+                        logger.warning(f"Fallback SHAP generation also failed: {fallback_error}")
+                
+                except Exception as shap_error:
+                    logger.warning(f"Custom SHAP interpretation failed with error: {shap_error}")
+                    logger.warning(f"Full error details: {shap_error.__class__.__name__}: {str(shap_error)}")
+                    
+                    # Fallback to PyCaret's default SHAP
+                    try:
+                        logger.info("Falling back to PyCaret's default SHAP interpretation...")
+                        classifier.interpret_model(
+                            estimator=best_model,
+                            plot='summary',
+                            save=True
+                        )
+                        
+                        # Look for generated files
+                        possible_shap_files = [
+                            "SHAP Summary.png", "summary.png", "SHAP.png", "Summary Plot.png"
+                        ]
+                        
+                        for shap_file in possible_shap_files:
+                            if Path(shap_file).exists():
+                                target_path = plots_dir / 'shap_summary.png'
+                                Path(shap_file).rename(target_path)
+                                logger.info(f"PyCaret SHAP plot moved: {shap_file} -> {target_path}")
+                                interpretation_generated = True
+                                break
+                                
+                    except Exception as pycaret_shap_error:
+                        logger.warning(f"PyCaret SHAP also failed: {pycaret_shap_error}")
+            
+            # If SHAP failed, try Permutation Feature Importance (model-agnostic)
+            if not interpretation_generated:
+                try:
+                    logger.info("Attempting Permutation Feature Importance (model-agnostic)...")
+                    classifier.interpret_model(
+                        estimator=best_model,
+                        plot='pfi',
+                        save=True
+                    )
+                    
+                    pfi_files = [
+                        "Permutation Feature Importance.png",
+                        "pfi.png",
+                        "PFI.png",
+                        "Permutation.png"
+                    ]
+                    
+                    for pfi_file in pfi_files:
+                        if Path(pfi_file).exists():
+                            target_path = plots_dir / 'feature_importance_plot.png'
+                            Path(pfi_file).rename(target_path)
+                            logger.info(f"Successfully generated PFI plot: {pfi_file} -> {target_path}")
+                            interpretation_generated = True
+                            break
+                            
+                except Exception as pfi_error:
+                    logger.warning(f"Permutation Feature Importance failed: {pfi_error}")
+            
+            # Last resort: use basic feature importance plot
+            if not interpretation_generated:
+                try:
+                    logger.info("Using basic feature importance as interpretation...")
+                    feature_plot_path = plots_dir / 'feature.png'
+                    if feature_plot_path.exists():
+                        import shutil
+                        interpretation_path = plots_dir / 'interpretation_plot.png'
+                        shutil.copy2(feature_plot_path, interpretation_path)
+                        logger.info("Copied feature importance plot as interpretation")
+                        interpretation_generated = True
+                        
+                except Exception as feature_error:
+                    logger.warning(f"Could not copy feature plot: {feature_error}")
+            
+            # Restore matplotlib backend
+            matplotlib.use(current_backend)
+            
+            if interpretation_generated:
+                logger.info("Model interpretation plot generated successfully")
+            else:
+                logger.error("Failed to generate any model interpretation plots")
+                # List all PNG files in current directory for debugging
+                png_files = list(Path('.').glob('*.png'))
+                logger.info(f"Available PNG files in current directory: {[f.name for f in png_files]}")
+                    
         except Exception as e:
-            logger.warning(f"Failed to generate interpretation plots: {e}")
+            logger.error(f"Critical error in interpretation generation: {e}", exc_info=True)
+        
+        # Add this section right after the SHAP interpretation section and before model saving
+        # Generate additional dimensionality reduction visualizations
+        try:
+            logger.info("Generating dimensionality reduction visualizations...")
+            
+            # Get the training data for visualization
+            X_train = classifier.get_config('X_train')
+            y_train_original = classifier.get_config('y_train')
+            
+            # Map back to original labels if needed
+            if hasattr(y_train_original, 'map') and len(original_class_labels) == y_train_original.nunique():
+                unique_encoded = sorted(y_train_original.unique())
+                reverse_mapping = dict(zip(unique_encoded, original_class_labels))
+                y_labels = y_train_original.map(reverse_mapping)
+            else:
+                y_labels = y_train_original
+            
+            # Standardize features for dimensionality reduction
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X_train)
+            
+            # 1. PCA Visualization
+            logger.info("Generating PCA visualization...")
+            try:
+                from sklearn.decomposition import PCA
+                
+                # Apply PCA with 2 components for visualization
+                pca = PCA(n_components=2, random_state=42)
+                X_pca = pca.fit_transform(X_scaled)
+                
+                # Create PCA plot
+                plt.figure(figsize=(12, 8))
+                
+                # Use distinct colors for each class
+                colors = plt.cm.Set1(np.linspace(0, 1, len(original_class_labels)))
+                
+                for i, class_name in enumerate(original_class_labels):
+                    mask = y_labels == class_name
+                    if mask.any():  # Only plot if class has samples
+                        plt.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                                  c=[colors[i]], label=class_name, alpha=0.7, s=60, edgecolors='black', linewidth=0.5)
+                
+                plt.xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} variance explained)', fontsize=12)
+                plt.ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} variance explained)', fontsize=12)
+                plt.title(f'PCA Visualization - {pca.explained_variance_ratio_.sum():.1%} Total Variance Explained', 
+                         fontsize=16, fontweight='bold')
+                plt.legend(loc='best', frameon=True, fancybox=True, shadow=True)
+                plt.grid(alpha=0.3)
+                
+                # Add explained variance ratio as text
+                plt.text(0.02, 0.98, f'PC1: {pca.explained_variance_ratio_[0]:.1%}\nPC2: {pca.explained_variance_ratio_[1]:.1%}', 
+                        transform=plt.gca().transAxes, verticalalignment='top', 
+                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                
+                plt.tight_layout()
+                pca_path = plots_dir / 'pca_visualization.png'
+                plt.savefig(pca_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                logger.info(f"PCA visualization saved to {pca_path}")
+                
+            except Exception as pca_error:
+                logger.warning(f"Could not generate PCA visualization: {pca_error}")
+
+            # 2. t-SNE Visualization
+            logger.info("Generating t-SNE visualization...")
+            try:
+                from sklearn.manifold import TSNE
+                
+                # Limit sample size for t-SNE performance (t-SNE is computationally expensive)
+                max_samples_tsne = 2000
+                if len(X_scaled) > max_samples_tsne:
+                    logger.info(f"Sampling {max_samples_tsne} points for t-SNE (original: {len(X_scaled)})")
+                    # Stratified sampling to maintain class distribution
+                    from sklearn.model_selection import train_test_split
+                    _, X_tsne_sample, _, y_tsne_sample = train_test_split(
+                        X_scaled, y_labels, 
+                        test_size=max_samples_tsne, 
+                        stratify=y_labels, 
+                        random_state=42
+                    )
+                else:
+                    X_tsne_sample = X_scaled
+                    y_tsne_sample = y_labels
+                
+                # Apply t-SNE with perplexity 30
+                perplexity = min(30, len(X_tsne_sample)//4)  # Ensure perplexity is valid
+                logger.info(f"Computing t-SNE with perplexity={perplexity}...")
+                
+                tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, 
+                           n_iter=1000, learning_rate=200)
+                X_tsne = tsne.fit_transform(X_tsne_sample)
+                
+                # Create t-SNE plot
+                plt.figure(figsize=(12, 8))
+                
+                for i, class_name in enumerate(original_class_labels):
+                    mask = y_tsne_sample == class_name
+                    if mask.any():
+                        plt.scatter(X_tsne[mask, 0], X_tsne[mask, 1], 
+                                  c=[colors[i]], label=class_name, alpha=0.7, s=60, 
+                                  edgecolors='black', linewidth=0.5)
+                
+                plt.xlabel('t-SNE Component 1', fontsize=12)
+                plt.ylabel('t-SNE Component 2', fontsize=12)
+                plt.title(f't-SNE Visualization (perplexity={perplexity})', 
+                         fontsize=16, fontweight='bold')
+                plt.legend(loc='best', frameon=True, fancybox=True, shadow=True)
+                plt.grid(alpha=0.3)
+                
+                # Add parameters as text
+                plt.text(0.02, 0.98, f'Perplexity: {perplexity}\nSamples: {len(X_tsne_sample)}', 
+                        transform=plt.gca().transAxes, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+                
+                plt.tight_layout()
+                tsne_path = plots_dir / f'tsne_visualization_perp{perplexity}.png'
+                plt.savefig(tsne_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                logger.info(f"t-SNE visualization saved to {tsne_path}")
+                
+                # Create a combined comparison plot
+                logger.info("Creating combined PCA vs t-SNE comparison...")
+                
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+                
+                # PCA subplot
+                for i, class_name in enumerate(original_class_labels):
+                    mask = y_labels == class_name
+                    if mask.any():
+                        ax1.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                                  c=[colors[i]], label=class_name, alpha=0.7, s=40)
+                
+                ax1.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%})')
+                ax1.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%})')
+                ax1.set_title('PCA Visualization')
+                ax1.legend()
+                ax1.grid(alpha=0.3)
+                
+                # t-SNE subplot
+                for i, class_name in enumerate(original_class_labels):
+                    mask = y_tsne_sample == class_name
+                    if mask.any():
+                        ax2.scatter(X_tsne[mask, 0], X_tsne[mask, 1], 
+                                  c=[colors[i]], label=class_name, alpha=0.7, s=40)
+                
+                ax2.set_xlabel('t-SNE Component 1')
+                ax2.set_ylabel('t-SNE Component 2')
+                ax2.set_title(f't-SNE Visualization (perplexity={perplexity})')
+                ax2.legend()
+                ax2.grid(alpha=0.3)
+                
+                plt.suptitle('Dimensionality Reduction Comparison', fontsize=16, fontweight='bold')
+                plt.tight_layout()
+                
+                comparison_path = plots_dir / 'pca_vs_tsne_comparison.png'
+                plt.savefig(comparison_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                logger.info(f"PCA vs t-SNE comparison saved to {comparison_path}")
+                
+            except Exception as tsne_error:
+                logger.warning(f"Could not generate t-SNE visualization: {tsne_error}")
+
+            # 3. Class Distribution Plot (simple bar chart)
+            logger.info("Generating class distribution plot...")
+            try:
+                plt.figure(figsize=(10, 6))
+                class_counts = df[target_column].value_counts()
+                colors_dist = plt.cm.Set3(np.linspace(0, 1, len(class_counts)))
+                
+                bars = plt.bar(class_counts.index, class_counts.values, color=colors_dist)
+                plt.title('Class Distribution in Dataset', fontsize=16, fontweight='bold')
+                plt.xlabel('Class')
+                plt.ylabel('Number of Samples')
+                plt.xticks(rotation=45, ha='right')
+                
+                # Add value labels on bars
+                for bar, count in zip(bars, class_counts.values):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
+                            str(count), ha='center', va='bottom', fontweight='bold')
+                
+                plt.tight_layout()
+                dist_path = plots_dir / 'class_distribution.png'
+                plt.savefig(dist_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                logger.info(f"Class distribution plot saved to {dist_path}")
+                
+            except Exception as dist_error:
+                logger.warning(f"Could not generate class distribution plot: {dist_error}")
+
+            # 4. Feature Correlation Heatmap (add this after the class distribution plot)
+            logger.info("Generating feature correlation heatmap...")
+            try:
+                # Get top features by importance if available, otherwise use first N features
+                if report_data.get('feature_importance'):
+                    top_features = [feat[0] for feat in report_data['feature_importance'][:25]]  # Top 25 features
+                    # Filter to only include features that exist in X_train
+                    available_features = [feat for feat in top_features if feat in X_train.columns]
+                    if available_features:
+                        X_subset = X_train[available_features]
+                        title_suffix = " (Top 25 by Importance)"
+                    else:
+                        # Fallback if importance features don't match
+                        X_subset = X_train.iloc[:, :25]  # First 25 features
+                        title_suffix = " (First 25 Features)"
+                else:
+                    # Use first 25 features if no importance available
+                    X_subset = X_train.iloc[:, :25]  # First 25 features
+                    title_suffix = " (First 25 Features)"
+                
+                # Calculate correlation matrix
+                correlation_matrix = X_subset.corr()
+                
+                # Create the heatmap
+                plt.figure(figsize=(14, 12))
+                
+                # Create a mask for the upper triangle (optional - shows only lower triangle)
+                mask = np.triu(np.ones_like(correlation_matrix, dtype=bool))
+                
+                # Generate the heatmap
+                sns.heatmap(correlation_matrix, 
+                          mask=mask,  # Comment this line if you want full heatmap
+                          annot=False,  # Set to True if you want correlation values displayed
+                          cmap='coolwarm', 
+                          center=0,
+                          square=True,
+                          vmin=-1, vmax=1,
+                          cbar_kws={'label': 'Correlation Coefficient', 'shrink': 0.8})
+                
+                plt.title(f'Feature Correlation Heatmap{title_suffix}', fontsize=16, fontweight='bold')
+                plt.xticks(rotation=45, ha='right', fontsize=8)
+                plt.yticks(rotation=0, fontsize=8)
+                
+                # Add text annotation about correlation interpretation
+                plt.figtext(0.02, 0.02, 
+                           'Red = Positive Correlation, Blue = Negative Correlation\n' +
+                           'Darker colors indicate stronger correlations',
+                           fontsize=10, style='italic',
+                           bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+                
+                plt.tight_layout()
+                
+                corr_path = plots_dir / 'feature_correlation.png'
+                plt.savefig(corr_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                logger.info(f"Feature correlation heatmap saved to {corr_path}")
+                
+                # Also create a simplified version showing only high correlations
+                logger.info("Generating high correlation features heatmap...")
+                
+                # Find pairs with high correlation (absolute value > 0.7)
+                high_corr_pairs = []
+                for i in range(len(correlation_matrix.columns)):
+                    for j in range(i+1, len(correlation_matrix.columns)):
+                        corr_val = correlation_matrix.iloc[i, j]
+                        if abs(corr_val) > 0.7:  # High correlation threshold
+                            high_corr_pairs.append((
+                                correlation_matrix.columns[i], 
+                                correlation_matrix.columns[j], 
+                                corr_val
+                            ))
+                
+                if high_corr_pairs:
+                    # Create a plot showing high correlation pairs
+                    plt.figure(figsize=(12, max(6, len(high_corr_pairs) * 0.4)))
+                    
+                    features_1 = [pair[0] for pair in high_corr_pairs]
+                    features_2 = [pair[1] for pair in high_corr_pairs]
+                    correlations = [pair[2] for pair in high_corr_pairs]
+                    
+                    # Create labels for the pairs
+                    pair_labels = [f"{f1[:20]}...\n{f2[:20]}..." if len(f1) > 20 or len(f2) > 20 
+                                 else f"{f1}\n{f2}" 
+                                 for f1, f2 in zip(features_1, features_2)]
+                    
+                    # Create horizontal bar plot
+                    colors = ['red' if corr < 0 else 'blue' for corr in correlations]
+                    bars = plt.barh(range(len(correlations)), correlations, color=colors, alpha=0.7)
+                    
+                    plt.yticks(range(len(correlations)), pair_labels, fontsize=9)
+                    plt.xlabel('Correlation Coefficient', fontsize=12)
+                    plt.title('High Correlation Feature Pairs (|r| > 0.7)', fontsize=16, fontweight='bold')
+                    plt.grid(axis='x', alpha=0.3)
+                    
+                    # Add correlation values on bars
+                    for i, (bar, corr) in enumerate(zip(bars, correlations)):
+                        plt.text(corr + (0.02 if corr > 0 else -0.02), i, f'{corr:.3f}', 
+                               ha='left' if corr > 0 else 'right', va='center', fontweight='bold')
+                    
+                    plt.xlim(-1, 1)
+                    plt.tight_layout()
+                    
+                    high_corr_path = plots_dir / 'high_correlation_pairs.png'
+                    plt.savefig(high_corr_path, dpi=300, bbox_inches='tight')
+                    plt.close()
+                    
+                    logger.info(f"High correlation pairs plot saved to {high_corr_path} ({len(high_corr_pairs)} pairs found)")
+                else:
+                    logger.info("No high correlation pairs found (|r| > 0.7)")
+                
+            except Exception as corr_error:
+                logger.warning(f"Could not generate correlation heatmap: {corr_error}")
+
+        except Exception as e:
+            logger.warning(f"Failed to generate dimensionality reduction plots: {e}")
     
     # Save the final model
     try:
@@ -768,13 +1589,81 @@ def test_classification_pipeline(
 
 
 if __name__ == "__main__":
+    # Example features that might cause data leakage
+    # We must decide whether we want to:
+    # 1. Replicate the clinician – build an algorithm that makes the same baseline diagnosis a movement-disorder specialist would make
+    # 2. Find objective, pre-diagnostic biomarkers – discover signals that predict PD without relying on the clinical examination
+    # 3. Predict future conversion or progression – within Prodromal or within PD
+    leakage_features = [
+        "PATNO",
+        "EVENT_ID",
+        "medical_history_Features_of_Parkinsonism_PSGLVL",
+        "subject_characteristics_ENRLSRDC",
+        "motor_assessments_PDTRTMNT",
+        "motor_assessments_PDTRTMNT_x_orig",
+        "motor_assessments_PDTRTMNT_y_orig",
+        "subject_characteristics_SCREENEDAM4",
+        "motor_assessments_NUPSOURC_x_orig",
+        "motor_assessments_DBSYN",
+        "motor_assessments_DBSYN_x_orig",
+        "motor_assessments_DBSYN_y_orig",
+        "subject_characteristics_PISTDY",
+        "subject_characteristics_APPRDX",
+        "motor_assessments_PDMEDYN",
+        "motor_assessments_PDMEDYN_x_orig",
+        "motor_assessments_PDMEDYN_y_orig",
+        "medical_history_Clinical_Diagnosis_NEWDIAG",
+        "subject_characteristics_PATHVAR_COUNT",
+        "subject_characteristics_ENRLPRKN",
+        "subject_characteristics_ENRLLRRK2",
+        "subject_characteristics_RNASEQ_VIS",
+        "medical_history_Features_of_Parkinsonism_FEATBRADY",
+        "subject_characteristics_AV133STDY",
+        "biospecimen_standard_files_PLASPNDR",
+        "subject_characteristics_chr12:40340400:G:A_A_LRRK2_G2019S_rs34637584",
+        "medical_history_Other_Clinical_Features_FEATCLRLEV",
+        "biospecimen_standard_files_BSSPNDR",
+        "medical_history_PD_Diagnosis_History_DXRIGID",
+        "medical_history_Features_of_Parkinsonism_FEATRIGID",
+        "subject_characteristics_ENRLPRKN",
+        "subject_characteristics_chr12:40310434:C:G_G_LRRK2_R1441G_rs33939927",
+        "subject_characteristics_chr1:155235252:A:G_G_GBA_L444P_rs421016",
+        "medical_history_Features_of_Parkinsonism_FEATTREMOR",
+        "medical_history_Neurological_Exam_CORDRSP",
+        "motor_assessments_MSEADLG",
+        "non_motor_assessments_PARKISM",
+        "subject_characteristics_GAITSTDY",
+        "medical_history_PD_Diagnosis_History_DXOTHSX",
+        "subject_characteristics_ENRLGBA",
+        "subject_characteristics_SV2ASTDY",
+        "motor_assessments_NP4TOT_x_orig",
+        "non_motor_assessments_NQCOG01",
+        "motor_assessments_NQUEX33",
+        "biospecimen_standard_files_PLASPNRT",
+        "medical_history_Determination_of_Freezing_and_Falls_FRZGT12M",
+        "biospecimen_standard_files_BSSPNRT",
+        "motor_assessments_NQUEX28",
+        "subject_characteristics_chr4:89828149:C:T_T_SNCA_A53T_rs104893877",
+        "subject_characteristics_chr1:155235843:T:C_C_GBA_N370S_rs76763715",
+        "medical_history_Features_of_Parkinsonism_FEATPOSINS",
+        "medical_history_Other_Clinical_Features_FEATDCRARM",
+        "biospecimen_standard_files_PLAALQN",
+        "medical_history_Other_Clinical_Features_FEATDELHAL",
+        "non_motor_assessments_PTCGBOTH_y_orig1",
+        "motor_assessments_NQMOB33",
+        "subject_characteristics_chr1:155240660:G:GC_GC_GBA_84GG_rs387906315",
+        "subject_characteristics_chr12:40320043:G:C_C_LRRK2_R1628P/H_rs33949390",
+        # Add any other features that are too closely related to the target
+    ]
+    
     # Run the classification pipeline test with pre-split data
     test_classification_pipeline(
         train_csv_path="output/selected_train_data.csv",
         test_csv_path="output/selected_test_data.csv",
         use_feature_selection=False,  # Data is already feature-selected
         target_column="COHORT",
-        tune_best_model=True,
+        exclude_features=leakage_features,  # NEW PARAMETER
+        tune_best_model=False,
         generate_plots=True,
-        budget_time_minutes=30.0  # Set 15 minute time limit for model comparison
+        budget_time_minutes=30.0
     )

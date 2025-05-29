@@ -240,7 +240,8 @@ class Classifier:
             import builtins
             original_print = builtins.print
             
-            def custom_print(*args, **kwargs):
+            # Define custom print as a local function to avoid namespace conflicts
+            def _custom_print(*args, **kwargs):
                 """Custom print function to add model names and timing"""
                 output = ' '.join(str(arg) for arg in args)
                 
@@ -261,7 +262,7 @@ class Classifier:
                 original_print(*args, **kwargs)
             
             # Replace print function temporarily
-            builtins.print = custom_print
+            builtins.print = _custom_print
         
         try:
             # Build parameters for compare_models
@@ -319,6 +320,10 @@ class Classifier:
         except Exception as e:
             logger.error(f"Failed to compare models: {e}", exc_info=True)
             raise
+        finally:
+            # Always restore original print function
+            if verbose:
+                builtins.print = original_print
     
     def create_model(
         self,

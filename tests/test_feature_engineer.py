@@ -239,25 +239,6 @@ if __name__ == "__main__":
     report_path = "output/feature_engineering_report.html"
     output_engineered_path = "output/final_engineered_dataset.csv"
 
-    if not Path(input_path).exists():
-        logger.warning(f"'{input_path}' not found. Creating a placeholder dummy file for this test run.")
-        logger.warning("For a meaningful test, please run the data reduction pipeline first (test_data_reducer.py).")
-        Path("output").mkdir(parents=True, exist_ok=True)
-        num_samples = 100
-        dummy_data = pd.DataFrame({
-            'PATNO': [f'P{i}' for i in range(num_samples)],
-            'EVENT_ID': [f'E{i%10}' for i in range(num_samples)],
-            'COHORT': np.random.choice([1, 2, 'Control', 'Patient'], size=num_samples),
-            'numeric_feat1': np.random.rand(num_samples) * 100,
-            'numeric_feat2': np.random.randn(num_samples) * 10,
-            'cat_feat1': np.random.choice(['A', 'B', 'C', 'D'], size=num_samples),
-            'cat_feat2': np.random.choice(['X', 'Y', 'Z', 'X', 'X', np.nan], size=num_samples),
-            'constant_feat': [5] * num_samples,
-            'high_missing_feat': [np.nan] * 95 + list(range(5))
-        })
-        dummy_data.to_csv(input_path, index=False)
-        logger.info(f"Created dummy input file for FE test: {input_path}")
-
     test_feature_engineering_pipeline(
         input_csv_path=input_path,
         output_csv_path=output_engineered_path,
