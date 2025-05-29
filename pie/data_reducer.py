@@ -452,15 +452,17 @@ class DataReducer:
         Consolidates multiple columns containing "COHORT" in their name into a single
         target COHORT column. For each row, the value for the new COHORT column
         will be the first non-null/non-empty value found across the identified
-        source cohort columns.
+        source cohort columns. Also standardizes cohort values and filters to keep
+        only valid cohorts.
 
         Args:
             dataframe: The input DataFrame (e.g., the output of merge_reduced_data).
             target_cohort_col_name: The name of the final, consolidated COHORT column.
 
         Returns:
-            The DataFrame with a single consolidated COHORT column and original
-            cohort-related columns (except the target if it pre-existed) dropped.
+            The DataFrame with a single consolidated COHORT column, standardized values,
+            original cohort-related columns dropped, and filtered to contain only
+            valid cohorts: "Parkinson's Disease", "Prodromal", "Healthy Control", "SWEDD".
         """
         if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
             logger.warning("Input DataFrame is empty or not a DataFrame. Skipping COHORT consolidation.")
@@ -482,17 +484,12 @@ class DataReducer:
             # This means only the target_cohort_col_name itself matches "COHORT". No consolidation needed from others.
              if target_cohort_col_name in df_copy.columns:
                 logger.info(f"Only target COHORT column '{target_cohort_col_name}' found. No other COHORT columns to consolidate.")
-                return df_copy # Return as is if only the target column name exists
+                # Still need to standardize and filter even if no consolidation needed
+                pass
         elif not source_cohort_cols and target_cohort_col_name not in cohort_related_cols:
             # This means NO columns with "COHORT" in their name were found at all.
             logger.info("No columns containing 'COHORT' found. Skipping consolidation.")
             return df_copy
-
-
-        # If the target column doesn't exist yet, or if it does and it's also a source,
-        # we need to apply the logic.
-        # The effective source columns are all 'cohort_related_cols'.
-        # The target is 'target_cohort_col_name'.
 
         logger.info(f"Consolidating COHORT information from columns: {cohort_related_cols} into '{target_cohort_col_name}'.")
 
@@ -503,7 +500,9 @@ class DataReducer:
                     return val
             return np.nan
 
-        df_copy[target_cohort_col_name] = df_copy.apply(get_first_valid_cohort, axis=1)
+        # Only apply consolidation if there are multiple cohort columns to consolidate
+        if len(cohort_related_cols) > 1 or target_cohort_col_name not in df_copy.columns:
+            df_copy[target_cohort_col_name] = df_copy.apply(get_first_valid_cohort, axis=1)
 
         # Columns to drop: all identified cohort_related_cols EXCEPT the target_cohort_col_name
         cols_to_drop_after_consolidation = [
@@ -514,7 +513,49 @@ class DataReducer:
             logger.info(f"Dropping original cohort-related columns: {cols_to_drop_after_consolidation}")
             df_copy.drop(columns=cols_to_drop_after_consolidation, inplace=True)
         
+        # Standardize cohort values
+        logger.info("Standardizing COHORT values...")
+        initial_cohort_counts = df_copy[target_cohort_col_name].value_counts(dropna=False)
+        logger.info(f"Initial value counts for '{target_cohort_col_name}' column:\n{initial_cohort_counts}")
+        
+        # Create a mapping for standardizing cohort values
+        cohort_mapping = {
+            "PD": "Parkinson's Disease",
+            "Control": "Healthy Control",
+            # Keep existing standard values as they are
+            "Parkinson's Disease": "Parkinson's Disease",
+            "Prodromal": "Prodromal", 
+            "Healthy Control": "Healthy Control",
+            "SWEDD": "SWEDD"
+        }
+        
+        # Apply the mapping (case-insensitive)
+        df_copy[target_cohort_col_name] = df_copy[target_cohort_col_name].astype(str).str.strip()
+        
+        # Create a case-insensitive mapping
+        for original_val, standard_val in cohort_mapping.items():
+            mask = df_copy[target_cohort_col_name].str.upper() == original_val.upper()
+            df_copy.loc[mask, target_cohort_col_name] = standard_val
+        
+        # Filter to keep only valid cohorts
+        valid_cohorts = ["Parkinson's Disease", "Prodromal", "Healthy Control", "SWEDD"]
+        
+        initial_row_count = len(df_copy)
+        logger.info(f"Filtering to keep only valid cohorts: {valid_cohorts}")
+        
+        # Keep rows where COHORT is in valid_cohorts (case-sensitive after standardization)
+        df_copy = df_copy[df_copy[target_cohort_col_name].isin(valid_cohorts)]
+        
+        final_row_count = len(df_copy)
+        rows_dropped = initial_row_count - final_row_count
+        
+        if rows_dropped > 0:
+            logger.info(f"Dropped {rows_dropped} rows with invalid or missing COHORT values")
+        
         final_cohort_counts = df_copy[target_cohort_col_name].value_counts(dropna=False)
-        logger.info(f"Value counts for the new '{target_cohort_col_name}' column:\n{final_cohort_counts}")
-
+        logger.info(f"Final value counts for '{target_cohort_col_name}' column after standardization and filtering:\n{final_cohort_counts}")
+        
+        if df_copy.empty:
+            logger.warning("Warning: All rows were filtered out due to invalid COHORT values!")
+        
         return df_copy
