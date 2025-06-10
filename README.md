@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" width="150" alt="PIE Logo">
+</p>
+
 # Parkinson's Insight Engine (PIE)
 
 ## Overview

@@ -1,0 +1,357 @@
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>PIE Classification Pipeline Report</title>
+        
+    <style>
+        body { font-family: 'Arial', sans-serif; line-height: 1.6; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.1); max-width: 1400px; margin: 0 auto; }
+        h1, h2, h3 { color: #2c3e50; border-bottom: 2px solid #e74c3c; padding-bottom: 10px; }
+        h1 { text-align: center; color: #e74c3c; font-size: 2.5em; }
+        h2 { color: #34495e; margin-top: 30px; }
+        h3 { color: #7f8c8d; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #e74c3c; color: white; font-weight: bold; }
+        tr:nth-child(even) { background-color: #ecf0f1; }
+        tr:hover { background-color: #d5dbdb; }
+        .summary-box { border: 2px solid #bdc3c7; padding: 20px; margin-bottom: 25px; background-color: #f8f9f9; border-radius: 8px; }
+        .code { background-color: #2c3e50; color: #ecf0f1; padding: 3px 8px; border-radius: 4px; font-family: 'Courier New', Courier, monospace; }
+        .highlight { color: #e74c3c; font-weight: bold; font-size: 1.1em; }
+        .metric-value { font-weight: bold; color: #27ae60; font-size: 1.1em; }
+        .warning { color: #f39c12; font-weight: bold; }
+        .plot-container { margin: 25px 0; text-align: center; background-color: #ecf0f1; padding: 20px; border-radius: 8px; }
+        .plot-container img { max-width: 90%; height: auto; border: 2px solid #34495e; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .plot-title { font-weight: bold; color: #2c3e50; margin-bottom: 10px; font-size: 1.2em; }
+        .feature-importance { background-color: #e8f8f5; padding: 15px; border-radius: 8px; margin: 15px 0; }
+        .model-card { background-color: #fef9e7; padding: 15px; border-radius: 8px; margin: 15px 0; border: 1px solid #f9e79f; }
+        .best-model { background-color: #d5f4e6; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #27ae60; }
+        .hyperparameter-tuning { background-color: #fadbd8; padding: 15px; border-radius: 8px; margin: 15px 0; }
+        ul { list-style-type: square; padding-left: 30px; }
+        li { margin-bottom: 8px; }
+        .timestamp { color: #7f8c8d; font-style: italic; text-align: right; margin-top: 20px; }
+        .leaderboard-table { font-size: 0.95em; }
+        .leaderboard-table td, .leaderboard-table th { padding: 8px; }
+        .top-model { background-color: #d5f4e6; font-weight: bold; }
+    </style>
+    
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 PIE Classification Pipeline Report</h1>
+            
+            <div class="summary-box">
+                <h2>📊 1. Pipeline Overview</h2>
+                <table>
+                    <tr><th>Component</th><th>Details</th></tr>
+                    <tr><td>Input Data</td><td><span class="code">Train: output/selected_train_data.csv, Test: output/selected_test_data.csv</span></td></tr>
+                    <tr><td>Data Shape</td><td>Train: (29151, 776), Test: (7288, 776)</td></tr>
+                    <tr><td>Target Variable</td><td><span class="highlight">COHORT</span></td></tr>
+                    <tr><td>Target Classes</td><td>4 classes</td></tr>
+                    <tr><td>Train/Test Split</td><td>80% / 20%</td></tr>
+                    <tr><td>Excluded Features</td><td>57 features excluded</td></tr>
+                    <tr><td>Feature Selection Applied</td><td>No</td></tr>
+                    <tr><td>Final Feature Count</td><td><span class="metric-value">718</span></td></tr>
+                </table>
+            </div>
+    
+                <h3>🚫 Excluded Features (Data Leakage Prevention)</h3>
+                <p>The following features were excluded to prevent data leakage:</p>
+                <ul>
+        <li><span class='code'>PATNO</span></li><li><span class='code'>medical_history_Features_of_Parkinsonism_PSGLVL</span></li><li><span class='code'>subject_characteristics_ENRLSRDC</span></li><li><span class='code'>motor_assessments_PDTRTMNT</span></li><li><span class='code'>motor_assessments_PDTRTMNT_x_orig</span></li><li><span class='code'>motor_assessments_PDTRTMNT_y_orig</span></li><li><span class='code'>subject_characteristics_SCREENEDAM4</span></li><li><span class='code'>motor_assessments_NUPSOURC_x_orig</span></li><li><span class='code'>motor_assessments_DBSYN</span></li><li><span class='code'>motor_assessments_DBSYN_x_orig</span></li><li><span class='code'>motor_assessments_DBSYN_y_orig</span></li><li><span class='code'>subject_characteristics_PISTDY</span></li><li><span class='code'>subject_characteristics_APPRDX</span></li><li><span class='code'>motor_assessments_PDMEDYN</span></li><li><span class='code'>motor_assessments_PDMEDYN_x_orig</span></li><li><span class='code'>motor_assessments_PDMEDYN_y_orig</span></li><li><span class='code'>medical_history_Clinical_Diagnosis_NEWDIAG</span></li><li><span class='code'>subject_characteristics_PATHVAR_COUNT</span></li><li><span class='code'>subject_characteristics_ENRLPRKN</span></li><li><span class='code'>subject_characteristics_ENRLLRRK2</span></li><li><span class='code'>subject_characteristics_RNASEQ_VIS</span></li><li><span class='code'>medical_history_Features_of_Parkinsonism_FEATBRADY</span></li><li><span class='code'>subject_characteristics_AV133STDY</span></li><li><span class='code'>biospecimen_standard_files_PLASPNDR</span></li><li><span class='code'>subject_characteristics_chr12:40340400:G:A_A_LRRK2_G2019S_rs34637584</span></li><li><span class='code'>medical_history_Other_Clinical_Features_FEATCLRLEV</span></li><li><span class='code'>biospecimen_standard_files_BSSPNDR</span></li><li><span class='code'>medical_history_PD_Diagnosis_History_DXRIGID</span></li><li><span class='code'>medical_history_Features_of_Parkinsonism_FEATRIGID</span></li><li><span class='code'>subject_characteristics_ENRLPRKN</span></li><li><span class='code'>subject_characteristics_chr12:40310434:C:G_G_LRRK2_R1441G_rs33939927</span></li><li><span class='code'>subject_characteristics_chr1:155235252:A:G_G_GBA_L444P_rs421016</span></li><li><span class='code'>medical_history_Features_of_Parkinsonism_FEATTREMOR</span></li><li><span class='code'>medical_history_Neurological_Exam_CORDRSP</span></li><li><span class='code'>motor_assessments_MSEADLG</span></li><li><span class='code'>non_motor_assessments_PARKISM</span></li><li><span class='code'>subject_characteristics_GAITSTDY</span></li><li><span class='code'>medical_history_PD_Diagnosis_History_DXOTHSX</span></li><li><span class='code'>subject_characteristics_ENRLGBA</span></li><li><span class='code'>subject_characteristics_SV2ASTDY</span></li><li><span class='code'>motor_assessments_NP4TOT_x_orig</span></li><li><span class='code'>non_motor_assessments_NQCOG01</span></li><li><span class='code'>motor_assessments_NQUEX33</span></li><li><span class='code'>biospecimen_standard_files_PLASPNRT</span></li><li><span class='code'>medical_history_Determination_of_Freezing_and_Falls_FRZGT12M</span></li><li><span class='code'>biospecimen_standard_files_BSSPNRT</span></li><li><span class='code'>motor_assessments_NQUEX28</span></li><li><span class='code'>subject_characteristics_chr4:89828149:C:T_T_SNCA_A53T_rs104893877</span></li><li><span class='code'>subject_characteristics_chr1:155235843:T:C_C_GBA_N370S_rs76763715</span></li><li><span class='code'>medical_history_Features_of_Parkinsonism_FEATPOSINS</span></li><li><span class='code'>medical_history_Other_Clinical_Features_FEATDCRARM</span></li><li><span class='code'>biospecimen_standard_files_PLAALQN</span></li><li><span class='code'>medical_history_Other_Clinical_Features_FEATDELHAL</span></li><li><span class='code'>non_motor_assessments_PTCGBOTH_y_orig1</span></li><li><span class='code'>motor_assessments_NQMOB33</span></li><li><span class='code'>subject_characteristics_chr1:155240660:G:GC_GC_GBA_84GG_rs387906315</span></li><li><span class='code'>subject_characteristics_chr12:40320043:G:C_C_LRRK2_R1628P/H_rs33949390</span></li>
+                </ul>
+                <p><em>These features were excluded because they may be too closely related to the target variable 
+                or contain information that would not be available at prediction time.</em></p>
+        
+            </div>
+    
+            <div class="summary-box">
+                <h2>🏆 3. Model Comparison Leaderboard</h2>
+                <p>Cross-validation results for all evaluated models:</p>
+                <div style="overflow-x: auto;">
+        <table border="1" class="dataframe leaderboard-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>Model</th>
+      <th>Accuracy</th>
+      <th>AUC</th>
+      <th>Recall</th>
+      <th>Prec.</th>
+      <th>F1</th>
+      <th>Kappa</th>
+      <th>MCC</th>
+      <th>TT (Sec)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="top-model">
+      <th>xgboost</th>
+      <td>Extreme Gradient Boosting</td>
+      <td>0.9653</td>
+      <td>0.9973</td>
+      <td>0.9653</td>
+      <td>0.9654</td>
+      <td>0.9652</td>
+      <td>0.9433</td>
+      <td>0.9434</td>
+      <td>2.9820</td>
+    </tr>
+    <tr>
+      <th>catboost</th>
+      <td>CatBoost Classifier</td>
+      <td>0.9544</td>
+      <td>0.9958</td>
+      <td>0.9544</td>
+      <td>0.9549</td>
+      <td>0.9541</td>
+      <td>0.9253</td>
+      <td>0.9255</td>
+      <td>51.6080</td>
+    </tr>
+    <tr>
+      <th>et</th>
+      <td>Extra Trees Classifier</td>
+      <td>0.9320</td>
+      <td>0.9842</td>
+      <td>0.9320</td>
+      <td>0.9340</td>
+      <td>0.9293</td>
+      <td>0.8875</td>
+      <td>0.8886</td>
+      <td>2.1020</td>
+    </tr>
+    <tr>
+      <th>gbc</th>
+      <td>Gradient Boosting Classifier</td>
+      <td>0.9171</td>
+      <td>0.0000</td>
+      <td>0.9171</td>
+      <td>0.9180</td>
+      <td>0.9153</td>
+      <td>0.8629</td>
+      <td>0.8641</td>
+      <td>31.4980</td>
+    </tr>
+    <tr>
+      <th>rf</th>
+      <td>Random Forest Classifier</td>
+      <td>0.9121</td>
+      <td>0.9828</td>
+      <td>0.9121</td>
+      <td>0.9153</td>
+      <td>0.9052</td>
+      <td>0.8535</td>
+      <td>0.8556</td>
+      <td>1.4380</td>
+    </tr>
+    <tr>
+      <th>dt</th>
+      <td>Decision Tree Classifier</td>
+      <td>0.8983</td>
+      <td>0.9241</td>
+      <td>0.8983</td>
+      <td>0.8991</td>
+      <td>0.8986</td>
+      <td>0.8348</td>
+      <td>0.8349</td>
+      <td>1.2020</td>
+    </tr>
+    <tr>
+      <th>knn</th>
+      <td>K Neighbors Classifier</td>
+      <td>0.8699</td>
+      <td>0.9556</td>
+      <td>0.8699</td>
+      <td>0.8737</td>
+      <td>0.8689</td>
+      <td>0.7876</td>
+      <td>0.7895</td>
+      <td>2.6400</td>
+    </tr>
+    <tr>
+      <th>lr</th>
+      <td>Logistic Regression</td>
+      <td>0.8140</td>
+      <td>0.0000</td>
+      <td>0.8140</td>
+      <td>0.8068</td>
+      <td>0.8074</td>
+      <td>0.6903</td>
+      <td>0.6928</td>
+      <td>11.8540</td>
+    </tr>
+    <tr>
+      <th>ridge</th>
+      <td>Ridge Classifier</td>
+      <td>0.7959</td>
+      <td>0.0000</td>
+      <td>0.7959</td>
+      <td>0.7888</td>
+      <td>0.7718</td>
+      <td>0.6476</td>
+      <td>0.6634</td>
+      <td>0.3380</td>
+    </tr>
+    <tr>
+      <th>ada</th>
+      <td>Ada Boost Classifier</td>
+      <td>0.7939</td>
+      <td>0.0000</td>
+      <td>0.7939</td>
+      <td>0.7966</td>
+      <td>0.7924</td>
+      <td>0.6645</td>
+      <td>0.6673</td>
+      <td>1.7740</td>
+    </tr>
+    <tr>
+      <th>lda</th>
+      <td>Linear Discriminant Analysis</td>
+      <td>0.7858</td>
+      <td>0.0000</td>
+      <td>0.7858</td>
+      <td>0.7914</td>
+      <td>0.7816</td>
+      <td>0.6442</td>
+      <td>0.6519</td>
+      <td>0.7280</td>
+    </tr>
+    <tr>
+      <th>dummy</th>
+      <td>Dummy Classifier</td>
+      <td>0.4563</td>
+      <td>0.5000</td>
+      <td>0.4563</td>
+      <td>0.2082</td>
+      <td>0.2859</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.2980</td>
+    </tr>
+    <tr>
+      <th>nb</th>
+      <td>Naive Bayes</td>
+      <td>0.4540</td>
+      <td>0.7206</td>
+      <td>0.4540</td>
+      <td>0.7414</td>
+      <td>0.4923</td>
+      <td>0.2738</td>
+      <td>0.3250</td>
+      <td>0.7860</td>
+    </tr>
+  </tbody>
+</table>
+                </div>
+                <p><em>Note: The top model (highlighted in green) was selected based on the optimization metric.</em></p>
+            </div>
+        
+            <div class="best-model">
+                <h2>🌟 4. Best Model Details</h2>
+                <h3>Selected Model: <span class="highlight">XGBClassifier</span></h3>
+        
+                <table>
+                    <tr><th>Metric</th><th>Value</th></tr>
+            <tr><td>Accuracy</td><td class='metric-value'>0.9653</td></tr><tr><td>AUC</td><td class='metric-value'>0.9973</td></tr><tr><td>Recall</td><td class='metric-value'>0.9653</td></tr><tr><td>Prec.</td><td class='metric-value'>0.9654</td></tr><tr><td>F1</td><td class='metric-value'>0.9652</td></tr><tr><td>Kappa</td><td class='metric-value'>0.9433</td></tr><tr><td>MCC</td><td class='metric-value'>0.9434</td></tr><tr><td>TT (Sec)</td><td class='metric-value'>2.9820</td></tr>
+                </table>
+            
+            </div>
+        
+            <div class="summary-box">
+                <h2>📈 6. Model Performance Visualizations</h2>
+    
+                <div class="plot-container">
+                    <div class="plot-title">CONFUSION MATRIX</div>
+                    <img src="plots/confusion_matrix.png" alt="Confusion Matrix">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">FEATURE IMPORTANCE</div>
+                    <img src="plots/feature.png" alt="Feature Importance">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">LEARNING CURVE</div>
+                    <img src="plots/learning.png" alt="Learning Curve">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">CLASS DISTRIBUTION</div>
+                    <img src="plots/class_distribution.png" alt="Class Distribution">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">FEATURE CORRELATION HEATMAP</div>
+                    <img src="plots/feature_correlation.png" alt="Feature Correlation Heatmap">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">HIGH CORRELATION FEATURE PAIRS</div>
+                    <img src="plots/high_correlation_pairs.png" alt="High Correlation Feature Pairs">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">PCA VISUALIZATION (2D)</div>
+                    <img src="plots/pca_visualization.png" alt="PCA Visualization (2D)">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">T-SNE VISUALIZATION (PERPLEXITY 30)</div>
+                    <img src="plots/tsne_visualization_perp30.png" alt="t-SNE Visualization (Perplexity 30)">
+                </div>
+            
+                <div class="plot-container">
+                    <div class="plot-title">PCA VS T-SNE COMPARISON</div>
+                    <img src="plots/pca_vs_tsne_comparison.png" alt="PCA vs t-SNE Comparison">
+                </div>
+            
+            </div>
+    
+            <div class="feature-importance">
+                <h2>🎯 7. Top Discriminative Features</h2>
+                <p>The following features are most important for distinguishing between classes:</p>
+                <table>
+                    <tr><th>Rank</th><th>Feature</th><th>Importance Score</th></tr>
+        <tr><td>1</td><td><span class='code'>subject_characteristics_chr12:40363526:G:A_A_LRRK2_G2385R_rs34778348</span></td><td class='metric-value'>0.1258</td></tr><tr><td>2</td><td><span class='code'>subject_characteristics_chr12:40310434:C:T_T_LRRK2_R1441C_rs33939927</span></td><td class='metric-value'>0.0586</td></tr><tr><td>3</td><td><span class='code'>subject_characteristics_ENRLHPSM</span></td><td class='metric-value'>0.0528</td></tr><tr><td>4</td><td><span class='code'>non_motor_assessments_BRNINFM</span></td><td class='metric-value'>0.0410</td></tr><tr><td>5</td><td><span class='code'>subject_characteristics_ENRLRBD</span></td><td class='metric-value'>0.0283</td></tr><tr><td>6</td><td><span class='code'>motor_assessments_NP4TOT_y_orig</span></td><td class='metric-value'>0.0245</td></tr><tr><td>7</td><td><span class='code'>medical_history_Other_Clinical_Features_FEATNOLEVO</span></td><td class='metric-value'>0.0232</td></tr><tr><td>8</td><td><span class='code'>biospecimen_blood_chemistry_hematology_BCH_RCT16_Serum_Potassium_LSILORNG</span></td><td class='metric-value'>0.0205</td></tr><tr><td>9</td><td><span class='code'>medical_history_Other_Clinical_Features_FEATANTCOL</span></td><td class='metric-value'>0.0200</td></tr><tr><td>10</td><td><span class='code'>non_motor_assessments_MCAABSTR</span></td><td class='metric-value'>0.0175</td></tr><tr><td>11</td><td><span class='code'>biospecimen_standard_files_BSCFRG</span></td><td class='metric-value'>0.0171</td></tr><tr><td>12</td><td><span class='code'>motor_assessments_NP1CNST</span></td><td class='metric-value'>0.0163</td></tr><tr><td>13</td><td><span class='code'>non_motor_assessments_PTCGBOTH_x_orig</span></td><td class='metric-value'>0.0132</td></tr><tr><td>14</td><td><span class='code'>medical_history_Other_Clinical_Features_FEATMCRGRA</span></td><td class='metric-value'>0.0131</td></tr><tr><td>15</td><td><span class='code'>medical_history_Neurological_Exam_MNTLRSP</span></td><td class='metric-value'>0.0103</td></tr><tr><td>16</td><td><span class='code'>non_motor_assessments_CLCK2HND</span></td><td class='metric-value'>0.0097</td></tr><tr><td>17</td><td><span class='code'>non_motor_assessments_CNTRLDSM</span></td><td class='metric-value'>0.0093</td></tr><tr><td>18</td><td><span class='code'>motor_assessments_TOLDPD</span></td><td class='metric-value'>0.0090</td></tr><tr><td>19</td><td><span class='code'>biospecimen_blood_chemistry_hematology_BCH_RCT8_Serum_Uric_Acid_LSILORNG</span></td><td class='metric-value'>0.0089</td></tr><tr><td>20</td><td><span class='code'>non_motor_assessments_EPILEPSY</span></td><td class='metric-value'>0.0088</td></tr>
+                </table>
+            </div>
+        
+            <div class="summary-box">
+                <h2>🔬 8. Model Interpretation</h2>
+    
+                <p>SHAP (SHapley Additive exPlanations) shows feature contributions to predictions:</p>
+                <div class="plot-container">
+                    <div class="plot-title">SHAP SUMMARY</div>
+                    <img src="plots/shap_summary.png" alt="SHAP Summary">
+                </div>
+            
+            </div>
+    
+            <div class="summary-box">
+                <h2>✅ 9. Final Test Set Performance</h2>
+    
+                <p>Performance metrics on the held-out test set:</p>
+                <table>
+                    <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Accuracy</td><td class='metric-value'>0.9653</td></tr><tr><td>AUC</td><td class='metric-value'>0.9973</td></tr><tr><td>Recall</td><td class='metric-value'>0.9653</td></tr><tr><td>Prec.</td><td class='metric-value'>0.9654</td></tr><tr><td>F1</td><td class='metric-value'>0.9652</td></tr><tr><td>Kappa</td><td class='metric-value'>0.9433</td></tr><tr><td>MCC</td><td class='metric-value'>0.9434</td></tr><tr><td>TT (Sec)</td><td class='metric-value'>2.9820</td></tr>
+                </table>
+        
+            </div>
+    
+            <div class="summary-box">
+                <h2>💡 10. Recommendations</h2>
+                <ul>
+    <li>Model performance appears satisfactory. Consider deploying with appropriate monitoring.</li><li>Regularly retrain the model with new data to maintain performance.</li>
+                </ul>
+            </div>
+            
+            <div class="timestamp">
+                Report generated on: 2025-05-30 07:57:59
+            </div>
+        </div>
+    </body>
+    </html>
+    
