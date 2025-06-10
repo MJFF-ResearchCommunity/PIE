@@ -10,6 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pie.feature_engineer import FeatureEngineer
+from pie.reporting import generate_feature_engineering_report_html
 
 # Configure logging
 logging.basicConfig(
@@ -17,94 +18,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("PIE.test_feature_engineer")
-
-def generate_feature_engineering_report_html(report_data: dict, output_html_path: str):
-    """Generates an HTML report summarizing the feature engineering process."""
-    logger.info(f"Generating Feature Engineering HTML report at: {output_html_path}")
-
-    html_style = """
-    <style>
-        body { font-family: 'Arial', sans-serif; line-height: 1.6; margin: 20px; background-color: #f4f4f4; color: #333; }
-        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.1); }
-        h1, h2 { color: #2c3e50; border-bottom: 2px solid #27ae60; padding-bottom: 10px; }
-        h1 { text-align: center; color: #27ae60; }
-        table { width: auto; border-collapse: collapse; margin-bottom: 20px; margin-left: auto; margin-right: auto; }
-        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-        th { background-color: #27ae60; color: white; }
-        tr:nth-child(even) { background-color: #ecf0f1; }
-        .summary-box { border: 1px solid #bdc3c7; padding: 15px; margin-bottom: 20px; background-color: #f8f9f9; border-radius: 5px; }
-        .code { background-color: #e8e8e8; padding: 2px 5px; border-radius: 3px; font-family: 'Courier New', Courier, monospace; }
-        .highlight { color: #e67e22; font-weight: bold; }
-        ul { list-style-type: square; padding-left: 20px; }
-        li { margin-bottom: 5px; }
-        .operation-details { margin-left: 20px; }
-    </style>
-    """
-
-    fe_summary = report_data.get('feature_engineering_summary', {})
-    operations = fe_summary.get('engineered_operations', {})
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>PIE Feature Engineering Report</title>
-        {html_style}
-    </head>
-    <body>
-        <div class="container">
-            <h1>PIE Feature Engineering Report</h1>
-
-            <div class="summary-box">
-                <h2>1. Input Data</h2>
-                <p><strong>Input Dataset:</strong> <span class="code">{report_data.get('input_csv_path', 'N/A')}</span></p>
-                <p><strong>Shape of Input Data:</strong> <span class="highlight">{report_data.get('input_data_shape', 'N/A')}</span></p>
-            </div>
-
-            <div class="summary-box">
-                <h2>2. Feature Engineering Summary</h2>
-                <p><strong>Original Columns in DataFrame (before FE):</strong> {fe_summary.get('total_original_columns', 'N/A')}</p>
-                <p><strong>Total Columns After Feature Engineering:</strong> <span class="highlight">{fe_summary.get('total_current_columns', 'N/A')}</span></p>
-                <p><strong>Total New Features Created/Modified:</strong> <span class="highlight">{fe_summary.get('newly_engineered_features_count', 'N/A')}</span></p>
-                
-                <h3>Operations Performed:</h3>
-    """
-    if operations:
-        html_content += "<ul>"
-        for op_type, op_details in operations.items():
-            op_name_pretty = op_type.replace('_', ' ').title()
-            html_content += f"<li><strong>{op_name_pretty}:</strong> {op_details.get('count', 0)} features created/modified."
-            if op_details.get('features'):
-                examples = op_details['features']
-                if examples[-1] == "...": # Handle the '...' for long lists
-                    example_str = ", ".join(map(str, examples[:-1])) + ", ..."
-                else:
-                    example_str = ", ".join(map(str, examples))
-                html_content += f"<div class='operation-details'>Examples: <span class='code'>{example_str}</span></div>"
-            html_content += "</li>"
-        html_content += "</ul>"
-    else:
-        html_content += "<p>No specific feature engineering operations were tracked or performed.</p>"
-    html_content += """
-            </div>
-
-            <div class="summary-box">
-                <h2>3. Output Data</h2>
-                <p><strong>Shape of Data After Feature Engineering:</strong> <span class="highlight">{report_data.get('output_data_shape', 'N/A')}</span></p>
-                <p><strong>Engineered Dataset Saved To:</strong> <span class="code">{report_data.get('output_csv_path', 'N/A')}</span></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    try:
-        with open(output_html_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        logger.info(f"HTML report generated successfully: {output_html_path}")
-    except Exception as e:
-        logger.error(f"Failed to write HTML report to {output_html_path}: {e}")
-
 
 def test_feature_engineering_pipeline(
     input_csv_path: str = "output/final_reduced_consolidated_data.csv",

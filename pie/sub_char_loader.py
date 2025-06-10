@@ -129,46 +129,74 @@ def _aggregate_by_patno_eventid(df: pd.DataFrame) -> pd.DataFrame:
         logger.warning(f"Subject Characteristics: Cannot aggregate by {group_cols} as one or more are missing. Returning original DataFrame.")
         return df
 
-    if not df.duplicated(subset=group_cols).any():
-        return df
+    df_copy = df.copy()
+    if 'PATNO' in df_copy.columns:
+        df_copy['PATNO'] = df_copy['PATNO'].astype(str)
+
+    if not df_copy.duplicated(subset=group_cols).any():
+        return df_copy
 
     logger.info(
         "Subject Characteristics: Consolidating rows with duplicate (PATNO, EVENT_ID) pairs. "
         "Non-null values for other columns will be pipe-separated if different."
     )
 
-    def combine_series_values(series):
-        # Drop NaN values and convert to string, then get unique values
-        unique_non_null_strs = series.dropna().astype(str).unique()
-        
-        if len(unique_non_null_strs) == 0:
-            return np.nan
-        elif len(unique_non_null_strs) == 1:
-            # Attempt to return the original value if it was unique and non-null
-            # This helps preserve original types (e.g. int, float) if all were the same
-            original_non_null_values = series.dropna()
-            if original_non_null_values.nunique() == 1:
-                return original_non_null_values.iloc[0]
-            else: # Should be rare if unique_non_null_strs has 1 element
-                return unique_non_null_strs[0]
-        else:
-            return "|".join(sorted(unique_non_null_strs))
-
     agg_cols = [col for col in df.columns if col not in group_cols]
     if not agg_cols:
-        return df.drop_duplicates(subset=group_cols, keep='first')
+        return df_copy.drop_duplicates(subset=group_cols, keep='first')
 
-    agg_dict = {col: combine_series_values for col in agg_cols}
-    
-    # Ensure PATNO is string before groupby if it's not already
-    df_copy = df.copy()
-    if 'PATNO' in df_copy.columns:
-        df_copy['PATNO'] = df_copy['PATNO'].astype(str)
+    df_indexed = df_copy.set_index(group_cols)
 
-    df_aggregated = df_copy.groupby(group_cols, as_index=False).agg(agg_dict)
+    grouped = df_indexed.groupby(level=group_cols)
+    nunique_df = grouped[agg_cols].nunique()
+    result_df = grouped[agg_cols].first()
+
+    pipe_separated_stats = {}
+
+    for col in agg_cols:
+        multi_value_groups_mask = nunique_df[col] > 1
+        if not multi_value_groups_mask.any():
+            continue
+
+        num_affected_groups = multi_value_groups_mask.sum()
+        if num_affected_groups > 0:
+            pipe_separated_stats[col] = num_affected_groups
+
+        multi_value_group_indices = nunique_df.index[multi_value_groups_mask]
+        
+        rows_for_col_agg_mask = df_indexed.index.isin(multi_value_group_indices)
+        df_subset_for_col = df_indexed.loc[rows_for_col_agg_mask, [col]]
+
+        if df_subset_for_col.empty:
+            continue
+
+        def string_agg_slow(series: pd.Series) -> str:
+            unique_strings = series.dropna().astype(str).unique()
+            return "|".join(sorted(unique_strings))
+
+        slow_agg_results = df_subset_for_col.groupby(level=group_cols)[col].agg(string_agg_slow)
+
+        # If the target column is not already an object/string type, cast it.
+        # This prevents FutureWarning about incompatible dtypes.
+        if result_df[col].dtype != 'object' and not pd.api.types.is_string_dtype(result_df[col].dtype):
+            result_df[col] = result_df[col].astype(object)
+
+        result_df.loc[slow_agg_results.index, col] = slow_agg_results
+        
+    df_aggregated = result_df.reset_index()
+
+    if pipe_separated_stats:
+        logger.info("Summary of pipe-separated columns for Subject Characteristics:")
+        sorted_stats = sorted(pipe_separated_stats.items(), key=lambda item: item[1], reverse=True)
+        
+        for i, (col, count) in enumerate(sorted_stats):
+            logger.info(f"  - Column '{col}': {count} groups had multiple values.")
+            if i < 3: # Log examples for the top 3
+                first_offending_group_index = nunique_df.index[nunique_df[col] > 1][0]
+                conflicting_values = df_indexed.loc[first_offending_group_index, col].dropna().astype(str).unique()
+                logger.info(f"    - Example for group {first_offending_group_index}: values were {list(conflicting_values)}")
     
     ordered_cols = group_cols + [col for col in df.columns if col in df_aggregated.columns and col not in group_cols]
-    # Handle case where a column might have been completely removed if it was only in group_cols before
     final_ordered_cols = [col for col in ordered_cols if col in df_aggregated.columns]
 
     return df_aggregated[final_ordered_cols]
@@ -207,9 +235,6 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
             df_temp['PATNO'] = df_temp['PATNO'].astype(str)
 
 
-            # Sanitize columns in df_temp before merging
-            _sanitize_suffixes_in_df(df_temp)
-            
             if df_merged is None:
                 df_merged = df_temp
             else:
@@ -217,8 +242,6 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
                 if 'PATNO' in df_merged.columns:
                      df_merged['PATNO'] = df_merged['PATNO'].astype(str)
 
-                # Sanitize columns in df_merged before merging
-                _sanitize_suffixes_in_df(df_merged)
                 
                 merge_keys = ["PATNO"]
                 # Merge on EVENT_ID only if both frames have it
@@ -232,6 +255,7 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
 
                 try:
                     df_merged = pd.merge(df_merged, df_temp, on=merge_keys, how="outer", suffixes=('_x', '_y'))
+                    df_merged = _general_deduplicate_suffixed_columns(df_merged)
                 except Exception as e:
                     logger.error(f"Error merging {os.path.basename(csv_file_path)} into df_merged: {e}")
                     logger.error(f"df_merged columns: {df_merged.columns.tolist()}")
@@ -244,9 +268,6 @@ def load_ppmi_subject_characteristics(folder_path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     # 1. Resolve _x, _y suffixed columns resulting from merges
-    logger.debug("Applying general suffixed column deduplication...")
-    df_merged = _general_deduplicate_suffixed_columns(df_merged)
-
     # 2. Ensure (PATNO, EVENT_ID) uniqueness by aggregating rows
     # This step must happen after all files are merged and _x/_y columns are resolved.
     if "EVENT_ID" in df_merged.columns:

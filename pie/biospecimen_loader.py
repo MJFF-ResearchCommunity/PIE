@@ -103,43 +103,75 @@ def _aggregate_by_patno_eventid(df: pd.DataFrame, df_name_for_log: str = "Biospe
         logger.warning(f"{df_name_for_log}: Cannot aggregate by {group_cols} as one or more are missing. Returning original DataFrame.")
         return df
 
-    # Ensure PATNO is string type before checking duplicates and grouping
-    # This is crucial for consistent duplicate detection and merging.
-    df['PATNO'] = df['PATNO'].astype(str)
+    # Make a copy to avoid modifying the original DataFrame and ensure PATNO is string
+    df_copy = df.copy()
+    df_copy['PATNO'] = df_copy['PATNO'].astype(str)
 
-    if not df.duplicated(subset=group_cols).any():
-        return df
+    if not df_copy.duplicated(subset=group_cols).any():
+        return df_copy
 
     logger.info(
         f"{df_name_for_log}: Consolidating rows with duplicate (PATNO, EVENT_ID) pairs. "
         "Non-null values for other columns will be pipe-separated if different."
     )
 
-    def combine_series_values(series):
-        unique_non_null_strs = series.dropna().astype(str).unique()
-        if len(unique_non_null_strs) == 0:
-            return np.nan
-        elif len(unique_non_null_strs) == 1:
-            original_non_null_values = series.dropna()
-            if original_non_null_values.nunique() == 1:
-                return original_non_null_values.iloc[0]
-            else: 
-                return unique_non_null_strs[0]
-        else:
-            return "|".join(sorted(unique_non_null_strs))
-
     agg_cols = [col for col in df.columns if col not in group_cols]
-    if not agg_cols: # Only PATNO, EVENT_ID exist
-        return df.drop_duplicates(subset=group_cols, keep='first')
+    if not agg_cols:
+        return df_copy.drop_duplicates(subset=group_cols, keep='first')
 
-    agg_dict = {col: combine_series_values for col in agg_cols}
-    
-    # Groupby and aggregate
-    df_aggregated = df.groupby(group_cols, as_index=False).agg(agg_dict)
+    df_indexed = df_copy.set_index(group_cols)
+
+    grouped = df_indexed.groupby(level=group_cols)
+    nunique_df = grouped[agg_cols].nunique()
+    result_df = grouped[agg_cols].first()
+
+    pipe_separated_stats = {}
+
+    for col in agg_cols:
+        multi_value_groups_mask = nunique_df[col] > 1
+        if not multi_value_groups_mask.any():
+            continue
+
+        num_affected_groups = multi_value_groups_mask.sum()
+        if num_affected_groups > 0:
+            pipe_separated_stats[col] = num_affected_groups
+
+        multi_value_group_indices = nunique_df.index[multi_value_groups_mask]
+        
+        rows_for_col_agg_mask = df_indexed.index.isin(multi_value_group_indices)
+        df_subset_for_col = df_indexed.loc[rows_for_col_agg_mask, [col]]
+
+        if df_subset_for_col.empty:
+            continue
+        
+        def string_agg_slow(series: pd.Series) -> str:
+            unique_strings = series.dropna().astype(str).unique()
+            return "|".join(sorted(unique_strings))
+
+        slow_agg_results = df_subset_for_col.groupby(level=group_cols)[col].agg(string_agg_slow)
+
+        # If the target column is not already an object/string type, cast it.
+        # This prevents FutureWarning about incompatible dtypes.
+        if result_df[col].dtype != 'object' and not pd.api.types.is_string_dtype(result_df[col].dtype):
+            result_df[col] = result_df[col].astype(object)
+
+        result_df.loc[slow_agg_results.index, col] = slow_agg_results
+        
+    df_aggregated = result_df.reset_index()
+
+    if pipe_separated_stats:
+        logger.info(f"Summary of pipe-separated columns for {df_name_for_log}:")
+        sorted_stats = sorted(pipe_separated_stats.items(), key=lambda item: item[1], reverse=True)
+        
+        for i, (col, count) in enumerate(sorted_stats):
+            logger.info(f"  - Column '{col}': {count} groups had multiple values.")
+            if i < 3: # Log examples for the top 3
+                first_offending_group_index = nunique_df.index[nunique_df[col] > 1][0]
+                conflicting_values = df_indexed.loc[first_offending_group_index, col].dropna().astype(str).unique()
+                logger.info(f"    - Example for group {first_offending_group_index}: values were {list(conflicting_values)}")
     
     # Preserve original column order as much as possible
     ordered_cols = group_cols + [col for col in df.columns if col in df_aggregated.columns and col not in group_cols]
-    # Ensure all columns in ordered_cols are actually in df_aggregated
     final_ordered_cols = [col for col in ordered_cols if col in df_aggregated.columns]
     
     return df_aggregated[final_ordered_cols]

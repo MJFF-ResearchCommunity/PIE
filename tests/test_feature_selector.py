@@ -11,9 +11,13 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.feature_selection import VarianceThreshold, SelectFdr, f_classif
 import webbrowser # For opening the report
+import pytest
 
 # Add the parent directory to the Python path to make the pie module importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from pie.feature_selector import FeatureSelector
+from pie.reporting import generate_feature_selection_report_html
 
 # FeatureSelector class is not directly used here as we are applying a custom sequence
 # from pie.feature_selector import FeatureSelector 
@@ -25,165 +29,83 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PIE.test_feature_selector")
 
-def generate_feature_selection_report_html(report_data: dict, output_html_path: str):
-    """Generates an HTML report summarizing the feature selection process."""
-    logger.info(f"Generating HTML report at: {output_html_path}")
+# --- Test setup for real data ---
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# This test depends on the output of test_pipeline.py
+INPUT_CSV_PATH = PROJECT_ROOT / "output" / "test_pipeline_run" / "final_engineered_dataset.csv"
+TARGET_COLUMN = "COHORT"
 
-    html_style = """
-    <style>
-        body { font-family: 'Arial', sans-serif; line-height: 1.6; margin: 20px; background-color: #f4f4f4; color: #333; }
-        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.1); }
-        h1, h2, h3 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
-        h1 { text-align: center; color: #3498db; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-        th { background-color: #3498db; color: white; }
-        tr:nth-child(even) { background-color: #ecf0f1; }
-        .summary-box { border: 1px solid #bdc3c7; padding: 15px; margin-bottom: 20px; background-color: #f8f9f9; border-radius: 5px; }
-        .code { background-color: #e8e8e8; padding: 2px 5px; border-radius: 3px; font-family: 'Courier New', Courier, monospace; }
-        .highlight { color: #e67e22; font-weight: bold; }
-        ul { list-style-type: square; padding-left: 20px; }
-        li { margin-bottom: 5px; }
-    </style>
+# Mark to skip if the required input file doesn't exist.
+requires_engineered_data = pytest.mark.skipif(
+    not INPUT_CSV_PATH.exists(),
+    reason=f"Engineered data not found at {INPUT_CSV_PATH}. Run the full pipeline test first."
+)
+
+@requires_engineered_data
+def test_feature_selector_class_with_real_data():
     """
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>PIE Feature Selection Report</title>
-        {html_style}
-    </head>
-    <body>
-        <div class="container">
-            <h1>PIE Feature Selection Report</h1>
-
-            <div class="summary-box">
-                <h2>1. Initial Data Summary</h2>
-                <p><strong>Input Dataset:</strong> <span class="code">{report_data.get('input_csv_path', 'N/A')}</span></p>
-                <table>
-                    <tr><th>Metric</th><th>Value</th></tr>
-                    <tr><td>Raw Loaded Data Shape</td><td>{report_data.get('raw_data_shape', 'N/A')}</td></tr>
-                    <tr><td>Rows Dropped (Missing Target)</td><td>{report_data.get('rows_dropped_missing_target', 'N/A')}</td></tr>
-                    <tr><td>Data Shape (After Handling Missing Target)</td><td>{report_data.get('clean_data_shape', 'N/A')}</td></tr>
-                    <tr><td>Target Column</td><td><span class="code">{report_data.get('target_column', 'N/A')}</span></td></tr>
-                </table>
-            </div>
-
-            <div class="summary-box">
-                <h2>2. Train-Test Split</h2>
-                <table>
-                    <tr><th>Dataset</th><th>Shape</th></tr>
-                    <tr><td>X_train</td><td>{report_data.get('X_train_shape', 'N/A')}</td></tr>
-                    <tr><td>y_train</td><td>{report_data.get('y_train_shape', 'N/A')}</td></tr>
-                    <tr><td>X_test</td><td>{report_data.get('X_test_shape', 'N/A')}</td></tr>
-                    <tr><td>y_test</td><td>{report_data.get('y_test_shape', 'N/A')}</td></tr>
-                </table>
-            </div>
-
-            <div class="summary-box">
-                <h2>3. Preprocessing (Imputation, Scaling, One-Hot Encoding)</h2>
-                <p>Applied to X_train (fit and transform) and X_test (transform).</p>
-                <table>
-                    <tr><th>Dataset</th><th>Shape Before</th><th>Shape After</th><th>Features Before</th><th>Features After</th></tr>
-                    <tr>
-                        <td>X_train</td>
-                        <td>{report_data.get('X_train_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_train_processed_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_train_shape', ('N/A', 'N/A'))[1]}</td>
-                        <td>{report_data.get('X_train_processed_shape', ('N/A', 'N/A'))[1]}</td>
-                    </tr>
-                    <tr>
-                        <td>X_test</td>
-                        <td>{report_data.get('X_test_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_test_processed_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_test_shape', ('N/A', 'N/A'))[1]}</td>
-                        <td>{report_data.get('X_test_processed_shape', ('N/A', 'N/A'))[1]}</td>
-                    </tr>
-                </table>
-            </div>
-
-            <div class="summary-box">
-                <h2>4. Feature Selection Steps</h2>
-                
-                <h3>4.1 Variance Threshold</h3>
-                <p><strong>Threshold Value:</strong> <span class="highlight">{report_data.get('variance_threshold_val', 'N/A')}</span></p>
-                <table>
-                    <tr><th>Dataset</th><th>Shape Before VT</th><th>Shape After VT</th><th>Features Dropped by VT (Train)</th></tr>
-                    <tr>
-                        <td>X_train_processed</td>
-                        <td>{report_data.get('X_train_processed_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_train_var_thresh_shape', 'N/A')}</td>
-                        <td rowspan="2" style="vertical-align:middle;">{report_data.get('features_dropped_vt_train', 'N/A')}</td>
-                    </tr>
-                    <tr>
-                        <td>X_test_processed</td>
-                        <td>{report_data.get('X_test_processed_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_test_var_thresh_shape', 'N/A')}</td>
-                    </tr>
-                </table>
-
-                <h3>4.2 SelectFdr (False Discovery Rate)</h3>
-                <p><strong>Alpha (FDR Control):</strong> <span class="highlight">{report_data.get('fdr_alpha', 'N/A')}</span></p>
-                <p><strong>Scoring Function:</strong> <span class="code">f_classif</span> (for classification target)</p>
-                <table>
-                    <tr><th>Dataset</th><th>Shape Before FDR</th><th>Shape After FDR</th><th>Features Dropped by FDR (Train)</th></tr>
-                     <tr>
-                        <td>X_train_var_thresh</td>
-                        <td>{report_data.get('X_train_var_thresh_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_train_fdr_shape', 'N/A')}</td>
-                        <td rowspan="2" style="vertical-align:middle;">{report_data.get('features_dropped_fdr_train', 'N/A')}</td>
-                    </tr>
-                    <tr>
-                        <td>X_test_var_thresh</td>
-                        <td>{report_data.get('X_test_var_thresh_shape', 'N/A')}</td>
-                        <td>{report_data.get('X_test_fdr_shape', 'N/A')}</td>
-                    </tr>
-                </table>
-            </div>
-
-            <div class="summary-box">
-                <h2>5. Final Selected Features</h2>
-                <p><strong>Total Selected Features:</strong> <span class="highlight">{report_data.get('num_final_selected_features', 'N/A')}</span></p>
+    Tests the FeatureSelector class using a real engineered dataset.
+    This test verifies that the class can be instantiated, fitted, and used
+    to transform data correctly, resolving the SimpleImputer error.
     """
-    if report_data.get('final_selected_feature_names'):
-        html_content += "<strong>List of Selected Features:</strong><ul>"
-        for feature_name in report_data.get('final_selected_feature_names', []):
-            html_content += f"<li><span class='code'>{feature_name}</span></li>"
-        html_content += "</ul>"
-    else:
-        html_content += "<p>No features were selected or list is unavailable.</p>"
-    html_content += """
-            </div>
+    logger.info(f"--- Testing FeatureSelector with real data from: {INPUT_CSV_PATH} ---")
+    
+    # 1. Load the data
+    df = pd.read_csv(INPUT_CSV_PATH)
+    df.dropna(subset=[TARGET_COLUMN], inplace=True)
 
-            <div class="summary-box">
-                <h2>6. Final Output Data</h2>
-                <table>
-                    <tr><th>Dataset</th><th>Final Shape</th><th>Saved To</th></tr>
-                    <tr>
-                        <td>Selected Training Data</td>
-                        <td>{report_data.get('final_train_data_shape', 'N/A')}</td>
-                        <td><span class="code">{report_data.get('output_train_csv_path', 'N/A')}</span></td>
-                    </tr>
-                    <tr>
-                        <td>Selected Test Data</td>
-                        <td>{report_data.get('final_test_data_shape', 'N/A')}</td>
-                        <td><span class="code">{report_data.get('output_test_csv_path', 'N/A')}</span></td>
-                    </tr>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    try:
-        with open(output_html_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        logger.info(f"HTML report generated successfully: {output_html_path}")
-    except Exception as e:
-        logger.error(f"Failed to write HTML report to {output_html_path}: {e}")
+    # 2. Separate features and target, excluding identifiers
+    id_cols = ['PATNO', 'EVENT_ID']
+    # Filter out id_cols that might not be present
+    existing_id_cols = [col for col in id_cols if col in df.columns]
+    feature_cols = [col for col in df.columns if col not in [TARGET_COLUMN] + existing_id_cols]
 
+    X = df[feature_cols]
+    y = df[TARGET_COLUMN]
+
+    # 3. Split data to mimic a real scenario
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    logger.info(f"Train/Test split created. X_train shape: {X_train.shape}, X_test shape: {X_test.shape}")
+
+    # 4. Initialize and use the FeatureSelector
+    selector = FeatureSelector(
+        method='univariate_kbest',
+        task_type='classification',
+        k_or_frac_kbest=0.25  # Select top 25% of features
+    )
+    logger.info(f"FeatureSelector initialized with method='univariate_kbest', k=0.25")
+
+    # 5. Fit on training data
+    logger.info("Fitting the selector...")
+    selector.fit(X_train, y_train)
+    logger.info("Selector fitting complete.")
+
+    # 6. Transform both train and test data
+    logger.info("Transforming train and test sets...")
+    X_train_selected = selector.transform(X_train)
+    X_test_selected = selector.transform(X_test)
+    logger.info(f"Data transformed. New X_train shape: {X_train_selected.shape}")
+
+    # 7. Assertions
+    assert isinstance(X_train_selected, pd.DataFrame), "Transformed train set should be a DataFrame"
+    assert isinstance(X_test_selected, pd.DataFrame), "Transformed test set should be a DataFrame"
+    
+    # Assert columns are the same in train and test transformed sets
+    pd.testing.assert_index_equal(X_train_selected.columns, X_test_selected.columns)
+
+    # Assert that features were actually selected (less than original)
+    assert X_train_selected.shape[1] < X_train.shape[1]
+    
+    # Assert that some features were selected
+    assert X_train_selected.shape[1] > 0
+    
+    # Assert that the number of selected features is stored correctly
+    assert len(selector.selected_feature_names_) == X_train_selected.shape[1]
+    
+    logger.info(f"Original feature count: {X_train.shape[1]}")
+    logger.info(f"Selected feature count: {X_train_selected.shape[1]}")
+    logger.info(f"Top 5 selected features: {selector.selected_feature_names_[:5]}")
+    logger.info("--- FeatureSelector test passed successfully! ---")
 
 def test_feature_selection_workflow(
     input_csv_path: str = "output/final_engineered_dataset.csv",
