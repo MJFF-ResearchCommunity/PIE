@@ -80,6 +80,8 @@ pip install -e .
     │   ├── _Subject_Characteristics/
     │   ├── Biospecimen/
     │   ├── Motor___MDS-UPDRS/
+    │   ├── Non-motor_Assessments/   
+    │   ├── Medical_History/
     │   └── ... (other data folders)
     ├── pie/
     └── ... (other project files)
