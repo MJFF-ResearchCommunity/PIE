@@ -2,417 +2,177 @@
 
 ## Overview
 
-The `non_motor_loader.py` module provides functions for loading, merging, and processing non-motor assessment data from the Parkinson's Progression Markers Initiative (PPMI) dataset. This module handles various cognitive, psychiatric, autonomic, and other non-motor assessments commonly used in Parkinson's disease research.
+The `non_motor_loader.py` module is designed to load and consolidate a wide range of non-motor assessment data from the PPMI dataset. It automates the process of finding relevant CSV files, merging them into a single pandas DataFrame, and cleaning the result to ensure data integrity and usability for analysis.
 
 ## Key Features
 
-- Load multiple non-motor assessment files based on standardized naming conventions
-- Intelligently merge related files based on patient ID and visit information
-- Handle duplicate columns through a sophisticated combination approach
-- Preserve data integrity when integrating different assessment types
-- Support both longitudinal (visit-specific) and static patient data
+- Loads data from a comprehensive list of non-motor assessment file prefixes.
+- Recursively searches for CSV files within the specified directory.
+- Merges individual assessment files into a single DataFrame based on patient (`PATNO`) and visit (`EVENT_ID`) identifiers.
+- Intelligently resolves column name conflicts that arise during merges (e.g., `COLUMN_x`, `COLUMN_y`).
+- Ensures unique rows for each patient-visit pair by aggregating data from duplicate entries. Conflicting values are preserved and separated by a pipe (`|`).
+- Provides detailed logging for transparency into the loading, merging, and cleaning process.
 
-## Supported Assessments
+## Supported Non-Motor Assessments
 
-The module supports numerous non-motor assessments, including:
+The loader is configured to search for files that begin with the following prefixes:
 
-- **Cognitive Tests**: Montreal Cognitive Assessment (MoCA), Hopkins Verbal Learning Test, Symbol Digit Modalities, etc.
-- **Psychiatric Scales**: Geriatric Depression Scale, State-Trait Anxiety Inventory, etc.
-- **Sleep Assessments**: REM Sleep Behavior Disorder Questionnaire, Epworth Sleepiness Scale
-- **Autonomic Function**: SCOPA-AUT
-- **Quality of Life**: Neuro QoL
-- **Sensory Assessments**: University of Pennsylvania Smell Identification Test
-- And many others listed in the `FILE_PREFIXES` constant
+- `Benton_Judgement`
+- `Clock_Drawing`
+- `Cognitive_Categorization`
+- `Cognitive_Change`
+- `Epworth_Sleepiness_Scale`
+- `Geriatric_Depression_Scale`
+- `Hopkins_Verbal_Learning_Test`
+- `IDEA_Cognitive_Screen`
+- `Letter_-_Number_Sequencing`
+- `Lexical_Fluency`
+- `Modified_Boston_Naming_Test`
+- `Modified_Semantic_Fluency`
+- `Montreal_Cognitive_Assessment`
+- `Neuro_QoL`
+- `PDAQ-27`
+- `QUIP-Current-Short`
+- `REM_Sleep_Behavior_Disorder_Questionnaire`
+- `SCOPA-AUT`
+- `State-Trait_Anxiety_Inventory`
+- `Symbol_Digit_Modalities`
+- `Trail_Making`
+- `University_of_Pennsylvania_Smell_Identification`
 
-## Functions
+## Function
 
-### `deduplicate_columns(df, duplicate_columns)`
+The module exposes a single primary function for loading data.
 
-Resolves duplicate columns that arise during merging operations by intelligently combining values.
+### `load_ppmi_non_motor_assessments(folder_path: str)`
+
+Loads, merges, and cleans all non-motor assessment CSV files from a given folder.
 
 **Parameters:**
-- `df`: The merged DataFrame containing possible duplicates
-- `duplicate_columns`: List of column base names that may have duplicates
+- `folder_path (str)`: The path to the directory containing non-motor assessment files. A typical path would be `./PPMI/Non-motor_Assessments`. The function will search this directory and its subdirectories.
 
 **Returns:**
-- Updated DataFrame with deduplicated columns
+- `pandas.DataFrame`: A single DataFrame containing the merged and cleaned data from all found non-motor assessment files. If no files are found or an error occurs, it returns an empty DataFrame.
 
-**Behavior:**
-- For each column in `duplicate_columns`, resolves duplicates created during merging (`column_x` and `column_y`)
-- Applies intelligent combination logic:
-  1. If both values are empty/NaN, the result is empty
-  2. If one is empty, uses the non-empty value
-  3. If both are non-empty and identical, uses that value
-  4. If both are non-empty and different, combines with a pipe separator (|)
-
-**Example:**
-
-```python
-import pandas as pd
-from pie.non_motor_loader import deduplicate_columns
-
-# Create sample DataFrame with duplicated columns
-data = {
-    'PATNO': [1001, 1002, 1003],
-    'INFODT_x': ['2020-01-01', None, '2020-03-01'],
-    'INFODT_y': [None, '2020-02-01', '2020-03-01']
-}
-df = pd.DataFrame(data)
-
-# Deduplicate columns
-df = deduplicate_columns(df, ['INFODT'])
-
-print(df)
-# Output:
-#    PATNO      INFODT
-# 0   1001  2020-01-01
-# 1   1002  2020-02-01
-# 2   1003  2020-03-01
-```
-
-### `sanitize_suffixes_in_df(df)`
-
-Prepares a DataFrame for merging by handling columns that already have `_x` or `_y` suffixes to prevent merge conflicts.
-
-**Parameters:**
-- `df`: The DataFrame to sanitize
-
-**Behavior:**
-- Modifies the DataFrame in-place
-- Renames columns ending with `_x` or `_y` to avoid conflicts during merge operations
-- Appends `_col` or `_col{n}` to create unique column names
-
-**Example:**
-
-```python
-import pandas as pd
-from pie.non_motor_loader import sanitize_suffixes_in_df
-
-# Create DataFrame with columns already ending in _x or _y
-data = {
-    'PATNO': [1001, 1002],
-    'EVENT_ID': ['BL', 'V01'],
-    'SCORE_x': [25, 30],  # Column already has _x suffix
-    'STATUS_y': ['Complete', 'Incomplete']  # Column already has _y suffix
-}
-df = pd.DataFrame(data)
-
-# Sanitize the column names
-sanitize_suffixes_in_df(df)
-
-print(df.columns.tolist())
-# Output something like: ['PATNO', 'EVENT_ID', 'SCORE_col', 'STATUS_col']
-```
-
-### `load_ppmi_non_motor_assessments(folder_path)`
-
-Main function to load and merge all non-motor assessment files from the PPMI dataset.
-
-**Parameters:**
-- `folder_path`: Path to the 'Non-motor_Assessments' folder containing CSV files
-
-**Returns:**
-- A merged DataFrame containing data from all successfully loaded non-motor assessment files
-
-**Behavior:**
-- Searches for CSV files matching the prefixes defined in `FILE_PREFIXES`
-- Merges files intelligently based on available columns:
-  - If both DataFrames have PATNO and EVENT_ID, merges on both
-  - If only PATNO is available, merges on PATNO only (replicating static data across visits)
-- Handles duplicate columns through deduplication
-- Returns an empty DataFrame if no files are successfully loaded
-
-**Example:**
+## Basic Usage Example
 
 ```python
 import pandas as pd
 from pie.non_motor_loader import load_ppmi_non_motor_assessments
 
-# Load all non-motor assessment data
-data_path = "./PPMI/Non-motor_Assessments"
-non_motor_data = load_ppmi_non_motor_assessments(data_path)
+# Define the path to your PPMI non-motor assessments folder
+# This folder should contain the various CSV files.
+non_motor_data_path = "./PPMI/Non-motor_Assessments"
 
-# Check the dimensions of the loaded data
-print(f"Loaded {len(non_motor_data)} rows with {len(non_motor_data.columns)} columns")
+# Load the data
+print(f"Loading non-motor assessments from: {non_motor_data_path}")
+df_non_motor = load_ppmi_non_motor_assessments(non_motor_data_path)
 
-# View the first few rows
-print(non_motor_data.head())
+if not df_non_motor.empty:
+    # Display the shape and first few rows of the loaded data
+    print(f"Successfully loaded data. Shape: {df_non_motor.shape}")
+    print("First 5 rows of the merged non-motor assessments data:")
+    print(df_non_motor.head())
 
-# Save the merged data
-non_motor_data.to_csv("merged_non_motor_assessments.csv", index=False)
+    # Example: Inspect columns related to a specific assessment (e.g., MoCA)
+    moca_cols = [col for col in df_non_motor.columns if 'MCA' in col.upper()]
+    if moca_cols:
+        print(f"\nFound MoCA-related columns: {moca_cols}")
+        print("Sample MoCA data:")
+        print(df_non_motor[['PATNO', 'EVENT_ID'] + moca_cols].head())
+
+    # Save the merged data to a new CSV file for further analysis
+    output_path = "merged_non_motor_assessments.csv"
+    df_non_motor.to_csv(output_path, index=False)
+    print(f"\nMerged data saved to {output_path}")
+else:
+    print("Loading failed or no data was found. Please check logs and folder path.")
 ```
 
-## Detailed Usage Examples
+## Post-Loading Analysis Example
 
-### Example 1: Basic Loading and Exploration
+Once the data is loaded, you can use pandas to analyze it. This example shows how to calculate average cognitive scores across visits.
 
-```python
-import pandas as pd
-import matplotlib.pyplot as plt
-from pie.non_motor_loader import load_ppmi_non_motor_assessments
-
-# Load non-motor assessment data
-data_path = "./PPMI/Non-motor_Assessments"
-non_motor_data = load_ppmi_non_motor_assessments(data_path)
-
-# Display summary information
-print(f"Loaded data shape: {non_motor_data.shape}")
-print(f"Number of unique patients: {non_motor_data['PATNO'].nunique()}")
-
-# Check available columns for specific assessments
-moca_cols = [col for col in non_motor_data.columns if 'MOCA' in col]
-print(f"MoCA assessment columns: {moca_cols}")
-
-# Basic summary statistics for MoCA total score (if available)
-if 'MCATOT' in non_motor_data.columns:
-    print("\nMoCA Total Score Statistics:")
-    print(non_motor_data['MCATOT'].describe())
-    
-    # Distribution of MoCA scores
-    plt.figure(figsize=(10, 6))
-    plt.hist(non_motor_data['MCATOT'].dropna(), bins=15)
-    plt.title('Distribution of MoCA Total Scores')
-    plt.xlabel('MoCA Score')
-    plt.ylabel('Frequency')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('moca_distribution.png')
-```
-
-### Example 2: Longitudinal Analysis of Cognitive Scores
-
-```python
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pie.non_motor_loader import load_ppmi_non_motor_assessments
-
-# Load non-motor assessment data
-data_path = "./PPMI/Non-motor_Assessments"
-non_motor_data = load_ppmi_non_motor_assessments(data_path)
-
-# Define the visit order for proper plotting
-visit_order = ['BL', 'V01', 'V02', 'V03', 'V04', 'V05', 'V06', 'V07', 'V08', 'V09', 'V10', 'V11', 'V12']
-
-# Focus on cognitive scores across time
-cognitive_data = non_motor_data[['PATNO', 'EVENT_ID', 'MCATOT', 'SDMTOTAL', 'HVLTRT1', 'HVLTRT2', 'HVLTRT3']]
-
-# Convert EVENT_ID to categorical with proper order for plotting
-cognitive_data['EVENT_ID'] = pd.Categorical(
-    cognitive_data['EVENT_ID'], 
-    categories=visit_order,
-    ordered=True
-)
-
-# Sort by PATNO and EVENT_ID
-cognitive_data = cognitive_data.sort_values(['PATNO', 'EVENT_ID'])
-
-# Plot MoCA scores across visits
-plt.figure(figsize=(12, 7))
-sns.boxplot(x='EVENT_ID', y='MCATOT', data=cognitive_data)
-plt.title('Montreal Cognitive Assessment (MoCA) Scores Across Visits')
-plt.xlabel('Visit')
-plt.ylabel('MoCA Total Score')
-plt.grid(True, alpha=0.3)
-plt.savefig('moca_longitudinal.png')
-
-# Track cognitive change for individual patients (example with first 10 patients)
-selected_patients = cognitive_data['PATNO'].unique()[:10]
-patient_data = cognitive_data[cognitive_data['PATNO'].isin(selected_patients)]
-
-plt.figure(figsize=(14, 8))
-sns.lineplot(
-    data=patient_data,
-    x='EVENT_ID',
-    y='MCATOT',
-    hue='PATNO',
-    marker='o',
-    markersize=8
-)
-plt.title('Longitudinal MoCA Scores for Selected Patients')
-plt.xlabel('Visit')
-plt.ylabel('MoCA Total Score')
-plt.grid(True, alpha=0.3)
-plt.legend(title='Patient ID')
-plt.savefig('patient_cognitive_trajectories.png')
-```
-
-### Example 3: Combining Non-Motor Data with Subject Characteristics
+**Note:** This example assumes that columns like `MCATOT` (Montreal Cognitive Assessment Total Score) and `EVENT_ID` exist in your data. The exact column names depend on the source CSV files.
 
 ```python
 import pandas as pd
 from pie.non_motor_loader import load_ppmi_non_motor_assessments
-from pie.sub_char_loader import load_ppmi_subject_characteristics
 
-# Load non-motor assessment data
-data_path = "./PPMI"
-non_motor_data = load_ppmi_non_motor_assessments(f"{data_path}/Non-motor_Assessments")
+# Load the data
+non_motor_data_path = "./PPMI/Non-motor_Assessments"
+df_non_motor = load_ppmi_non_motor_assessments(non_motor_data_path)
 
-# Load subject characteristics
-subject_data = load_ppmi_subject_characteristics(f"{data_path}/_Subject_Characteristics")
+if not df_non_motor.empty and 'MCATOT' in df_non_motor.columns and 'EVENT_ID' in df_non_motor.columns:
+    print("Performing a simple analysis on MoCA scores...")
 
-# Merge datasets
-combined_data = pd.merge(
-    non_motor_data,
-    subject_data[['PATNO', 'EVENT_ID', 'GENDER', 'COHORT', 'AGE']],
-    on=['PATNO', 'EVENT_ID'],
-    how='left'
-)
+    # The data in 'MCATOT' might be strings if aggregation occurred.
+    # Convert it to a numeric type, handling errors and pipe-separated values.
+    def clean_and_convert_to_numeric(series):
+        # Take the first value if data is pipe-separated (e.g., '28|29' -> '28')
+        series_str = series.astype(str).str.split('|').str[0]
+        return pd.to_numeric(series_str, errors='coerce')
 
-# Analyze cognitive performance by cohort (PD vs. Control)
-if 'MCATOT' in combined_data.columns and 'COHORT' in combined_data.columns:
-    # Filter to baseline visits
-    baseline_data = combined_data[combined_data['EVENT_ID'] == 'BL']
+    df_non_motor['MCATOT_numeric'] = clean_and_convert_to_numeric(df_non_motor['MCATOT'])
+
+    # Remove rows where the score could not be converted to a number
+    df_analysis = df_non_motor.dropna(subset=['MCATOT_numeric', 'EVENT_ID'])
+
+    # Calculate the average MoCA score by visit
+    avg_score_by_visit = df_analysis.groupby('EVENT_ID')['MCATOT_numeric'].mean().reset_index()
+
+    # Sort by a typical visit order (simple alphabetical sort for this example)
+    avg_score_by_visit = avg_score_by_visit.sort_values('EVENT_ID')
     
-    # Group by cohort
-    cohort_stats = baseline_data.groupby('COHORT').agg({
-        'MCATOT': ['mean', 'std', 'count'],
-        'AGE': 'mean'
-    })
-    
-    print("Cognitive Performance by Cohort (Baseline):")
-    print(cohort_stats)
-    
-    # Save the analysis
-    cohort_stats.to_csv('cohort_cognitive_analysis.csv')
-    
-    # Create comparison visualizations
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    
-    plt.figure(figsize=(10, 6))
-    sns.boxplot(x='COHORT', y='MCATOT', data=baseline_data)
-    plt.title('MoCA Scores by Cohort (Baseline)')
-    plt.xlabel('Cohort')
-    plt.ylabel('MoCA Total Score')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('cohort_moca_comparison.png')
-```
+    print("\nAverage MoCA Score by Visit:")
+    print(avg_score_by_visit)
 
-### Example 4: Custom Deduplication for Specific Columns
-
-```python
-import pandas as pd
-import numpy as np
-from pie.non_motor_loader import deduplicate_columns
-
-# Create a test dataset with duplicate columns
-data = {
-    'PATNO': [1001, 1002, 1003, 1004],
-    'EVENT_ID': ['BL', 'V01', 'BL', 'V01'],
-    'PAG_NAME_x': ['MOCA', 'MOCA', None, 'MOCA'],
-    'PAG_NAME_y': ['MOCA', None, 'GDS', 'MOCA'],
-    'INFODT_x': ['2020-01-01', '2020-02-01', None, '2020-04-01'],
-    'INFODT_y': ['2020-01-01', None, '2020-03-01', '2020-05-01'],
-    'SCORE_x': [25, 28, None, 22],
-    'SCORE_y': [25, None, 5, 23],
-}
-
-df = pd.DataFrame(data)
-print("Before deduplication:")
-print(df)
-
-# Deduplicate the columns
-columns_to_deduplicate = ['PAG_NAME', 'INFODT', 'SCORE']
-df_deduplicated = deduplicate_columns(df, columns_to_deduplicate)
-
-print("\nAfter deduplication:")
-print(df_deduplicated)
-
-# Example showing the pipe separator for conflicting values
-print("\nNote how row 3 has conflicting scores (22 vs 23) that were combined with a pipe separator:")
-print(df_deduplicated.iloc[3])
+else:
+    print("\nSkipping analysis example: 'MCATOT' or 'EVENT_ID' not found in the DataFrame.")
 ```
 
 ## Implementation Details
 
-### File Matching and Loading
+The loading process follows several key steps to ensure data quality and consistency:
 
-The module searches for CSV files in the specified directory (and subdirectories) that match the prefixes defined in `FILE_PREFIXES`. This allows for flexibility in file naming and organization while still identifying the relevant assessment files.
+1.  **File Discovery**
+    The loader recursively scans the provided `folder_path` for CSV files, filtering for files that start with a prefix from its internal `FILE_PREFIXES` list.
 
-### Intelligent Merging Strategy
+2.  **Iterative Merging**
+    The function loads the first matching file and then iteratively merges subsequent files into it. The merge is an `outer` join on `["PATNO", "EVENT_ID"]` to include all data. If a file lacks `EVENT_ID`, the merge uses `PATNO` only.
 
-When merging datasets, the module first determines which columns to use as merge keys:
-- If both datasets have `PATNO` and `EVENT_ID`, they are merged on both columns to maintain visit-specific data
-- If only `PATNO` is common, the data is merged on patient ID alone, effectively replicating static patient data across all visits
+3.  **Handling Merge Suffixes**
+    When pandas adds `_x` and `_y` suffixes to overlapping columns, a utility function resolves them:
+    - If only `COL_x` or `COL_y` exists, it is renamed to `COL`.
+    - If both `COL_x` and `COL_y` exist, they are combined into `COL`. If values differ, they are joined with a pipe (`|`).
 
-### Column Deduplication Logic
-
-The deduplication process handles several cases:
-1. When both columns contain the same value, that value is preserved
-2. When one column is empty and the other has a value, the non-empty value is kept
-3. When both columns have different values, they are combined with a pipe separator (|)
-4. When both columns are empty, the result remains empty
-
-### Merge Suffix Handling
-
-To avoid column naming conflicts during merges, the module:
-1. First sanitizes column names that already end with `_x` or `_y` (using `sanitize_suffixes_in_df`)
-2. Performs the merge using standard suffixes
-3. Deduplicates columns immediately after each merge to maintain clean column names
+4.  **Ensuring Unique Patient-Visit Rows**
+    After merging, a final aggregation step ensures each (`PATNO`, `EVENT_ID`) pair is unique. It groups data by these keys and combines information from duplicated rows. Conflicting values in other columns are joined with a pipe (`|`).
 
 ## Data Dictionary
 
-The specific columns available in the merged dataset depend on which assessment files are successfully loaded. Common column patterns include:
+Common fields found in the non-motor assessment source files include:
 
-- **Identification Columns**: `PATNO` (patient ID), `EVENT_ID` (visit ID)
-- **Administrative Columns**: `PAG_NAME` (assessment name), `INFODT` (assessment date), `LAST_UPDATE`
-- **MoCA Assessment**: `MCATOT` (total score), `MCAVFNUM` (verbal fluency score), etc.
-- **Hopkins Verbal Learning**: `HVLTRT1`, `HVLTRT2`, `HVLTRT3` (trial scores)
-- **Depression Scales**: `GDSTOT` (GDS total score)
-- **Anxiety Measures**: `STAIAD` (state anxiety), `STAIT` (trait anxiety)
-- **Sleep Assessments**: `REMSLEEP` (REM sleep behavior disorder score), `ESS` (Epworth sleepiness scale)
-- **Autonomic Function**: `SCAU` (SCOPA-AUT scores)
+| Field | Description | Example Values |
+|-------|-------------|----------------|
+| PATNO | Patient identifier | 1001, 1002, ... |
+| EVENT_ID | Visit identifier | BL (baseline), V01, V02, ... |
+| MCATOT | Montreal Cognitive Assessment (MoCA) total score | 0-30 |
+| GDSTOT | Geriatric Depression Scale (GDS) total score | 0-15 or 0-30 |
+| HVLT... | Hopkins Verbal Learning Test scores (e.g., `HVLTRT1`) | 0-12 |
+| STAI... | State-Trait Anxiety Inventory scores (e.g., `STAIAD`) | 20-80 |
+| SCAU... | SCOPA-AUT scores (e.g., `SCAUTOT`) | Various |
+| UPSIT... | U-Penn Smell ID Test score (e.g., `UPSIT_TOTAL_SCORE`) | 0-40 |
 
-## Best Practices
-
-### File Organization
-
-Ensure that all non-motor assessment CSV files are located within the `Non-motor_Assessments` directory (or subdirectories) with filenames that match the expected prefixes.
-
-### Memory Management
-
-When working with large datasets:
-- Consider filtering columns after loading to reduce memory usage
-- Process the data in chunks if necessary
-- Use more efficient data types where appropriate
-
-### Error Handling
-
-The module provides error messages when files cannot be found or loaded. Always check:
-- That file paths are correct
-- That CSV files are properly formatted
-- If any warnings or errors appear during the loading process
-
-### Column Management
-
-Keep track of duplicate columns that may need deduplication beyond the standard set handled by the module. You can add specific columns to the `columns_to_deduplicate` list in the `load_ppmi_non_motor_assessments` function.
+*Note: Exact column names can vary slightly between different versions or studies in the PPMI dataset.*
 
 ## Troubleshooting
 
-### Missing Data
+- **Empty DataFrame is Returned:** If the function returns an empty DataFrame, check that:
+    - The `folder_path` is correct.
+    - The directory contains CSV files starting with one of the recognized prefixes.
+    - The application logs for any warnings about files that could not be loaded.
 
-If certain assessments are missing in the output:
-- Verify that the CSV files exist in the Non-motor_Assessments directory
-- Check that filenames start with one of the prefixes listed in `FILE_PREFIXES`
-- Examine any error messages generated during loading
+- **Pipe-Separated Values (`|`):** If you find values like `"value1|value2"`, it means that different source files contained different information for the same patient, visit, and data field. The loader preserves both values to prevent data loss.
 
-### Duplicate or Conflicting Data
-
-If you see unexpected duplicates or conflicting values:
-- Check if the columns should be added to the deduplication list
-- Verify if multiple assessments of the same type exist for the same visit
-- Consider manual review of the source files for inconsistencies
-
-### Performance Issues
-
-If loading is slow or memory-intensive:
-- Consider reducing the number of files to load (modify `FILE_PREFIXES`)
-- Filter columns after loading to focus on specific assessments
-- Process data in batches rather than all at once
-
-## Integration with Other PIE Modules
-
-This module is designed to work seamlessly with other PIE modules:
-- Use alongside `sub_char_loader.py` to merge with demographic and clinical data
-- Combine with `motor_loader.py` to analyze relationships between motor and non-motor symptoms
-- Integrate with `biospecimen_loader.py` to correlate non-motor symptoms with biomarkers
+- **Missing PATNO or EVENT_ID Columns:** The loader expects a `PATNO` column in every file and logs a warning before skipping files that lack it. Merging behavior may be less precise if `EVENT_ID` is missing, which is also noted in the logs.
