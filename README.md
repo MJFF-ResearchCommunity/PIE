@@ -135,6 +135,27 @@ After the run completes, the specified output directory (`./output/my_first_run`
 - **HTML Reports**: A separate, detailed HTML report for each step.
 - **`pipeline_report.html`**: A top-level summary report that links to all the individual step reports. The script will attempt to open this file in your browser automatically upon completion.
 
+### Example Visualizations
+The PIE pipeline generates detailed HTML reports at each stage. Here is a preview of some of the visualizations from the final classification report:
+
+<p align="center">
+  <img src="assets/screenshots/1.png" width="30%" alt="Plot 1">&nbsp;
+  <img src="assets/screenshots/2.png" width="30%" alt="Plot 2">&nbsp;
+  <img src="assets/screenshots/3.png" width="30%" alt="Plot 3">
+  <br><br>
+  <img src="assets/screenshots/4.png" width="30%" alt="Plot 4">&nbsp;
+  <img src="assets/screenshots/5.png" width="30%" alt="Plot 5">&nbsp;
+  <img src="assets/screenshots/6.png" width="30%" alt="Plot 6">
+</p>
+
+You can see an example of a full classification report in the image below. Click the image to view it in full size.
+
+<p align="center">
+  <a href="assets/screenshots/classification_report.png" target="_blank">
+    <img src="assets/screenshots/classification_report.png" alt="Full Classification Report" width="90%">
+  </a>
+</p>
+
 ## Running Tests
 To verify your setup and ensure all components are working correctly, you can run the integration test. This test executes a complete, expedited run of the pipeline.
 
