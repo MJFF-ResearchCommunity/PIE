@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon.png" width="150" alt="PIE Logo">
+  <img src="assets/icon.png" width="150" alt="PIE Logo">
 </p>
 
 # Parkinson's Insight Engine (PIE)
