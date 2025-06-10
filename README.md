@@ -1,154 +1,157 @@
 # Parkinson's Insight Engine (PIE)
 
 ## Overview
-Parkinson's Insight Engine (PIE) is a Python-based data preprocessing and analysis pipeline designed for researchers working with the Michael J. Fox Foundation's Parkinson's Progression Markers Initiative (PPMI) dataset and other MJFF data. PIE enables efficient data cleaning, feature engineering, and preparation for machine learning tasks using multi-modal data (clinical, imaging, biologic, genetic) while ensuring ease of use and reproducibility.
+The Parkinson's Insight Engine (PIE) is a comprehensive Python pipeline designed for researchers working with the Michael J. Fox Foundation's Parkinson's Progression Markers Initiative (PPMI) dataset. PIE automates the entire machine learning workflow, from loading and consolidating raw multi-modal data to training models and generating insightful reports. It provides a reproducible, configurable, and transparent framework to accelerate research.
 
-## Features
-- **Data Loading**: Loads the multi-modal data and unifies it based on Patient Number (`PATNO`)
-- **Data Cleaning**: Handles missing values and outliers and standardizes formats.
-- **Feature Engineering**: Aggregates longitudinal data and integrates multi-modal features.
-- **Feature Selection**: Automates feature selection.
-- **Classification and Regression**: Perform supervised learning on the processed data.
-- **Visualization Tools**: Generates insights through interactive plots and dashboards.
-- **Reusable**: Designed as an installable Python package for seamless integration into research workflows.
+The primary way to use PIE is through its main pipeline script, which orchestrates all the steps required to go from raw data to a full classification analysis with a single command.
+
+## Key Features
+- **End-to-End Automation**: A single command runs the full data processing and machine learning pipeline.
+- **Modular Pipeline**: Each step (Data Reduction, Feature Engineering, Feature Selection, Classification) generates its own detailed HTML report and intermediate data files.
+- **Intelligent Data Reduction**: Analyzes and removes low-value features *before* merging, drastically reducing memory usage and feature space complexity.
+- **Robust Feature Engineering**: Applies one-hot encoding, numeric scaling, and other transformations to prepare data for modeling.
+- **Advanced Model Training**: Leverages `pycaret` to compare a suite of models, tune the best performer, and evaluate its performance on a held-out test set.
+- **Leakage Prevention**: Employs a configurable list of features to exclude, preventing data leakage and ensuring more realistic model evaluation.
+- **Comprehensive Reporting**: Generates a main HTML report that links to detailed reports for each stage of the pipeline, providing full transparency.
+
+## The PIE Workflow
+PIE processes data in a sequential, multi-stage workflow. Each stage produces outputs that feed into the next.
+
+```plaintext
+[Raw PPMI Data]
+       |
+       v
+[1. Data Reduction]
+   - Loads all modalities
+   - Analyzes and drops low-value columns (e.g., high missingness)
+   - Merges and consolidates into a single CSV
+   - (Report: data_reduction_report.html)
+       |
+       v
+[2. Feature Engineering]
+   - Applies one-hot encoding, scaling, etc.
+   - (Report: feature_engineering_report.html)
+       |
+       v
+[3. Feature Selection]
+   - Splits data into train/test sets
+   - Selects the most relevant features based on the training set
+   - (Report: feature_selection_report.html)
+       |
+       v
+[4. Classification]
+   - Compares multiple ML models on the selected features
+   - Tunes and evaluates the best model
+   - (Report: classification_report.html)
+       |
+       v
+[Final Pipeline Report]
+- (pipeline_report.html)
+```
 
 ## Getting Started
 
-Clone this repository to your local machine:
+### Prerequisites
+- Python 3.8 or later.
+- Required dependencies can be installed from `requirements.txt`:
+  ```bash
+  pip install -r requirements.txt
+  ```
 
+### Installation
+Clone the repository and install the PIE package. For development, use the editable "`-e`" flag.
 ```bash
 git clone https://github.com/MJFF-ResearchCommunity/PIE.git
 cd PIE
+pip install -e .
 ```
 
-### Prerequisites
-To use PIE, please ensure you have installed Python 3.8 or later. The pipeline relies on the following libraries:
+### Data Setup
+1.  **Download PPMI Data**: You must [apply for access to the PPMI data](https://www.ppmi-info.org/access-data-specimens/download-data).
+2.  **Organize Data**: Create a directory named `PPMI` at the root of the cloned PIE repository. Download the individual study data folders from LONI and place them inside the `PPMI` directory. The structure should look like this:
+    ```plaintext
+    PIE/
+    ├── PPMI/
+    │   ├── _Subject_Characteristics/
+    │   ├── Biospecimen/
+    │   ├── Motor___MDS-UPDRS/
+    │   └── ... (other data folders)
+    ├── pie/
+    └── ... (other project files)
+    ```
 
-- `pandas`
-- `numpy`
-- `scikit-learn`
-- `xgboost`
-- `matplotlib`
-- `seaborn`
-- `plotly`
-- `pytest` (for testing)
-  
+## How to Use PIE: The Main Pipeline
 
-You can install the required dependencies using the provided `requirements.txt` file.
+The most effective way to use PIE is by running the main pipeline script from your terminal. This script executes the entire workflow and provides configurable parameters.
+
+### A Standard End-to-End Run
+This example demonstrates a typical use case: predicting the `COHORT` of a subject.
+
+**1. Configure Leakage Features**
+Before running, it is **critical** to configure the data leakage prevention. Open `config/leakage_features.txt`. This file should contain a list of column names (one per line) that should be removed from the data because they would "leak" information about the target variable.
+
+For example, if you are predicting `COHORT`, you should exclude features like `subject_characteristics_APPRDX` (the clinician's diagnosis), as this is nearly identical to the target. The default file provides a starting point, but you **must review and customize it for your specific research question.**
+
+**2. Execute the Pipeline**
+Run the following command from the root `PIE/` directory:
+```bash
+python3 pie/pipeline.py \
+    --data-dir ./PPMI \
+    --output-dir ./output/my_first_run \
+    --target-column COHORT \
+    --leakage-features-path config/leakage_features.txt \
+    --fs-method fdr \
+    --fs-param 0.05 \
+    --n-models 5 \
+    --tune \
+    --budget 60.0
+```
+
+### Understanding the Command-Line Arguments
+- `--data-dir`: Path to your raw PPMI data.
+- `--output-dir`: Where all results, reports, and data files will be saved.
+- `--target-column`: The variable you want your models to predict.
+- `--leakage-features-path`: Path to your leakage prevention file.
+- `--fs-method`: The feature selection algorithm to use (`fdr` or `k_best`).
+- `--fs-param`: The parameter for the feature selection method (e.g., `0.05` for FDR's alpha).
+- `--n-models`: The number of models to compare.
+- `--tune`: A flag to enable hyperparameter tuning for the best model.
+- `--budget`: A time limit in minutes for the model comparison step.
+
+### Pipeline Output
+After the run completes, the specified output directory (`./output/my_first_run`) will contain:
+- **Intermediate Data**: The CSV file output from each major step.
+- **HTML Reports**: A separate, detailed HTML report for each step.
+- **`pipeline_report.html`**: A top-level summary report that links to all the individual step reports. The script will attempt to open this file in your browser automatically upon completion.
+
+## Running Tests
+To verify your setup and ensure all components are working correctly, you can run the integration test. This test executes a complete, expedited run of the pipeline.
 
 ```bash
-pip install -r requirements.txt
+pytest tests/test_pipeline.py
 ```
+This test will create its own output in `output/test_pipeline_run` and check that all expected files are generated and that data leakage prevention is working.
 
-### Installation
-
-Install the package:
-
-```bash
-pip install .
-```
-
-### Data Format
-
-You must [apply for access to the PPMI data](https://www.ppmi-info.org/access-data-specimens/download-data) through the PPMI website. After being granted access individual modalities can be downloaded as separate files through [LONI (the Laboratory of Neuro Imaging from the USC)](https://ida.loni.usc.edu/login.jsp).
-
-For development and testing purposes, this repo assumes data has been downloaded from LONI and stored in a directory called `PPMI`.
-
-When using this package as part of your own development, the path to your local copy of the data can be specified (see Usage section below).
-
-All data are formatted as Pandas DataFrames unless otherwise specified.
-
-### Usage
-
-#### 1. Load Data
-Load your MJFF datasets (e.g., CSV files) into PIE:
-
-```python
-from pie import DataLoader
-
-data = DataLoader.load("path/to/your/data/folder", source="PPMI")
-```
-
-#### 2. Preprocess Data
-Clean and standardize the data:
-
-```python
-from pie import DataPreprocessor
-
-cleaned_data = DataPreprocessor.clean(data)
-```
-
-#### 3. Feature Engineering
-Generate new features and integrate across modalities:
-
-```python
-from pie import FeatureEngineer
-
-engineered_data = FeatureEngineer.create_features(cleaned_data)
-```
-
-#### 4. Feature Selection
-Select the features that most discriminate the data:
-
-```python
-from pie import FeatureSelector
-
-selected_features = FeatureSelector.select_features(engineered_data, target_column="COHORT")
-
-```
-
-#### 5. Visualization
-Generate visualizations:
-
-```python
-from pie import Visualizer
-
-Visualizer.plot_distribution(selected_features, column="age")
-```
-
-### Example Notebook
-Explore the example Jupyter notebooks (eg `notebooks/pipeline_demo.ipynb`) to see PIE in action.
-
-## Repository Structure
-```plaintext
-PIE/
-├── pie/                  # Core library
-│   ├── __init__.py       # Allow module import
-│   ├── data_loader.py    # Module for loading data
-│   ├── data_preprocessor.py # Module for cleaning data
-│   ├── feature_engineer.py  # Module for feature engineering
-│   ├── feature_selector.py  # Module for feature selection
-│   ├── visualizer.py        # Module for data visualization
-├── notebooks/           # Example Jupyter notebooks
-├── tests/               # Unit tests
-├── PPMI/                # Local copies of the PPMI data files
-├── requirements.txt     # List of dependencies
-├── setup.py             # Installation script
-└── README.md            # Project documentation
-```
+## Deeper Dive: Understanding the Modules
+While the main pipeline is the recommended entry point, PIE is composed of modular components. You can learn more about each one in the detailed documentation:
+- [**Data Loaders**](documentation/data_loader.md)
+- [**Data Reducer**](documentation/data_reducer.md)
+- [**Data Preprocessor**](documentation/data_preprocessor.md)
+- [**Feature Engineer**](documentation/feature_engineer.md)
+- [**Feature Selector**](documentation/feature_selector.md)
+- [**Classifier & Reporting**](documentation/classifier.md)
 
 ## Contributing
-Contributions are welcome! To contribute:
+Contributions are welcome! Please follow these steps:
 1. Fork the repository.
 2. Create a new branch for your feature: `git checkout -b feature-name`.
-3. Copy the PPMI data into the `PIE/PPMI` directory.
-4. Instead of installing PIE as above, use `pip install -e .` for editable mode.
-5. Make your changes, and ensure the full test suite runs without failures (see below).
-6. Commit your changes: `git commit -m 'Add new feature'`.
-7. Push to the branch: `git push origin feature-name`.
-8. Create a pull request.
-
-### Running Tests
-Ensure all tests pass before submitting a pull request:
-
-```bash
-pytest tests/
-```
-
-Please also add tests to cover the new code or feature in your pull request. The existing tests can be used as a guideline for what and how to test.
+3. Make your changes.
+4. Add or update tests for your changes.
+5. Ensure the full test suite passes: `pytest tests/`.
+6. Commit your changes and create a pull request.
 
 ## License
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License. See the `LICENSE` file for details.
 
 ## Contact
-If you have any questions or suggestions, please don't hesitate to contact cameron@allianceai.co.
+If you have any questions or suggestions, please don't hesitate to contact Cameron@AllianceAI.co.
