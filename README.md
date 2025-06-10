@@ -21,27 +21,32 @@ PIE processes data in a sequential, multi-stage workflow. Each stage produces ou
 [Raw PPMI Data]
        |
        v
-[1. Data Reduction]
-   - Loads all modalities
-   - Analyzes and drops low-value columns (e.g., high missingness)
-   - Merges and consolidates into a single CSV
+[1. Data Loading]
+   - Loads all raw data modalities into memory.
+   - (This step is integrated into the start of the Data Reduction stage).
+       |
+       v
+[2. Data Reduction]
+   - Analyzes loaded data tables.
+   - Drops low-value columns (e.g., high missingness, zero variance).
+   - Merges and consolidates all tables into a single CSV.
    - (Report: data_reduction_report.html)
        |
        v
-[2. Feature Engineering]
-   - Applies one-hot encoding, scaling, etc.
+[3. Feature Engineering]
+   - Applies one-hot encoding, scaling, etc. to create model-ready features.
    - (Report: feature_engineering_report.html)
        |
        v
-[3. Feature Selection]
-   - Splits data into train/test sets
-   - Selects the most relevant features based on the training set
+[4. Feature Selection]
+   - Splits data into training and testing sets.
+   - Selects the most relevant features from the training data.
    - (Report: feature_selection_report.html)
        |
        v
-[4. Classification]
-   - Compares multiple ML models on the selected features
-   - Tunes and evaluates the best model
+[5. Classification]
+   - Compares multiple ML models on the final feature set.
+   - Tunes and evaluates the best model.
    - (Report: classification_report.html)
        |
        v
