@@ -225,7 +225,8 @@ def run_feature_selection_step(
     output_html_path: Path,
     target_column: str,
     fs_method: str,
-    fs_param_value: float
+    fs_param_value: float,
+    leakage_features_path: Optional[str] = None
 ) -> dict:
     """Performs feature selection on the engineered data."""
     logger.info("Starting feature selection step...")
@@ -235,6 +236,18 @@ def run_feature_selection_step(
         
     report_data = {'input_csv_path': input_csv_path, 'target_column': target_column}
     df = pd.read_csv(input_csv_path)
+    
+    # Remove leakage features before any other processing
+    if leakage_features_path and Path(leakage_features_path).exists():
+        with open(leakage_features_path, 'r') as f:
+            leakage_features = {line.strip() for line in f if line.strip()}
+        
+        cols_to_drop = [col for col in df.columns if col in leakage_features]
+        
+        if cols_to_drop:
+            df.drop(columns=cols_to_drop, inplace=True)
+            logger.info(f"Removed {len(cols_to_drop)} leakage features specified in {leakage_features_path}.")
+            report_data['leakage_features_removed'] = cols_to_drop
     
     initial_rows = len(df)
     df.dropna(subset=[target_column], inplace=True)
@@ -523,7 +536,8 @@ def run_pipeline(
             output_html_path=output_path / "feature_selection_report.html",
             target_column=target_column,
             fs_method=fs_method,
-            fs_param_value=fs_param_value
+            fs_param_value=fs_param_value,
+            leakage_features_path=leakage_features_path
         )
 
     # --- 4. Classification ---
