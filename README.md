@@ -5,7 +5,7 @@
 # Parkinson's Insight Engine (PIE)
 
 ## Overview
-The Parkinson's Insight Engine (PIE) is a comprehensive Python pipeline designed for researchers working with the Michael J. Fox Foundation's Parkinson's Progression Markers Initiative (PPMI) dataset. PIE automates the entire machine learning workflow, from loading and consolidating raw multi-modal data to training models and generating insightful reports. It provides a reproducible, configurable, and transparent framework to accelerate research.
+The Parkinson's Insight Engine (PIE) is a comprehensive pipeline designed for researchers working with the Michael J. Fox Foundation's Parkinson's Progression Markers Initiative (PPMI) dataset. PIE automates the entire machine learning workflow, from loading and consolidating raw multi-modal data to training models and generating insightful reports. It provides a reproducible, configurable, and transparent framework to accelerate research.
 
 The primary way to use PIE is through its main pipeline script, which orchestrates all the steps required to go from raw data to a full classification analysis with a single command.
 
@@ -181,6 +181,10 @@ Contributions are welcome! Please follow these steps:
 4. Add or update tests for your changes.
 5. Ensure the full test suite passes: `pytest tests/`.
 6. Commit your changes and create a pull request.
+
+## Contributors
+Cameron Hamilton
+Victoria Catterson
 
 ## License
 This project is licensed under the MIT License. See the `LICENSE` file for details.
