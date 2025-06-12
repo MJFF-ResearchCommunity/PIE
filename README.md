@@ -173,6 +173,8 @@ While the main pipeline is the recommended entry point, PIE is composed of modul
 - [**Feature Selector**](documentation/feature_selector.md)
 - [**Classifier & Reporting**](documentation/classifier.md)
 
+Please also check out the notebooks directory for some great examples of how to use PIE in a more modular fashion.
+
 ## Contributing
 Contributions are welcome! Please follow these steps:
 1. Fork the repository.
