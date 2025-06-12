@@ -183,8 +183,8 @@ Contributions are welcome! Please follow these steps:
 6. Commit your changes and create a pull request.
 
 ## Contributors
-Cameron Hamilton
-Victoria Catterson
+- Cameron Hamilton
+- Victoria Catterson
 
 ## License
 This project is licensed under the MIT License. See the `LICENSE` file for details.
