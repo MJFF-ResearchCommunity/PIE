@@ -564,7 +564,7 @@ pie/
 
         <!-- Slide 12: Real Results -->
         <div class="slide">
-            <h1>Real-World Performance</h1>
+            <h1>Performance</h1>
             <h2>Cohort Classification Results (PD vs Control)</h2>
             <div class="metric-card">
                 <strong>Accuracy</strong>
@@ -713,6 +713,30 @@ python3 pie/pipeline.py \
                     <li>Blood chemistry markers (<span style="font-weight:bold;color:#2e7d32;">BCH_RCT16_Serum_Potassium</span>)</li>
                     <li>Clinical features (<span style="font-weight:bold;color:#d32f2f;">FEATNOLEVO</span>, <span style="font-weight:bold;color:#2e7d32;">FEATANTCOL</span>)</li>
                 </ul>
+            </div>
+        </div>
+
+        <!-- Slide 16: Biospecimen-Only Run (Modalities Flag Example) -->
+        <div class="slide">
+            <h1>Running PIE with Biospecimen Only</h1>
+            <h2>Using the --modalities flag</h2>
+            <p style="font-size: 18px; margin-top: 10px;">This mirrors the pipeline call format shown earlier, but restricts input to the biospecimen modality.</p>
+            <div class="code-block">
+python3 pie/pipeline.py \
+    --data-dir ./PPMI \
+    --output-dir ./output/biospecimen_only_run \
+    --target-column COHORT \
+    --leakage-features-path config/leakage_features.txt \
+    --modalities biospecimen \
+    --fs-method fdr \
+    --fs-param 0.05 \
+    --n-models 5 \
+    --tune \
+    --budget 60.0
+            </div>
+            <div class="highlight-box">
+                <h3>Tip</h3>
+                <p>To combine modalities, provide a space- or comma-separated list, e.g., <code>--modalities "subject_characteristics biospecimen"</code>.</p>
             </div>
         </div>
 
