@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PIE: Parkinson's Insight Engine - Webinar Presentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #FFA500 0%, #FF6F61 100%);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .presentation-container {
+            width: 95%;
+            height: 95%;
+            max-width: 1400px;
+            max-height: 900px;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .slide {
+            display: none;
+            height: 100%;
+            padding: 60px;
+            overflow-y: auto;
+            animation: fadeIn 0.5s;
+        }
+
+        .slide.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateX(30px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .slide h1 {
+            color: #FF6F61;
+            font-size: 48px;
+            margin-bottom: 20px;
+            border-bottom: 3px solid #FF6F61;
+            padding-bottom: 15px;
+        }
+
+        .slide h2 {
+            color: #FF6F61;
+            font-size: 36px;
+            margin-top: 30px;
+            margin-bottom: 20px;
+        }
+
+        .slide h3 {
+            color: #764ba2;
+            font-size: 28px;
+            margin-top: 25px;
+            margin-bottom: 15px;
+        }
+
+        .slide h4 {
+            color: #667eea;
+            font-size: 22px;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        .slide p, .slide li {
+            font-size: 18px;
+            line-height: 1.6;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .slide ul, .slide ol {
+            margin-left: 30px;
+            margin-bottom: 20px;
+        }
+
+        .slide li {
+            margin-bottom: 10px;
+        }
+
+        .code-block {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            white-space: pre;
+            line-height: 1.4;
+        }
+
+        .highlight-box {
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+
+        .metric-card {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            display: inline-block;
+            min-width: 200px;
+        }
+
+        .metric-card strong {
+            color: #667eea;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            z-index: 100;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:hover {
+            background: #764ba2;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(118, 75, 162, 0.4);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .slide-counter {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            background: rgba(102, 126, 234, 0.1);
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .logo {
+            width: 150px;
+            height: 150px;
+            margin: 20px auto;
+            display: block;
+            background: linear-gradient(135deg, #FF6F61 0%, #FFA500 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 48px;
+            font-weight: bold;
+        }
+
+        .center-content {
+            text-align: center;
+            margin: 40px 0;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .feature-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            border-left: 4px solid #FF6F61;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .table th {
+            background: #667eea;
+            color: white;
+            padding: 12px;
+            text-align: left;
+        }
+
+        .table td {
+            padding: 10px;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .table tr:nth-child(even) {
+            background: #f8f9fa;
+        }
+
+        .progress-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            height: 4px;
+            background: #FF6F61;
+            transition: width 0.3s;
+        }
+
+        @media (max-width: 768px) {
+            .slide {
+                padding: 30px;
+            }
+            .slide h1 {
+                font-size: 32px;
+            }
+            .slide h2 {
+                font-size: 28px;
+            }
+            .slide p, .slide li {
+                font-size: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="presentation-container">
+        <div class="slide-counter">
+            <span id="current-slide">1</span> / <span id="total-slides">27</span>
+        </div>
+        
+        <div class="progress-bar" id="progress-bar"></div>
+
+        <!-- Slide 1: Title Slide -->
+        <div class="slide active">
+            <div class="center-content">
+                <img src="assets/icon.png" alt="PIE Logo" style="width: 200px; height: 200px; margin-bottom: 30px;">
+                <h1>PIE: Parkinson's Insight Engine</h1>
+                <h2>Accelerating Parkinson's Research Through Automated Machine Learning</h2>
+                <br>
+                <p style="font-size: 24px; color: #667eea;">A Webinar for Parkinson's Researchers</p>
+                <br><br>
+                <p style="font-size: 20px;">Presented by</p>
+                <p style="font-size: 24px; font-weight: bold;">Cameron Hamilton & Victoria Catterson</p>
+            </div>
+        </div>
+
+        <!-- Slide 2: Agenda -->
+        <div class="slide">
+            <h1>Today's Agenda</h1>
+            <ol style="font-size: 20px; line-height: 2;">
+                <li><strong>Introduction & Problem Statement</strong> - The challenges we all face</li>
+                <li><strong>What is PIE?</strong> - Your research accelerator</li>
+                <li><strong>The Challenge of PPMI Data</strong> - Why it's so complex</li>
+                <li><strong>PIE's Solution</strong> - End-to-end automation</li>
+                <li><strong>Technical Deep Dive</strong> - How it works under the hood</li>
+                <li><strong>Demonstration</strong> - See PIE in action</li>
+                <li><strong>Getting Started</strong> - Join the PIE community</li>
+                <li><strong>Future Directions</strong> - What's next</li>
+                <li><strong>Q&A Session</strong> - Your questions answered</li>
+            </ol>
+        </div>
+
+        <!-- Slide 3: The Problem -->
+        <div class="slide">
+            <h1>The Current State of Parkinson's Research</h1>
+            <h2>We all face the same challenges:</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>📊 Data Complexity</h3>
+                    <p>PPMI contains 5+ modalities, thousands of features, complex longitudinal structures</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔧 Technical Barriers</h3>
+                    <p>Hours spent on data wrangling instead of research questions</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔄 Reproducibility Challenges</h3>
+                    <p>Inconsistent preprocessing leads to non-comparable results</p>
+                </div>
+                <div class="feature-card">
+                    <h3>⏱️ Time to Insight</h3>
+                    <p>Months from raw data to actionable findings</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🎓 Expertise Bottleneck</h3>
+                    <p>Not every researcher is a machine learning or programming expert</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 4: The Opportunity -->
+        <div class="slide">
+            <h1>The PPMI Opportunity</h1>
+            <h2>A Goldmine of Data Waiting to be Explored</h2>
+            <div class="highlight-box">
+                <h3>The Michael J. Fox Foundation's PPMI dataset contains:</h3>
+                <ul style="font-size: 20px;">
+                    <li><strong>4,000+ participants</strong> across multiple cohorts</li>
+                    <li><strong>Multi-modal data</strong>: Clinical assessments, biospecimens, imaging, genetics</li>
+                    <li><strong>Longitudinal tracking</strong> over 10+ years</li>
+                    <li><strong>Rich phenotyping</strong> of Parkinson's disease progression</li>
+                </ul>
+            </div>
+            <div class="center-content">
+                <h2 style="color: #FF6F61;">But accessing this potential requires significant technical expertise.</h2>
+                <h3>That's where PIE comes in...</h3>
+            </div>
+        </div>
+
+        <!-- Slide 5: What is PIE? -->
+        <div class="slide">
+            <h1>What is PIE?</h1>
+            <h2>Parkinson's Insight Engine: Your Research Accelerator</h2>
+            <div class="highlight-box">
+                <p style="font-size: 24px; text-align: center; font-weight: bold; color: #667eea;">
+                    "From Raw Data to Research Insights in a Single Command"
+                </p>
+            </div>
+            <h3>PIE is an open-source, automated machine learning pipeline specifically designed for Parkinson's researchers working with PPMI data.</h3>
+            <h3>Key Principles:</h3>
+            <ol>
+                <li><strong>Researcher-Friendly</strong>: No ML expertise required</li>
+                <li><strong>Transparent</strong>: Every step documented and explainable</li>
+                <li><strong>Reproducible</strong>: Consistent results across research groups</li>
+                <li><strong>Comprehensive</strong>: Handles the full ML workflow</li>
+                <li><strong>Parkinson's-Specific</strong>: Built for our unique challenges</li>
+            </ol>
+        </div>
+
+        <!-- Slide 6: PPMI Data Complexity -->
+        <div class="slide">
+            <h1>The Challenge of PPMI Data</h1>
+            <h2>What Makes PPMI Data So Complex?</h2>
+            <h3>1. Scale and Scope</h3>
+            <div class="code-block">
+📊 Subject Characteristics: Demographics, genetics, family history
+🧬 Biospecimens: 12+ projects, proteomics, metabolomics
+🧠 Motor Assessments: MDS-UPDRS, detailed clinical evaluations  
+🎯 Non-Motor: Cognitive tests, sleep, autonomic function
+📈 Medical History: Medications, comorbidities, procedures
+            </div>
+            <h3>2. Data Quality Issues</h3>
+            <ul>
+                <li><strong>Missing Data</strong>: Up to 80% missingness in some biomarker columns</li>
+                <li><strong>Inconsistent Formats</strong>: Mixed data types, encoding variations</li>
+                <li><strong>Temporal Complexity</strong>: Different visit schedules across cohorts</li>
+                <li><strong>Feature Explosion</strong>: 10,000+ potential features after preprocessing</li>
+            </ul>
+        </div>
+
+        <!-- Slide 7: Traditional Approach -->
+        <div class="slide">
+            <h1>The Traditional Approach</h1>
+            <h2>Months of Manual Work</h2>
+            <div class="code-block">
+# What researchers typically face:
+1. Download all the PPMI data from LONI
+2. Spend weeks understanding data structure
+3. Write custom loading scripts for each modality
+4. Handle missing data inconsistently
+5. Merge tables (and lose data in the process)
+6. Engineer features manually
+7. Select features using ad-hoc methods
+8. Train models with basic approaches
+9. Generate basic plots
+10. Write up results (often non-reproducible)
+
+Total time: 3-6 months per analysis
+            </div>
+            <div class="center-content">
+                <h2 style="color: #FF6F61;">There has to be a better way...</h2>
+            </div>
+        </div>
+
+        <!-- Slide 8: PIE's Solution -->
+        <div class="slide">
+            <h1>PIE's Solution: One Command</h1>
+            <h2>Complete Analysis in 30-60 Minutes</h2>
+            <div class="code-block">
+python3 pie/pipeline.py \
+    --data-dir ./PPMI \
+    --output-dir ./output/my_research \
+    --target-column COHORT \
+    --leakage-features-path config/leakage_features.txt \
+    --fs-method fdr \
+    --fs-param 0.05 \
+    --n-models 5 \
+    --tune \
+    --budget 60.0
+            </div>
+            <div class="highlight-box">
+                <h3>Result: Complete analysis in 30-60 minutes instead of months!</h3>
+            </div>
+        </div>
+
+        <!-- Slide 9: Four-Stage Pipeline -->
+        <div class="slide">
+            <h1>The Four-Stage Pipeline</h1>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>Stage 1: Data Reduction</h3>
+                    <ul>
+                        <li>Loads all PPMI modalities automatically</li>
+                        <li>Analyzes data quality before merging</li>
+                        <li>Removes low-value features</li>
+                        <li>Consolidates into single dataset</li>
+                        <li>Generates detailed report</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>Stage 2: Feature Engineering</h3>
+                    <ul>
+                        <li>One-hot encoding for categoricals</li>
+                        <li>Numeric scaling (standard/min-max)</li>
+                        <li>Polynomial features for interactions</li>
+                        <li>Special format handling</li>
+                        <li>Custom transformations</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>Stage 3: Feature Selection</h3>
+                    <ul>
+                        <li>False Discovery Rate (FDR) control</li>
+                        <li>K-best selection with CV</li>
+                        <li>Prevents overfitting</li>
+                        <li>Maintains interpretability</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>Stage 4: Automated Model Comparison</h3>
+                    <ul>
+                        <li>Multiple algorithms tested</li>
+                        <li>Hyperparameter tuning</li>
+                        <li>Cross-validation</li>
+                        <li>SHAP analysis</li>
+                        <li>Comprehensive visualizations</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 10: Technical Architecture -->
+        <div class="slide">
+            <h1>Technical Architecture</h1>
+            <h2>Modular and Extensible Design</h2>
+            <div class="code-block">
+pie/
+├── data_loader.py      # Multi-modal PPMI data loading
+├── data_reducer.py     # Data reduction  
+├── feature_engineer.py # Feature engineering
+├── feature_selector.py # Feature selection
+├── classifier.py       # Automated ML 
+├── pipeline.py         # Orchestrates entire workflow
+└── reporting.py        # HTML report generation
+            </div>
+            <h3>Key Assumption: The Patient-Visit Snapshot</h3>
+            <div class="highlight-box">
+                <p>PIE restructures scattered PPMI data into a unified format where each row represents one patient at one visit, with all relevant data in a single row. This is fundamental for machine learning and data consistency.</p>
+            </div>
+        </div>
+
+        <!-- Slide 11: Live Demo Overview -->
+        <div class="slide">
+            <h1>Live Demonstration</h1>
+            <h2>Predicting Parkinson's Disease Cohorts</h2>
+            <h3>Research Question:</h3>
+            <p style="font-size: 22px; font-style: italic;">Can we distinguish between Parkinson's Disease patients and healthy controls using multi-modal PPMI data?</p>
+            
+            <h3>Demo Steps:</h3>
+            <ol>
+                <li><strong>Data Preparation</strong> - Organize PPMI data</li>
+                <li><strong>Configure Leakage Prevention</strong> - Exclude diagnostic features</li>
+                <li><strong>Run the Pipeline</strong> - Single command execution</li>
+                <li><strong>Review Results</strong> - Interactive reports and visualizations</li>
+            </ol>
+        </div>
+
+        <!-- Slide 12: Choosing the Right Model in PIE -->
+        <div class="slide">
+            <h1>Choosing the Right Model in PIE</h1>
+            <h2>Feature sets for cohort classification</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>Model‑A: Clinical & Questionnaire</h3>
+                    <ul>
+                        <li>Demographics, identifiers, family history</li>
+                        <li>Medical history, neurological exam, vital signs</li>
+                        <li>MDS‑UPDRS Parts I–III item‑level scores; Part IV flags only</li>
+                        <li>Cognitive, sleep, mood, autonomic batteries (MoCA, HVLT, RBDSQ, SCOPA‑AUT, etc.)</li>
+                        <li>Includes prodromal flags ENRLHPSM (hyposmia) and ENRLRBD (RBD)</li>
+                        <li>Excludes lab assays and genetics</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>Model‑B: Objective Biomarkers</h3>
+                    <ul>
+                        <li>Genomics: all variant columns and enrolment mutation flags</li>
+                        <li>Proteomics: biospecimen_project_177_* protein abundances</li>
+                        <li>CSF/plasma/serum assays (α‑syn, NfL, GFAP, Aβ₁₋₄₂, lipids)</li>
+                        <li>Blood chemistry & haematology indices</li>
+                        <li>Excludes clinical/questionnaire content</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h3>Model‑C: Combined</h3>
+                    <ul>
+                        <li>Union of Model‑A and Model‑B features</li>
+                        <li>Often best accuracy; interpret with care</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 13: Notes & Exclusions -->
+        <div class="slide">
+            <h1>Notes & Exclusions</h1>
+            <div class="highlight-box">
+                <ul>
+                    <li>Remove study‑design artefacts (visit counts, sub‑study flags, logistics timestamps)</li>
+                    <li>Exclude treatment‑dependent variables to avoid label leakage (e.g., medication dynamics, UPDRS Part‑IV totals)</li>
+                    <li>Keep ENRLHPSM and ENRLRBD in Model‑A as prodromal phenomena</li>
+                    <li>For genetics (Model‑B), include ancestry PCs when cohorts are ancestry‑mixed</li>
+                    <li>Drop non‑informative biospecimen logistics flags unless numeric concentrations</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Slide 12: Real Results -->
+        <div class="slide">
+            <h1>Real-World Performance</h1>
+            <h2>Cohort Classification Results (PD vs Control)</h2>
+            <div class="metric-card">
+                <strong>Accuracy</strong>
+                96.53%
+            </div>
+            <div class="metric-card">
+                <strong>AUC</strong>
+                0.9973
+            </div>
+            <div class="metric-card">
+                <strong>Recall</strong>
+                96.53%
+            </div>
+            <div class="metric-card">
+                <strong>Precision</strong>
+                96.54%
+            </div>
+            <div class="metric-card">
+                <strong>F1-Score</strong>
+                96.52%
+            </div>
+            
+            <h3>Top Model: Extreme Gradient Boosting (XGBoost)</h3>
+            <p>Selected from 13 algorithms tested including CatBoost, Extra Trees, Random Forest, and others</p>
+            
+            <h3>Key Predictive Features Discovered:</h3>
+            <ol>
+                <li><strong>Genetic markers:</strong> LRRK2 variants (<span style="font-weight:bold;color:#FFD700;">chr12:40363526 = G2385R</span>, <span style="font-weight:bold;color:#FFD700;">chr12:40310434 = R1441C/G</span>)</li>
+                <li><strong>Enrollment characteristics:</strong> <span style="font-weight:bold;color:#d32f2f;">ENRLHPSM</span>, <span style="font-weight:bold;color:#d32f2f;">ENRLRBD</span></li>
+                <li><strong>Non-motor assessments:</strong> <span style="font-weight:bold;color:#2e7d32;">BRNINFM</span>, <span style="font-weight:bold;color:#d32f2f;">NP4TOT</span> scores</li>
+                <li><strong>Blood chemistry:</strong> <span style="font-weight:bold;color:#2e7d32;">BCH_RCT16_Serum_Potassium</span></li>
+                <li><strong>Clinical features:</strong> <span style="font-weight:bold;color:#d32f2f;">FEATNOLEVO</span>, <span style="font-weight:bold;color:#2e7d32;">FEATANTCOL</span>, <span style="font-weight:bold;color:#2e7d32;">MCAABSTR</span></li>
+            </ol>
+        </div>
+
+        <!-- Slide 13: Processing Performance -->
+        <div class="slide">
+            <h1>Processing Performance</h1>
+            <h2>From Months to Minutes</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Stage</th>
+                        <th>Processing Time</th>
+                        <th>Traditional Approach</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Data Loading</td>
+                        <td>~5 minutes</td>
+                        <td>1-2 weeks</td>
+                    </tr>
+                    <tr>
+                        <td>Data Reduction</td>
+                        <td>~10 minutes</td>
+                        <td>2-3 weeks</td>
+                    </tr>
+                    <tr>
+                        <td>Feature Engineering</td>
+                        <td>~15 minutes</td>
+                        <td>2-4 weeks</td>
+                    </tr>
+                    <tr>
+                        <td>Feature Selection</td>
+                        <td>~5 minutes</td>
+                        <td>1-2 weeks</td>
+                    </tr>
+                    <tr>
+                        <td>Model Training</td>
+                        <td>~30 minutes</td>
+                        <td>2-4 weeks</td>
+                    </tr>
+                    <tr style="background: #FF6F61; color: white;">
+                        <td><strong>Total</strong></td>
+                        <td><strong>~65 minutes</strong></td>
+                        <td><strong>8-15 weeks</strong></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Slide 14: Getting Started -->
+        <div class="slide">
+            <h1>Getting Started with PIE</h1>
+            <h2>Quick Start Guide</h2>
+            <h3>1. Prerequisites</h3>
+            <ul>
+                <li>Python 3.8+</li>
+                <li>8GB+ RAM (16GB recommended)</li>
+                <li>10GB+ disk space</li>
+                <li>PPMI data access from ppmi-info.org</li>
+            </ul>
+            
+            <h3>2. Installation</h3>
+            <div class="code-block">
+git clone https://github.com/MJFF-ResearchCommunity/PIE.git
+cd PIE
+pip install -r requirements.txt
+pip install -e .
+            </div>
+            
+            <h3>3. Your First Analysis</h3>
+            <div class="code-block">
+python3 pie/pipeline.py \
+    --data-dir ./PPMI \
+    --output-dir ./output/my_first_analysis \
+    --target-column COHORT \
+    --fs-method fdr \
+    --n-models 3
+            </div>
+        </div>
+
+        <!-- Slide 15: Visualizations Generated -->
+        <div class="slide">
+            <h1>Rich Visualizations Generated</h1>
+            <h2>PIE's Classification Pipeline Creates Comprehensive Reports</h2>
+            
+            <h3>Key Visualizations Automatically Generated:</h3>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📊 Model Comparison Leaderboard</h4>
+                    <p>Compare performance across multiple algorithms (XGBoost, CatBoost, Random Forest, etc.) with metrics like accuracy, AUC, recall, and precision</p>
+                </div>
+                <div class="feature-card">
+                    <h4>📈 Feature Importance Plots</h4>
+                    <p>Understand which features drive predictions - genetic markers, clinical assessments, biomarkers ranked by importance</p>
+                </div>
+                <div class="feature-card">
+                    <h4>🎯 SHAP Analysis</h4>
+                    <p>Feature impact by class - see how different features influence predictions for each cohort (PD, Control, Prodromal, SWEDD)</p>
+                </div>
+                <div class="feature-card">
+                    <h4>🔍 Dimensionality Reduction</h4>
+                    <p>PCA and t-SNE visualizations showing natural clustering of patient cohorts in reduced dimensional space</p>
+                </div>
+            </div>
+            
+            <div class="highlight-box">
+                <h3>Example: Top Predictive Features from Actual Run</h3>
+                <ul>
+                    <li>LRRK2 genetic variants (<span style="font-weight:bold;color:#FFD700;">chr12:40363526 = G2385R</span>, <span style="font-weight:bold;color:#FFD700;">chr12:40310434 = R1441C/G</span>)</li>
+                    <li>Enrollment characteristics (<span style="font-weight:bold;color:#d32f2f;">ENRLHPSM</span>, <span style="font-weight:bold;color:#d32f2f;">ENRLRBD</span>)</li>
+                    <li>Non-motor assessments (<span style="font-weight:bold;color:#2e7d32;">BRNINFM</span>, <span style="font-weight:bold;color:#d32f2f;">NP4TOT</span> scores)</li>
+                    <li>Blood chemistry markers (<span style="font-weight:bold;color:#2e7d32;">BCH_RCT16_Serum_Potassium</span>)</li>
+                    <li>Clinical features (<span style="font-weight:bold;color:#d32f2f;">FEATNOLEVO</span>, <span style="font-weight:bold;color:#2e7d32;">FEATANTCOL</span>)</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Slide 16: Screenshot 1 -->
+        <div class="slide">
+            <div class="center-content">
+                <img src="assets/screenshots/1.png" alt="Screenshot 1" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+            </div>
+        </div>
+
+        <!-- Slide 17: Screenshot 2 -->
+        <div class="slide">
+            <div class="center-content">
+                <img src="assets/screenshots/2.png" alt="Screenshot 2" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+            </div>
+        </div>
+
+        <!-- Slide 18: Screenshot 3 -->
+        <div class="slide">
+            <div class="center-content">
+                <img src="assets/screenshots/3.png" alt="Screenshot 3" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+            </div>
+        </div>
+
+        <!-- Slide 19: Screenshot 4 -->
+        <div class="slide">
+            <div class="center-content">
+                <img src="assets/screenshots/4.png" alt="Screenshot 4" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+            </div>
+        </div>
+
+        <!-- Slide 20: Screenshot 5 -->
+        <div class="slide">
+            <div class="center-content">
+                <img src="assets/screenshots/5.png" alt="Screenshot 5" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+            </div>
+        </div>
+
+        <!-- Slide 21: Screenshot 6 -->
+        <div class="slide">
+            <div class="center-content">
+                <img src="assets/screenshots/6.png" alt="Screenshot 6" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+            </div>
+        </div>
+
+        <!-- Slide 16: Future Directions -->
+        <div class="slide">
+            <h1>Future Directions</h1>
+            <h2>Roadmap</h2>
+            <h3>Short-term (Next 6 Months)</h3>
+            <ul>
+                <li><strong>Improved Data Leakage Removal</strong>: Predefined leakage features based on classification target</li>
+                <li><strong>Incorporate Imaging Data</strong>: </li>
+                <li><strong>Regression Pipeline</strong>: Mirror the classification pipeline for regression tasks</li>
+            </ul>
+            
+            <h3>Medium-term (6-12 Months)</h3>
+            <ul>
+                <li><strong>PD Data From Other Sources</strong></li>
+                <li><strong>Graphical Interface</strong>: Lower the barrier to entry for researchers</li>
+                <li><strong>Identify Most Promising Use Cases</strong>: Based on researcher's needs.</li>
+            </ul>
+            
+            <h3>What would you like to see added or improved?</h3>
+        </div>
+
+        <!-- Slide 17: Community -->
+        <div class="slide">
+            <h1>Join the PIE Community</h1>
+            <h2>How You Can Help</h2>
+            <ol>
+                <li><strong>Use PIE in your research</strong> and provide feedback</li>
+                <li><strong>Contribute new features</strong> via GitHub pull requests</li>
+                <li><strong>Report bugs</strong> and suggest improvements</li>
+                <li><strong>Share your results</strong> with the community</li>
+                <li><strong>Extend PIE</strong> for other neurodegenerative diseases</li>
+            </ol>
+            
+            <h3>Get Support</h3>
+            <ul>
+                <li><strong>GitHub</strong>: github.com/MJFF-ResearchCommunity/PIE</li>
+                <li><strong>Documentation</strong>: PIE Wiki</li>
+                <li><strong>Email</strong>: cameron@allianceai.co</li>
+                <li><strong>Discussion Forum</strong>: Research questions and collaboration</li>
+            </ul>
+        </div>
+
+        <!-- Slide 18: Impact -->
+        <div class="slide">
+            <h1>The Impact of PIE</h1>
+            <h2>Transforming Parkinson's Research</h2>
+            <div class="highlight-box">
+                <h3>What We've Accomplished:</h3>
+                <ul>
+                    <li><strong>Democratized ML</strong>: Made advanced analytics accessible to all researchers</li>
+                    <li><strong>Accelerated Discovery</strong>: Reduced analysis time from months to hours</li>
+                    <li><strong>Improved Reproducibility</strong>: Standardized preprocessing and analysis</li>
+                    <li><strong>Enhanced Collaboration</strong>: Common platform for research community</li>
+                </ul>
+            </div>
+            
+            <h3>The Impact on Your Research:</h3>
+            <ul>
+                <li><strong>Focus on Science</strong>: Spend time on research questions, not data wrangling</li>
+                <li><strong>Comprehensive Analysis</strong>: Multi-modal integration in a single pipeline</li>
+                <li><strong>Robust Results</strong>: Statistical rigor and proper validation</li>
+                <li><strong>Rapid Iteration</strong>: Test hypotheses quickly and efficiently</li>
+            </ul>
+        </div>
+
+        <!-- Slide 19: Conclusion -->
+        <div class="slide">
+            <h1>Conclusion</h1>
+            <h2>The Future of Parkinson's Research</h2>
+            <div class="center-content">
+                <p style="font-size: 24px;">With PIE, we're not just building a tool – we're building a <strong>research ecosystem</strong> that will:</p>
+                <ul style="font-size: 20px; text-align: left; display: inline-block;">
+                    <li>Accelerate biomarker discovery</li>
+                    <li>Enable personalized medicine</li>
+                    <li>Facilitate drug development</li>
+                    <li>Improve patient outcomes</li>
+                </ul>
+            </div>
+            
+            <div class="highlight-box" style="margin-top: 40px;">
+                <p style="font-size: 22px; text-align: center; font-weight: bold;">
+                    Together, we can unlock the full potential of PPMI data and accelerate the path to better treatments for Parkinson's disease.
+                </p>
+            </div>
+        </div>
+
+        <!-- Slide 20: Q&A 1 -->
+        <div class="slide">
+            <h1>Q&A Session</h1>
+            <h2>Frequently Asked Questions - Part 1</h2>
+            
+            <div class="highlight-box">
+                <h3>Q: How does PIE handle different PPMI data versions?</h3>
+                <p><strong>A:</strong> PIE is designed to be robust to PPMI data structure changes. The data loaders automatically detect column variations and handle missing files gracefully. We regularly update PIE to support new PPMI releases.</p>
+            </div>
+            
+            <div class="highlight-box">
+                <h3>Q: Can PIE be used for other neurodegenerative diseases?</h3>
+                <p><strong>A:</strong> While PIE is optimized for PPMI data, the core architecture is modular and extensible. We're actively working on adaptations for Alzheimer's (ADNI), ALS, and other neurodegenerative disease datasets.</p>
+            </div>
+            
+            <div class="highlight-box">
+                <h3>Q: What about regulatory compliance for clinical use?</h3>
+                <p><strong>A:</strong> Current PIE is designed for research use. We're developing PIE Clinical with FDA/EMA compliance features, including audit trails, validation protocols, and clinical decision support interfaces.</p>
+            </div>
+        </div>
+        
+        <!-- Slide 21: Q&A 2 -->
+        <div class="slide">
+            <h1>Q&A Session</h1>
+            <h2>Frequently Asked Questions - Part 2</h2>
+            
+            <div class="highlight-box">
+                <h3>Q: How do I cite PIE in my publications?</h3>
+                <div class="code-block">Hamilton, C., & Catterson, V. (2024). PIE: Parkinson's Insight Engine -
+An Automated Machine Learning Pipeline for PPMI Data Analysis.
+GitHub: https://github.com/MJFF-ResearchCommunity/PIE</div>
+            </div>
+            
+            <div class="highlight-box">
+                <h3>Q: Can I contribute my own analysis modules?</h3>
+                <p><strong>A:</strong> Absolutely! PIE is open-source and welcomes contributions. See our GitHub repository for contribution guidelines and development documentation.</p>
+            </div>
+            
+            <div class="highlight-box">
+                <h3>Q: What's the difference between PIE and other AutoML tools?</h3>
+                <p><strong>A:</strong> PIE is specifically designed for Parkinson's research and PPMI data. Unlike general AutoML tools, PIE understands the unique challenges of multi-modal longitudinal clinical data and includes domain-specific features like data leakage prevention for clinical variables.</p>
+            </div>
+        </div>
+        
+        
+
+        <!-- Navigation Controls -->
+        <div class="controls">
+            <button class="btn" id="prevBtn" onclick="changeSlide(-1)">Previous</button>
+            <button class="btn" id="nextBtn" onclick="changeSlide(1)">Next</button>
+        </div>
+    </div>
+
+    <script>
+        let currentSlide = 1;
+        const totalSlides = 27;
+
+        function showSlide(n) {
+            const slides = document.getElementsByClassName('slide');
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            const progressBar = document.getElementById('progress-bar');
+            
+            if (n > totalSlides) currentSlide = totalSlides;
+            if (n < 1) currentSlide = 1;
+            
+            for (let i = 0; i < slides.length; i++) {
+                slides[i].classList.remove('active');
+            }
+            
+            slides[currentSlide - 1].classList.add('active');
+            
+            // Update counter
+            document.getElementById('current-slide').textContent = currentSlide;
+            
+            // Update buttons
+            prevBtn.disabled = currentSlide === 1;
+            nextBtn.disabled = currentSlide === totalSlides;
+            
+            // Update progress bar
+            progressBar.style.width = (currentSlide / totalSlides * 100) + '%';
+        }
+
+        function changeSlide(n) {
+            currentSlide += n;
+            showSlide(currentSlide);
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'ArrowLeft') {
+                changeSlide(-1);
+            } else if (event.key === 'ArrowRight') {
+                changeSlide(1);
+            } else if (event.key === 'f' || event.key === 'F') {
+                // Toggle fullscreen
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen();
+                } else {
+                    document.exitFullscreen();
+                }
+            }
+        });
+
+        // Initialize
+        document.getElementById('total-slides').textContent = totalSlides;
+        showSlide(1);
+    </script>
+</body>
+</html>
