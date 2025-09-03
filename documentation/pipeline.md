@@ -39,6 +39,9 @@ python3 pie/pipeline.py --data-dir ./PPMI --output-dir ./output/my_run --target-
 -   **`--leakage-features-path`** `(str, default='config/leakage_features.txt')`
     A crucial parameter pointing to a text file that lists features to be excluded from the analysis. Each feature name should be on a new line. This is used to prevent **data leakage** by removing columns that are direct proxies for the target or contain information not available at prediction time.
 
+-   **`--modalities`** `(str, default='')`
+    Comma/space-separated list of data modalities to include. If omitted, the pipeline uses all available modalities. Valid options: `subject_characteristics`, `medical_history`, `motor_assessments`, `non_motor_assessments`, `biospecimen`.
+
 -   **`--fs-method`** `(str, default='fdr')`
     The feature selection method to use.
     Options: `'fdr'` (False Discovery Rate), `'k_best'`.
@@ -82,12 +85,15 @@ This is the most common use case. You have your raw data in `./PPMI` and want to
         --output-dir ./output/pd_vs_control_run \
         --target-column COHORT \
         --leakage-features-path config/leakage_features.txt \
+        --modalities "subject_characteristics motor_assessments non_motor_assessments" \
         --fs-method fdr \
         --fs-param 0.05 \
         --n-models 5 \
         --tune \
         --budget 60.0
     ```
+
+    You can also use commas: `--modalities subject_characteristics,medical_history,biospecimen`.
 
 ### What Happens When You Run This?
 

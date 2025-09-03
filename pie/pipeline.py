@@ -18,6 +18,7 @@ import webbrowser
 from datetime import datetime
 from typing import List, Dict, Optional
 import time
+import re
 
 # Add the parent directory to the Python path to make the pie module importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,6 +34,7 @@ from pie.reporting import (
     generate_feature_engineering_report_html,
     generate_feature_selection_report_html
 )
+from pie.constants import ALL_MODALITIES
 
 # Imports for feature selection step
 from sklearn.model_selection import train_test_split
@@ -129,14 +131,14 @@ def _generate_feature_selection_report_html(report_data, output_html_path):
 # --- PIPELINE STEPS ---
 
 @timing_decorator
-def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_path: Path) -> dict:
+def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_path: Path, modalities: Optional[List[str]] = None) -> dict:
     """Loads, reduces, merges, and consolidates data."""
     logger.info("Starting data loading and reduction step...")
     if not os.path.exists(data_dir):
         logger.error(f"Data directory not found: {data_dir}. Step cannot proceed.")
         raise FileNotFoundError(f"Data directory not found: {data_dir}")
 
-    data_dict = DataLoader.load(data_path=data_dir, merge_output=False)
+    data_dict = DataLoader.load(data_path=data_dir, merge_output=False, modalities=modalities)
     initial_size_mb = _calculate_dict_size(data_dict)
     initial_summary = _get_dict_summary(data_dict)
 
@@ -477,6 +479,7 @@ def run_pipeline(
     output_dir: str,
     target_column: str,
     leakage_features_path: str,
+    modalities: Optional[List[str]] = None,
     fs_method: str = 'fdr',
     fs_param_value: float = 0.05,
     n_models_to_compare: int = 5,
@@ -504,7 +507,8 @@ def run_pipeline(
         pipeline_report_data['reduction'] = run_data_reduction_step(
             data_dir,
             output_csv_path=reduced_csv,
-            output_html_path=output_path / "data_reduction_report.html"
+            output_html_path=output_path / "data_reduction_report.html",
+            modalities=modalities if modalities else ALL_MODALITIES
         )
     
     # --- 2. Feature Engineering ---
@@ -592,6 +596,7 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', type=str, default='output/pipeline_run', help='Directory to save all pipeline outputs and reports.')
     parser.add_argument('--target-column', type=str, default='COHORT', help='Name of the target variable.')
     parser.add_argument('--leakage-features-path', type=str, default='config/leakage_features.txt', help='Path to a file containing features to exclude to prevent data leakage.')
+    parser.add_argument('--modalities', type=str, default='', help='Comma/space-separated list of modalities to include. Default: all. Options: subject_characteristics, medical_history, motor_assessments, non_motor_assessments, biospecimen')
     
     # Feature Selection Params
     parser.add_argument('--fs-method', type=str, default='fdr', help="Feature selection method ('fdr' or 'k_best').")
@@ -608,11 +613,27 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Normalize modalities (case-insensitive, comma/space separated)
+    modalities_list = None
+    if args.modalities:
+        tokens = re.split(r'[;,\s]+', args.modalities)
+        normalized = [t.strip().lower() for t in tokens if t and t.strip()]
+        # Filter to known modalities, warn on unknowns
+        if normalized:
+            unknown = [m for m in normalized if m not in ALL_MODALITIES]
+            if unknown:
+                logger.warning(f"Unknown modalities provided and will be ignored: {unknown}. Valid options: {ALL_MODALITIES}")
+            modalities_list = [m for m in normalized if m in ALL_MODALITIES]
+            if not modalities_list:
+                logger.warning("No valid modalities specified after filtering; defaulting to all modalities.")
+                modalities_list = None
+
     run_pipeline(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         target_column=args.target_column,
         leakage_features_path=args.leakage_features_path,
+        modalities=modalities_list,
         fs_method=args.fs_method,
         fs_param_value=args.fs_param,
         n_models_to_compare=args.n_models,
