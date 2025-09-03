@@ -232,7 +232,7 @@ plt.savefig('medication_indications.png')
 rbd_meds = conmeds[conmeds["CMINDC"]==18]
 print(f"Found {len(rbd_meds)} RBD medication entries")
 
-# Analyze how many patients are on PD medications
+# Analyze how many patients are on RBD medications
 rbd_patients = rbd_meds["PATNO"].nunique()
 total_patients = conmeds["PATNO"].nunique()
 print(f"{rbd_patients} out of {total_patients} patients ({rbd_patients/total_patients:.1%}) are on RBD medications")
@@ -363,8 +363,8 @@ if therapy_init is not None:
     # Analyze time to dopaminergic therapy
     if "INFODT" in therapy_init.columns and "TREATDT" in therapy_init.columns:
         # Convert dates to datetime
-        therapy_init["INFODT"] = pd.to_datetime(therapy_init["INFODT"])
-        therapy_init["TREATDT"] = pd.to_datetime(therapy_init["TREATDT"])
+        therapy_init["INFODT"] = DataPreprocessor.dt_to_datetime(therapy_init["INFODT"])
+        therapy_init["TREATDT"] = DataPreprocessor.dt_to_datetime(therapy_init["TREATDT"])
         
         # Calculate time difference in months
         therapy_init["TIME_TO_THERAPY"] = (therapy_init["TREATDT"] - therapy_init["INFODT"]).dt.days / 30.44  # Average month length
