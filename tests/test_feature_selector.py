@@ -69,11 +69,11 @@ def test_feature_selector_class_with_real_data():
 
     # 4. Initialize and use the FeatureSelector
     selector = FeatureSelector(
-        method='univariate_kbest',
+        method='k_best',
         task_type='classification',
-        k_or_frac_kbest=0.25  # Select top 25% of features
+        k_or_frac=0.25  # Select top 25% of features
     )
-    logger.info(f"FeatureSelector initialized with method='univariate_kbest', k=0.25")
+    logger.info(f"FeatureSelector initialized with method='k_best', k=0.25")
 
     # 5. Fit on training data
     logger.info("Fitting the selector...")

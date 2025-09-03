@@ -81,7 +81,9 @@ def test_feature_engineering_pipeline(
 
     # Example: Polynomial features on a couple of numeric columns if they exist
     numeric_cols = engineer.get_dataframe().select_dtypes(include=np.number).columns
-    potential_poly_cols = [col for col in numeric_cols if col.upper() not in ['PATNO', 'EVENT_ID', 'COHORT']][:2]
+    potential_poly_cols = [col for col in numeric_cols if col.upper() not in ['PATNO', 'EVENT_ID', 'COHORT'] \
+                                    and "DATE" not in col.upper() \
+                                    and not engineer.get_dataframe()[col].isnull().any()][:2]
     if len(potential_poly_cols) >= 1: # Need at least one for non-interaction, 2 for interaction
         logger.info(f"Generating polynomial features for: {potential_poly_cols}")
         engineer.engineer_polynomial_features(columns=potential_poly_cols, degree=2, interaction_only=False)
