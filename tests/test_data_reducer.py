@@ -11,7 +11,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import the necessary classes
-from pie.data_loader import DataLoader
+from pie_clean import DataLoader
 from pie.data_reducer import DataReducer
 # FeatureEngineer will be tested separately
 from pie.reporting import generate_data_reduction_html_report as generate_html_report
