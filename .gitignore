@@ -4,6 +4,7 @@ data/
 output/
 Imaging/
 venv_py311/
+catboost_info/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
