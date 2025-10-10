@@ -1,6 +1,6 @@
 # test_data_loader.py
 import logging
-from pie.data_loader import DataLoader
+from pie_clean import * # DataLoader and constants
 
 # Configure logging
 logging.basicConfig(
@@ -12,8 +12,8 @@ logging.basicConfig(
 data = DataLoader.load(
     data_path="./PPMI",
     modalities=[
-        DataLoader.SUBJECT_CHARACTERISTICS,
-        DataLoader.MEDICAL_HISTORY
+        SUBJECT_CHARACTERISTICS,
+        MEDICAL_HISTORY
     ]
 )
 
@@ -21,22 +21,22 @@ data = DataLoader.load(
 print("\n=== Data Loading Test Results ===")
 
 # Check subject characteristics
-if not data[DataLoader.SUBJECT_CHARACTERISTICS].empty:
-    print(f"Subject characteristics: {len(data[DataLoader.SUBJECT_CHARACTERISTICS])} rows")
+if not data[SUBJECT_CHARACTERISTICS].empty:
+    print(f"Subject characteristics: {len(data[SUBJECT_CHARACTERISTICS])} rows")
     print("First few rows:")
-    print(data[DataLoader.SUBJECT_CHARACTERISTICS].head(3))
+    print(data[SUBJECT_CHARACTERISTICS].head(3))
 else:
     print("Subject characteristics: No data loaded")
 
 # Check medical history
-if data[DataLoader.MEDICAL_HISTORY]:
-    print(f"Medical history tables: {len(data[DataLoader.MEDICAL_HISTORY])} tables")
-    for table_name, df in data[DataLoader.MEDICAL_HISTORY].items():
+if data[MEDICAL_HISTORY]:
+    print(f"Medical history tables: {len(data[MEDICAL_HISTORY])} tables")
+    for table_name, df in data[MEDICAL_HISTORY].items():
         print(f"  - {table_name}: {len(df)} rows")
     
     # Show a sample from the first table
-    if data[DataLoader.MEDICAL_HISTORY]:
-        first_table = next(iter(data[DataLoader.MEDICAL_HISTORY].values()))
+    if data[MEDICAL_HISTORY]:
+        first_table = next(iter(data[MEDICAL_HISTORY].values()))
         print("\nSample from first medical history table:")
         print(first_table.head(3))
 else:
