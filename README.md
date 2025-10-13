@@ -9,6 +9,8 @@ The Parkinson's Insight Engine (PIE) is a comprehensive pipeline designed for re
 
 The primary way to use PIE is through its main pipeline script, which orchestrates all the steps required to go from raw data to a full classification analysis with a single command.
 
+For ease of understanding, there is a companion package called [PIE-clean which handles the data loading, consolidating, and cleaning functionality](https://github.com/MJFF-ResearchCommunity/PIE-clean). It is seamlessly integrated into PIE, so you should use PIE if you want to perform machine learning, and PIE-clean if you only want to examine and explore the data.
+
 ## Key Features
 - **End-to-End Automation**: A single command runs the full data processing and machine learning pipeline.
 - **Modular Pipeline**: Each step (Data Reduction, Feature Engineering, Feature Selection, Classification) generates its own detailed HTML report and intermediate data files.
@@ -25,8 +27,9 @@ PIE processes data in a sequential, multi-stage workflow. Each stage produces ou
 [Raw PPMI Data]
        |
        v
-[1. Data Loading]
+[1. Data Loading (using PIE-clean)]
    - Loads all raw data modalities into memory.
+   - Preprocesses and cleans the raw data.
    - (This step is integrated into the start of the Data Reduction stage).
        |
        v
@@ -172,8 +175,6 @@ While the main pipeline is the recommended entry point, PIE is composed of modul
 - [**Feature Engineer**](documentation/feature_engineer.md)
 - [**Feature Selector**](documentation/feature_selector.md)
 - [**Classifier & Reporting**](documentation/classifier.md)
-
-Please also check out the notebooks directory for some great examples of how to use PIE in a more modular fashion.
 
 ## Contributing
 Contributions are welcome! Please follow these steps:

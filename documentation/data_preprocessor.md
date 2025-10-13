@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `DataPreprocessor` class, located in `pie/data_preprocessor.py`, is a collection of static methods designed to perform targeted cleaning, standardization, and feature engineering on specific data tables within the PPMI dataset. Unlike the `DataReducer`, which performs general data reduction based on metrics like missingness, the `DataPreprocessor` applies domain-specific knowledge to fix known data inconsistencies and derive more meaningful variables.
+The `DataPreprocessor` class, located in the `pie_clean` package, is a collection of static methods designed to perform targeted cleaning, standardization, and feature engineering on specific data tables within the PPMI dataset. Unlike the `DataReducer`, which performs general data reduction based on metrics like missingness, the `DataPreprocessor` applies domain-specific knowledge to fix known data inconsistencies and derive more meaningful variables.
 
 For instance, it can convert raw blood pressure readings into standardized hypertension stages or map free-text medication indications to a consistent set of codes. These methods are typically applied after data is loaded by the `DataLoader` and before it is merged or fed into analysis pipelines.
 
@@ -110,9 +110,8 @@ Converts a pandas Series of date strings (in "MM/YYYY" format) to a Series of da
 The `DataLoader` automatically applies the relevant pre-processing steps when loading `medical_history`. However, you can also apply them manually.
 
 ```python
-from pie.data_loader import DataLoader
-from pie.constants import MEDICAL_HISTORY
-from pie.data_preprocessor import DataPreprocessor
+from pie_clean import DataLoader, DataPreprocessor
+from pie_clean import MEDICAL_HISTORY
 
 # Load data without applying the cleaner via DataLoader first
 # (Note: DataLoader's default clean_data=True would normally do this)
@@ -144,7 +143,7 @@ print(f"Cleaned CMINDC nulls: {clean_concom_meds_df['CMINDC'].isnull().sum()}")
 
 ## How to Run the Tests
 
-The test script `tests/test_data_preprocessor.py` contains unit tests for each specific cleaning function to ensure they behave as expected.
+The test script `tests/test_pie_clean.py` contains unit tests for the `DataPreprocessor` to ensure it is imported by PIE and behaves as expected.
 
 ### Prerequisites
 
@@ -156,14 +155,5 @@ The test script `tests/test_data_preprocessor.py` contains unit tests for each s
 The tests are designed to be run with `pytest`. From the root directory of the PIE project, run the following command in your terminal:
 
 ```bash
-pytest tests/test_data_preprocessor.py
+pytest tests/test_pie_clean.py
 ```
-
-### What the Tests Do
-
-Pytest will automatically discover and run each test function in the file:
--   **`test_clean_vital_signs`**: Asserts that the new blood pressure code and label columns are correctly added.
--   **`test_clean_features_of_parkinsonism`**: Confirms that the "Uncertain" value `2` is removed and replaced.
--   **`test_clean_concomitant_meds`**: Checks that date columns are converted to datetime objects and, crucially, that all null values in the `CMINDC` column are filled in by the mapping logic.
-
-**Note on Skipped Test**: You will see one test being skipped (`test_create_concomitant_meds`). This is intentional. That function is a one-time utility used to generate the internal JSON mapping file; it is not part of the standard data processing workflow and does not need to be tested during normal operation.
