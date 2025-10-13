@@ -10,7 +10,7 @@ logger = logging.getLogger(f"PIE.{__name__}")
 
 class DataReducer:
     """
-    Analyzes a dictionary of DataFrames (as produced by DataLoader)
+    Analyzes a dictionary of DataFrames (as produced by PIE-clean DataLoader)
     to provide summary statistics and identify columns potentially safe to drop
     before merging, aiming to reduce memory usage.
     """

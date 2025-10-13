@@ -23,8 +23,11 @@ import re
 # Add the parent directory to the Python path to make the pie module importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Import PIE-clean modules
+from pie_clean import DataLoader
+from pie_clean import ALL_MODALITIES
+
 # Import PIE modules
-from pie.data_loader import DataLoader
 from pie.data_reducer import DataReducer
 from pie.feature_engineer import FeatureEngineer
 from pie.classification_report import generate_report as run_classification_step
@@ -34,7 +37,6 @@ from pie.reporting import (
     generate_feature_engineering_report_html,
     generate_feature_selection_report_html
 )
-from pie.constants import ALL_MODALITIES
 
 # Imports for feature selection step
 from sklearn.model_selection import train_test_split

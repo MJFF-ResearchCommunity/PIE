@@ -101,7 +101,7 @@ Finds all columns related to cohort information in a DataFrame, consolidates the
 This example shows the complete, end-to-end workflow from loading to a final, reduced, and consolidated DataFrame.
 
 ```python
-from pie.data_loader import DataLoader
+from pie_clean import DataLoader
 from pie.data_reducer import DataReducer
 
 # --- 1. Load Data ---

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `DataLoader` class, located in `pie/data_loader.py`, serves as the main entry point for the PIE library. It provides a high-level, unified interface to load, combine, and process data from various modalities within the PPMI dataset. This class orchestrates the specialized loaders for subject characteristics, medical history, motor/non-motor assessments, and complex biospecimen data, making it easy to get an analysis-ready dataset with a single function call.
+The `DataLoader` class, located in the `pie_clean` package, serves as the main entry point for data into the PIE library. It provides a high-level, unified interface to load, combine, and process data from various modalities within the PPMI dataset. This class orchestrates the specialized loaders for subject characteristics, medical history, motor/non-motor assessments, and complex biospecimen data, making it easy to get an analysis-ready dataset with a single function call.
 
 ## Key Features
 
@@ -65,13 +65,15 @@ def load(
 
 ## Practical Usage Examples
 
+Please see the [PIE-clean documentation for modality-specific details for loading](https://github.com/MJFF-ResearchCommunity/PIE-clean/tree/main/documentation) the more complex data types, such as biospecimens and non-motor exams. The examples below show the key use cases when loading data for PIE.
+
 ### Example 1: Load Specific Modalities as a Dictionary
 
 This is the simplest use case, where you want to get data for a few modalities to work with them separately.
 
 ```python
-from pie.data_loader import DataLoader
-from pie.constants import SUBJECT_CHARACTERISTICS, MOTOR_ASSESSMENTS
+from pie_clean import DataLoader
+from pie_clean import SUBJECT_CHARACTERISTICS, MOTOR_ASSESSMENTS
 
 print("Loading subject characteristics and motor assessments...")
 data_dictionary = DataLoader.load(
@@ -92,7 +94,7 @@ print(f"Loaded Motor Assessments: {df_motor.shape}")
 This example demonstrates the power of the loader to create a single, comprehensive dataset. **Warning:** This can be very memory-intensive if all biospecimen data is included.
 
 ```python
-from pie.data_loader import DataLoader
+from pie_clean import DataLoader
 
 print("Loading and merging all modalities (this can take a lot of memory)...")
 
@@ -116,7 +118,7 @@ if not df_merged.empty:
 If you want to load everything but keep the files separate, you can use `merge_output=False` with `output_file`.
 
 ```python
-from pie.data_loader import DataLoader
+from pie_clean import DataLoader
 
 print("Loading all modalities and saving them as individual CSV files...")
 
