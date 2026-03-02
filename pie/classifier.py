@@ -91,26 +91,38 @@ def _compute_metrics(y_true, y_pred, y_proba=None):
 # Dynamic model catalog
 # ---------------------------------------------------------------------------
 
+def _can_import(module: str, cls_name: str) -> bool:
+    """Return True if *module*.*cls_name* is importable."""
+    import importlib
+    try:
+        mod = importlib.import_module(module)
+        getattr(mod, cls_name)
+        return True
+    except Exception:
+        return False
+
+
 def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, Any]]:
     """
-    Return ALL available models from endgame + sklearn.
+    Return ALL available models from endgame + sklearn + third-party.
 
-    Each entry is ``{model_id: {"name": ..., "class": ..., ...}}``.
-    Falls back to a sensible static catalog when endgame is unavailable.
+    Each entry is ``{model_id: {"name": ..., "module": ..., "class": ...}}``.
+    Models that cannot be imported are excluded from the returned catalog.
     """
     catalog: Dict[str, Dict[str, Any]] = {}
 
-    # Pull from endgame's automl registry when available
+    # 1. Pull from endgame's automl registry when available
     if ENDGAME_AVAILABLE:
         try:
             from endgame.automl import list_models, get_model_info
             for model_id in list_models(task_type=task_type):
                 info = get_model_info(model_id)
                 catalog[model_id] = info
+            logger.info(f"Loaded {len(catalog)} models from endgame registry for {task_type}")
         except Exception as exc:
-            logger.debug(f"Could not load endgame registry: {exc}")
+            logger.warning(f"Could not load endgame model registry: {exc}")
 
-    # Supplement / fallback with sklearn-based models
+    # 2. Build the static catalog (sklearn + third-party + endgame-specific)
     if task_type == "classification":
         _sklearn_models = {
             "lr": {"name": "Logistic Regression", "module": "sklearn.linear_model", "class": "LogisticRegression"},
@@ -126,25 +138,20 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
             "lda": {"name": "Linear Discriminant Analysis", "module": "sklearn.discriminant_analysis", "class": "LinearDiscriminantAnalysis"},
             "qda": {"name": "Quadratic Discriminant Analysis", "module": "sklearn.discriminant_analysis", "class": "QuadraticDiscriminantAnalysis"},
         }
-        # Try adding popular third-party classifiers
         _third_party = {
             "xgboost": {"name": "XGBoost", "module": "xgboost", "class": "XGBClassifier"},
             "lightgbm": {"name": "LightGBM", "module": "lightgbm", "class": "LGBMClassifier"},
             "catboost": {"name": "CatBoost", "module": "catboost", "class": "CatBoostClassifier"},
         }
-        # Endgame-specific models
-        _endgame_models = {}
-        if ENDGAME_AVAILABLE:
-            _endgame_models = {
-                "ebm": {"name": "Explainable Boosting Machine", "module": "endgame.models", "class": "EBMClassifier"},
-                "tabnet": {"name": "TabNet", "module": "endgame.models", "class": "TabNetClassifier"},
-                "saint": {"name": "SAINT", "module": "endgame.models", "class": "SAINTClassifier"},
-                "ft_transformer": {"name": "FT-Transformer", "module": "endgame.models", "class": "FTTransformerClassifier"},
-                "node": {"name": "NODE", "module": "endgame.models", "class": "NODEClassifier"},
-                "rule_fit": {"name": "RuleFit", "module": "endgame.models", "class": "RuleFitClassifier"},
-            }
-        for mid, info in {**_sklearn_models, **_third_party, **_endgame_models}.items():
-            catalog.setdefault(mid, info)
+        _endgame_models = {
+            "ebm": {"name": "Explainable Boosting Machine", "module": "endgame.models", "class": "EBMClassifier"},
+            "tabnet": {"name": "TabNet", "module": "endgame.models", "class": "TabNetClassifier"},
+            "saint": {"name": "SAINT", "module": "endgame.models", "class": "SAINTClassifier"},
+            "ft_transformer": {"name": "FT-Transformer", "module": "endgame.models", "class": "FTTransformerClassifier"},
+            "node": {"name": "NODE", "module": "endgame.models", "class": "NODEClassifier"},
+            "rule_fit": {"name": "RuleFit", "module": "endgame.models", "class": "RuleFitClassifier"},
+        }
+        static = {**_sklearn_models, **_third_party, **_endgame_models}
     else:
         _sklearn_models = {
             "lr": {"name": "Linear Regression", "module": "sklearn.linear_model", "class": "LinearRegression"},
@@ -164,10 +171,37 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
             "lightgbm": {"name": "LightGBM", "module": "lightgbm", "class": "LGBMRegressor"},
             "catboost": {"name": "CatBoost", "module": "catboost", "class": "CatBoostRegressor"},
         }
-        for mid, info in {**_sklearn_models, **_third_party}.items():
-            catalog.setdefault(mid, info)
+        _endgame_models = {
+            "ebm": {"name": "Explainable Boosting Machine", "module": "endgame.models", "class": "EBMRegressor"},
+            "tabnet": {"name": "TabNet", "module": "endgame.models", "class": "TabNetRegressor"},
+            "saint": {"name": "SAINT", "module": "endgame.models", "class": "SAINTRegressor"},
+            "ft_transformer": {"name": "FT-Transformer", "module": "endgame.models", "class": "FTTransformerRegressor"},
+            "node": {"name": "NODE", "module": "endgame.models", "class": "NODERegressor"},
+            "rule_fit": {"name": "RuleFit", "module": "endgame.models", "class": "RuleFitRegressor"},
+        }
+        static = {**_sklearn_models, **_third_party, **_endgame_models}
 
-    return catalog
+    # 3. Merge static into catalog (don't override entries already populated
+    #    by the dynamic registry, but add any that are missing)
+    for mid, info in static.items():
+        if mid not in catalog:
+            catalog[mid] = info
+
+    # 4. Validate: only keep entries whose module+class are actually importable
+    validated: Dict[str, Dict[str, Any]] = {}
+    for mid, info in catalog.items():
+        mod_name = info.get("module", "")
+        cls_name = info.get("class", "")
+        if not mod_name or not cls_name:
+            # Entries from the dynamic registry may use a different schema
+            validated[mid] = info
+            continue
+        if _can_import(mod_name, cls_name):
+            validated[mid] = info
+        else:
+            logger.debug(f"Model '{mid}' excluded from catalog: cannot import {mod_name}.{cls_name}")
+
+    return validated
 
 
 def _instantiate_model(model_id: str, task_type: str = "classification", **kwargs):
