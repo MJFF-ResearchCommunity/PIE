@@ -5,13 +5,25 @@ import numpy as np
 from typing import List, Optional, Callable, Dict, Any, Union
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, PolynomialFeatures, PowerTransformer
 
+# Endgame preprocessing imports
+try:
+    from endgame.preprocessing import (
+        AutoImputer,
+        AutoBalancer,
+    )
+    ENDGAME_PREPROCESS_AVAILABLE = True
+except ImportError:
+    ENDGAME_PREPROCESS_AVAILABLE = False
+
 logger = logging.getLogger(f"PIE.{__name__}")
 
 class FeatureEngineer:
     """
     Handles feature engineering tasks on a given DataFrame.
     Operations include one-hot encoding, custom transformations,
-    and handling of special column formats (e.g., pipe-separated).
+    handling of special column formats (e.g., pipe-separated),
+    and endgame-powered preprocessing (imputation, encoding, balancing,
+    noise detection, interaction features).
     """
 
     def __init__(self, dataframe: pd.DataFrame):
@@ -38,9 +50,9 @@ class FeatureEngineer:
                        dummy_na: bool = False,
                        drop_first: bool = False,
                        max_categories_to_encode: int = 20,
-                       min_frequency_for_category: Optional[float] = None, 
+                       min_frequency_for_category: Optional[float] = None,
                        ignore_for_ohe: Optional[List[str]] = None, # Columns to explicitly ignore for OHE
-                       auto_identify_threshold: int = 50 
+                       auto_identify_threshold: int = 50
                        ) -> 'FeatureEngineer':
         """
         Performs one-hot encoding on specified or auto-identified categorical columns.
@@ -69,9 +81,9 @@ class FeatureEngineer:
         """
         # Prepare the comprehensive list of columns to ignore for OHE
         default_ignores_upper = {'PATNO', 'EVENT_ID', 'COHORT'}
-        
+
         current_ignore_list = list(ignore_for_ohe) if ignore_for_ohe is not None else []
-        
+
         current_ignore_list_upper = {col.upper() for col in current_ignore_list}
         for default_ignore_upper in default_ignores_upper:
             if default_ignore_upper not in current_ignore_list_upper:
@@ -91,7 +103,7 @@ class FeatureEngineer:
             if item.upper() not in seen_upper_ignores:
                 seen_upper_ignores.add(item.upper())
                 final_ignore_list_for_ohe_dedup.append(item)
-        
+
         logger.debug(f"Columns to ignore for OHE (case-insensitive matching for defaults): {final_ignore_list_for_ohe_dedup}")
 
         if columns is None:
@@ -103,7 +115,7 @@ class FeatureEngineer:
                 if any(col.upper() == ignore_col.upper() for ignore_col in final_ignore_list_for_ohe_dedup):
                     logger.info(f"Auto-OHE: Skipping '{col}' as it is in the OHE ignore list.")
                     continue
-                nunique = self.df[col].nunique(dropna=False) 
+                nunique = self.df[col].nunique(dropna=False)
                 if nunique <= auto_identify_threshold:
                     columns_to_encode.append(col)
                 else:
@@ -130,17 +142,17 @@ class FeatureEngineer:
                 logger.warning(f"Column '{col}' not found for one-hot encoding. Skipping.")
                 continue
 
-            nunique = self.df[col].nunique(dropna=not dummy_na) 
+            nunique = self.df[col].nunique(dropna=not dummy_na)
             if nunique > max_categories_to_encode:
                 logger.warning(f"Skipping one-hot encoding for '{col}': {nunique} unique categories > max {max_categories_to_encode}.")
                 continue
-            
+
             current_df_col = self.df[col]
 
             if min_frequency_for_category is not None and nunique > 1:
-                counts = current_df_col.value_counts(normalize=True, dropna=False) 
+                counts = current_df_col.value_counts(normalize=True, dropna=False)
                 infrequent_categories = counts[counts < min_frequency_for_category].index
-                if len(infrequent_categories) > 0 and len(infrequent_categories) < len(counts): 
+                if len(infrequent_categories) > 0 and len(infrequent_categories) < len(counts):
                     logger.info(f"For column '{col}', grouping {len(infrequent_categories)} infrequent categories into '_OTHER_'.")
                     col_series_modified = current_df_col.copy()
                     col_series_modified[current_df_col.isin(infrequent_categories)] = '_OTHER_'
@@ -153,7 +165,7 @@ class FeatureEngineer:
             logger.info(f"One-hot encoding column: '{col}' (Unique values for encoding: {current_df_col_for_dummies.nunique(dropna=False)})")
             dummies = pd.get_dummies(current_df_col_for_dummies, prefix=col, prefix_sep=prefix_sep,
                                      dummy_na=dummy_na, drop_first=drop_first)
-            
+
             encoded_cols_map[col] = dummies.columns.tolist()
 
             self.df = pd.concat([self.df, dummies], axis=1)
@@ -193,7 +205,7 @@ class FeatureEngineer:
 
         if prefix is None:
             prefix = column_name
-        
+
         new_feature_names = []
 
         if strategy == 'first':
@@ -201,7 +213,7 @@ class FeatureEngineer:
             self.df[new_col_name] = self.df[column_name].astype(str).apply(lambda x: x.split('|')[0] if pd.notna(x) and x else np.nan)
             new_feature_names.append(new_col_name)
             logger.info(f"Created '{new_col_name}' by taking first value from '{column_name}'.")
-        
+
         elif strategy == 'count':
             new_col_name = f"{prefix}_count"
             self.df[new_col_name] = self.df[column_name].astype(str).apply(lambda x: len(x.split('|')) if pd.notna(x) and x else 0)
@@ -211,7 +223,7 @@ class FeatureEngineer:
         elif strategy == 'multi_hot':
             all_values = set()
             self.df[column_name].dropna().astype(str).apply(lambda x: all_values.update(val.strip() for val in x.split('|') if val.strip()))
-            
+
             unique_values = sorted(list(all_values))
             if len(unique_values) > max_unique_values_for_multi_hot:
                 logger.warning(f"Skipping multi-hot for '{column_name}': {len(unique_values)} unique values > max {max_unique_values_for_multi_hot}. Consider increasing threshold or using a different strategy.")
@@ -219,13 +231,13 @@ class FeatureEngineer:
 
             logger.info(f"Multi-hot encoding '{column_name}' for values: {unique_values}")
             for val in unique_values:
-                new_col_name = f"{prefix}_{val.replace(' ', '_').replace('-', '_').lower()}" 
+                new_col_name = f"{prefix}_{val.replace(' ', '_').replace('-', '_').lower()}"
                 self.df[new_col_name] = self.df[column_name].astype(str).apply(lambda x: 1 if pd.notna(x) and val in [v.strip() for v in x.split('|')] else 0)
                 new_feature_names.append(new_col_name)
         else:
             logger.warning(f"Unknown strategy '{strategy}' for pipe-separated column '{column_name}'. Skipping.")
             return self
-        
+
         if new_feature_names:
             self.engineered_feature_names[f'pipe_handled_{column_name}'] = new_feature_names
         return self
@@ -248,7 +260,7 @@ class FeatureEngineer:
         if column_name not in self.df.columns:
             logger.warning(f"Column '{column_name}' not found for custom transformation. Skipping.")
             return self
-        
+
         try:
             transformed_series = func(self.df[column_name])
             op_name = f'custom_transform_{func.__name__}_{column_name}'
@@ -265,7 +277,7 @@ class FeatureEngineer:
 
     def scale_numeric_features(self,
                                columns: Optional[List[str]] = None,
-                               scaler_type: str = 'standard', 
+                               scaler_type: str = 'standard',
                                **scaler_params) -> 'FeatureEngineer':
         """
         Scales numeric features using StandardScaler or MinMaxScaler.
@@ -283,7 +295,7 @@ class FeatureEngineer:
             numeric_cols = self.df.select_dtypes(include=np.number).columns.tolist()
             # Exclude common ID/target columns if they are numeric
             columns_to_scale = [
-                col for col in numeric_cols 
+                col for col in numeric_cols
                 if col.upper() not in ['PATNO', 'EVENT_ID', 'COHORT']
             ]
             if not columns_to_scale:
@@ -310,7 +322,7 @@ class FeatureEngineer:
 
         logger.info(f"Scaling columns using {scaler_type}: {columns_to_scale}")
         for col in columns_to_scale:
-            if self.df[col].notna().any(): 
+            if self.df[col].notna().any():
                  self.df[col] = scaler.fit_transform(self.df[[col]])
             else:
                  logger.warning(f"Column '{col}' contains all NaN values. Skipping scaling for this column.")
@@ -337,7 +349,7 @@ class FeatureEngineer:
         if columns is None:
             numeric_cols = self.df.select_dtypes(include=np.number).columns.tolist()
             columns_to_process = [
-                col for col in numeric_cols 
+                col for col in numeric_cols
                 if col.upper() not in ['PATNO', 'EVENT_ID', 'COHORT']
             ]
             if not columns_to_process:
@@ -349,13 +361,13 @@ class FeatureEngineer:
             if len(columns_to_process) != len(columns):
                 missing_or_non_numeric = set(columns) - set(columns_to_process)
                 logger.warning(f"Columns not found or non-numeric, skipped for polynomial features: {missing_or_non_numeric}")
-        
+
         if not columns_to_process:
             logger.info("No valid numeric columns to process for polynomial features.")
             return self
 
         poly = PolynomialFeatures(degree=degree, interaction_only=interaction_only, include_bias=include_bias)
-        
+
         data_for_poly = self.df[columns_to_process].copy()
         imputed_values = {}
         for col in columns_to_process:
@@ -368,13 +380,13 @@ class FeatureEngineer:
         poly_features = poly.fit_transform(data_for_poly)
         poly_feature_names = poly.get_feature_names_out(input_features=columns_to_process)
         poly_df = pd.DataFrame(poly_features, columns=poly_feature_names, index=self.df.index)
-        
+
         newly_added_poly_cols = []
         for col_name in poly_df.columns:
-            if col_name == '1' and include_bias: 
+            if col_name == '1' and include_bias:
                 self.df[f"poly_bias"] = poly_df[col_name]
                 newly_added_poly_cols.append(f"poly_bias")
-            elif col_name not in self.df.columns: 
+            elif col_name not in self.df.columns:
                 self.df[col_name] = poly_df[col_name]
                 newly_added_poly_cols.append(col_name)
             elif col_name in columns_to_process:
@@ -388,8 +400,8 @@ class FeatureEngineer:
     def transform_numeric_distribution(self,
                                  column_name: str,
                                  new_column_name: Optional[str] = None,
-                                 transform_type: str = 'log', 
-                                 add_constant_for_log_sqrt: Optional[float] = None 
+                                 transform_type: str = 'log',
+                                 add_constant_for_log_sqrt: Optional[float] = None
                                  ) -> 'FeatureEngineer':
         """
         Applies a mathematical transformation to change the distribution of a numeric feature.
@@ -421,14 +433,14 @@ class FeatureEngineer:
         if transform_type == 'log':
             if (original_series <= 0).any():
                 logger.warning(f"Column '{column_name}' (after constant) contains non-positive values. Log transform may result in NaNs/errors. Min: {original_series.min()}")
-            transformed_series = np.log(original_series.replace(-np.inf, np.nan).replace(np.inf, np.nan)) 
-            transformed_series.replace(-np.inf, np.nan, inplace=True) 
+            transformed_series = np.log(original_series.replace(-np.inf, np.nan).replace(np.inf, np.nan))
+            transformed_series.replace(-np.inf, np.nan, inplace=True)
         elif transform_type == 'sqrt':
             if (original_series < 0).any():
                 logger.warning(f"Column '{column_name}' (after constant) contains negative values. Sqrt transform will result in NaNs.")
             transformed_series = np.sqrt(original_series)
         elif transform_type in ['box-cox', 'yeo-johnson']:
-            pt = PowerTransformer(method=transform_type, standardize=False) 
+            pt = PowerTransformer(method=transform_type, standardize=False)
             col_data = original_series.dropna().to_frame()
             if col_data.empty:
                 logger.warning(f"Column '{column_name}' is all NaNs after pre-processing for PowerTransform. Skipping.")
@@ -436,7 +448,7 @@ class FeatureEngineer:
             if transform_type == 'box-cox' and (col_data[column_name] <= 0).any():
                 logger.warning(f"Box-Cox for '{column_name}' requires positive values. Min: {col_data[column_name].min()}. Skipping.")
                 return self
-            
+
             try:
                 transformed_data = pt.fit_transform(col_data)
                 transformed_series = pd.Series(transformed_data.flatten(), index=col_data.index)
@@ -449,10 +461,318 @@ class FeatureEngineer:
 
         if transformed_series is not None:
             target_col = new_column_name if new_column_name else column_name
-            self.df[target_col] = transformed_series 
+            self.df[target_col] = transformed_series
             logger.info(f"Applied '{transform_type}' to '{column_name}'. Result in '{target_col}'.")
             if new_column_name:
                  self.engineered_feature_names[op_name] = [new_column_name]
+        return self
+
+    # ------------------------------------------------------------------
+    # Endgame-powered preprocessing methods
+    # ------------------------------------------------------------------
+
+    def impute(
+        self,
+        method: str = "auto",
+        columns: Optional[List[str]] = None,
+        **kwargs,
+    ) -> 'FeatureEngineer':
+        """
+        Impute missing values using endgame's imputation strategies.
+
+        Args:
+            method: Imputation method. Options:
+                'auto'        - endgame AutoImputer (auto-selects best strategy)
+                'knn'         - endgame KNNImputer
+                'mice'        - endgame MICEImputer (iterative multivariate)
+                'missforest'  - endgame MissForestImputer (random-forest-based)
+                'simple_mean' - sklearn SimpleImputer with mean
+                'simple_median' - sklearn SimpleImputer with median
+            columns: Columns to impute. If None, imputes all columns with missing values.
+            **kwargs: Additional kwargs passed to the imputer.
+
+        Returns:
+            The FeatureEngineer instance for chaining.
+        """
+        if columns is None:
+            columns = [c for c in self.df.columns if self.df[c].isnull().any()]
+        if not columns:
+            logger.info("No columns with missing values found. Skipping imputation.")
+            return self
+
+        numeric_cols = [c for c in columns if pd.api.types.is_numeric_dtype(self.df[c])]
+
+        if method.startswith("simple_"):
+            from sklearn.impute import SimpleImputer
+            strategy = method.replace("simple_", "")
+            imp = SimpleImputer(strategy=strategy, **kwargs)
+            if numeric_cols:
+                self.df[numeric_cols] = imp.fit_transform(self.df[numeric_cols])
+            logger.info(f"Imputed {len(numeric_cols)} columns with SimpleImputer({strategy}).")
+            return self
+
+        if not ENDGAME_PREPROCESS_AVAILABLE:
+            logger.warning("endgame not available; falling back to simple median imputation.")
+            from sklearn.impute import SimpleImputer
+            imp = SimpleImputer(strategy="median")
+            if numeric_cols:
+                self.df[numeric_cols] = imp.fit_transform(self.df[numeric_cols])
+            return self
+
+        if method == "auto":
+            imputer = AutoImputer(**kwargs)
+        elif method == "knn":
+            from endgame.preprocessing import KNNImputer as EgKNNImputer
+            imputer = EgKNNImputer(**kwargs)
+        elif method == "mice":
+            from endgame.preprocessing import MICEImputer
+            imputer = MICEImputer(**kwargs)
+        elif method == "missforest":
+            from endgame.preprocessing import MissForestImputer
+            imputer = MissForestImputer(**kwargs)
+        else:
+            raise ValueError(f"Unknown imputation method: {method}")
+
+        if numeric_cols:
+            self.df[numeric_cols] = imputer.fit_transform(self.df[numeric_cols])
+        logger.info(f"Imputed {len(numeric_cols)} columns with endgame {method}.")
+        return self
+
+    def encode(
+        self,
+        method: str = "safe_target",
+        columns: Optional[List[str]] = None,
+        target: Optional[pd.Series] = None,
+        **kwargs,
+    ) -> 'FeatureEngineer':
+        """
+        Encode categorical features using endgame's encoders.
+
+        Args:
+            method: Encoding method. Options:
+                'safe_target'     - endgame SafeTargetEncoder
+                'catboost'        - endgame CatBoostEncoder
+                'frequency'       - endgame FrequencyEncoder
+                'leave_one_out'   - endgame LeaveOneOutEncoder
+                'ordinal'         - sklearn OrdinalEncoder
+                'label'           - sklearn LabelEncoder (per column)
+            columns: Columns to encode. If None, encodes all object/category columns.
+            target: Target series (required for target-based encoders).
+            **kwargs: Additional kwargs passed to the encoder.
+
+        Returns:
+            The FeatureEngineer instance for chaining.
+        """
+        if columns is None:
+            columns = self.df.select_dtypes(include=["object", "category"]).columns.tolist()
+        if not columns:
+            logger.info("No categorical columns found for encoding.")
+            return self
+
+        if method == "ordinal":
+            from sklearn.preprocessing import OrdinalEncoder
+            enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1, **kwargs)
+            self.df[columns] = enc.fit_transform(self.df[columns])
+            logger.info(f"Ordinal-encoded {len(columns)} columns.")
+            return self
+
+        if method == "label":
+            from sklearn.preprocessing import LabelEncoder as LE
+            for col in columns:
+                le = LE()
+                self.df[col] = le.fit_transform(self.df[col].astype(str))
+            logger.info(f"Label-encoded {len(columns)} columns.")
+            return self
+
+        if method == "frequency":
+            for col in columns:
+                freq = self.df[col].value_counts(normalize=True)
+                self.df[col] = self.df[col].map(freq)
+            logger.info(f"Frequency-encoded {len(columns)} columns.")
+            return self
+
+        if not ENDGAME_PREPROCESS_AVAILABLE:
+            logger.warning(f"endgame not available for '{method}' encoding; falling back to frequency encoding.")
+            return self.encode(method="frequency", columns=columns)
+
+        if method == "safe_target":
+            from endgame.preprocessing import SafeTargetEncoder
+            enc = SafeTargetEncoder(**kwargs)
+        elif method == "catboost":
+            from endgame.preprocessing import CatBoostEncoder
+            enc = CatBoostEncoder(**kwargs)
+        elif method == "leave_one_out":
+            from endgame.preprocessing import LeaveOneOutEncoder
+            enc = LeaveOneOutEncoder(**kwargs)
+        else:
+            raise ValueError(f"Unknown encoding method: {method}")
+
+        self.df[columns] = enc.fit_transform(self.df[columns], y=target)
+        logger.info(f"Encoded {len(columns)} columns with endgame {method}.")
+        self.engineered_feature_names[f"encoded_{method}"] = columns
+        return self
+
+    def balance_classes(
+        self,
+        target_column: str,
+        method: str = "auto",
+        **kwargs,
+    ) -> 'FeatureEngineer':
+        """
+        Balance class distribution using endgame's samplers.
+
+        Args:
+            target_column: Name of the target column.
+            method: Balancing method. Options:
+                'auto'       - endgame AutoBalancer (auto-selects best strategy)
+                'smote'      - SMOTE oversampling
+                'adasyn'     - ADASYN oversampling
+                'random_over' - Random oversampling
+                'random_under' - Random undersampling
+                'smoteenn'   - Combined over+under sampling (SMOTE + ENN)
+                'smotetomek' - Combined (SMOTE + Tomek links)
+            **kwargs: Additional kwargs passed to the sampler.
+
+        Returns:
+            The FeatureEngineer instance for chaining.
+        """
+        if target_column not in self.df.columns:
+            logger.warning(f"Target column '{target_column}' not found. Skipping balancing.")
+            return self
+
+        X = self.df.drop(columns=[target_column])
+        y = self.df[target_column]
+
+        original_dist = y.value_counts().to_dict()
+        logger.info(f"Original class distribution: {original_dist}")
+
+        if ENDGAME_PREPROCESS_AVAILABLE and method == "auto":
+            balancer = AutoBalancer(**kwargs)
+            X_res, y_res = balancer.fit_resample(X, y)
+        else:
+            # Use imblearn as fallback
+            try:
+                if method in ("auto", "smote"):
+                    from imblearn.over_sampling import SMOTE
+                    sampler = SMOTE(random_state=kwargs.get("random_state", 42), **{k: v for k, v in kwargs.items() if k != "random_state"})
+                elif method == "adasyn":
+                    from imblearn.over_sampling import ADASYN
+                    sampler = ADASYN(random_state=kwargs.get("random_state", 42))
+                elif method == "random_over":
+                    from imblearn.over_sampling import RandomOverSampler
+                    sampler = RandomOverSampler(random_state=kwargs.get("random_state", 42))
+                elif method == "random_under":
+                    from imblearn.under_sampling import RandomUnderSampler
+                    sampler = RandomUnderSampler(random_state=kwargs.get("random_state", 42))
+                elif method == "smoteenn":
+                    from imblearn.combine import SMOTEENN
+                    sampler = SMOTEENN(random_state=kwargs.get("random_state", 42))
+                elif method == "smotetomek":
+                    from imblearn.combine import SMOTETomek
+                    sampler = SMOTETomek(random_state=kwargs.get("random_state", 42))
+                else:
+                    raise ValueError(f"Unknown balancing method: {method}")
+                X_res, y_res = sampler.fit_resample(X, y)
+            except ImportError:
+                logger.warning("Neither endgame nor imblearn available. Skipping class balancing.")
+                return self
+
+        self.df = pd.concat([X_res, y_res], axis=1)
+        new_dist = y_res.value_counts().to_dict()
+        logger.info(f"Balanced class distribution ({method}): {new_dist}")
+        return self
+
+    def detect_noise(
+        self,
+        target_column: str,
+        method: str = "confident_learning",
+        **kwargs,
+    ) -> pd.Series:
+        """
+        Detect noisy/mislabeled samples using endgame's noise detectors.
+
+        Args:
+            target_column: Name of the target column.
+            method: Detection method. Options:
+                'confident_learning' - endgame ConfidentLearningFilter
+                'consensus'          - endgame ConsensusFilter
+                'crossval'           - endgame CrossValNoiseDetector
+
+        Returns:
+            Boolean Series where True indicates a suspected noisy sample.
+        """
+        if not ENDGAME_PREPROCESS_AVAILABLE:
+            raise ImportError("endgame-ml is required for noise detection. pip install endgame-ml[tabular]")
+
+        X = self.df.drop(columns=[target_column])
+        y = self.df[target_column]
+
+        if method == "confident_learning":
+            from endgame.preprocessing import ConfidentLearningFilter
+            detector = ConfidentLearningFilter(**kwargs)
+        elif method == "consensus":
+            from endgame.preprocessing import ConsensusFilter
+            detector = ConsensusFilter(**kwargs)
+        elif method == "crossval":
+            from endgame.preprocessing import CrossValNoiseDetector
+            detector = CrossValNoiseDetector(**kwargs)
+        else:
+            raise ValueError(f"Unknown noise detection method: {method}")
+
+        noise_mask = detector.fit_predict(X, y)
+        n_noisy = noise_mask.sum()
+        logger.info(f"Detected {n_noisy} potentially noisy samples ({n_noisy / len(y) * 100:.1f}%) using {method}.")
+        return noise_mask
+
+    def create_interactions(
+        self,
+        method: str = "auto",
+        columns: Optional[List[str]] = None,
+        **kwargs,
+    ) -> 'FeatureEngineer':
+        """
+        Create interaction features using endgame's feature generators.
+
+        Args:
+            method: Interaction method. Options:
+                'auto'         - endgame AutoAggregator
+                'interactions' - endgame InteractionFeatures
+                'polynomial'   - sklearn PolynomialFeatures (degree=2, interaction_only=True)
+            columns: Columns to use. If None, uses all numeric columns.
+            **kwargs: Additional kwargs passed to the generator.
+
+        Returns:
+            The FeatureEngineer instance for chaining.
+        """
+        if columns is None:
+            columns = self.df.select_dtypes(include=np.number).columns.tolist()
+            columns = [c for c in columns if c.upper() not in ["PATNO", "EVENT_ID", "COHORT"]]
+
+        if not columns or len(columns) < 2:
+            logger.info("Not enough numeric columns for interaction features.")
+            return self
+
+        if method == "polynomial":
+            return self.engineer_polynomial_features(columns=columns, degree=2, interaction_only=True)
+
+        if not ENDGAME_PREPROCESS_AVAILABLE:
+            logger.warning("endgame not available; falling back to polynomial interactions.")
+            return self.engineer_polynomial_features(columns=columns, degree=2, interaction_only=True)
+
+        if method == "auto":
+            from endgame.preprocessing import AutoAggregator
+            gen = AutoAggregator(**kwargs)
+        elif method == "interactions":
+            from endgame.preprocessing import InteractionFeatures
+            gen = InteractionFeatures(**kwargs)
+        else:
+            raise ValueError(f"Unknown interaction method: {method}")
+
+        new_features = gen.fit_transform(self.df[columns])
+        new_cols = [c for c in new_features.columns if c not in self.df.columns]
+        self.df = pd.concat([self.df, new_features[new_cols]], axis=1)
+        logger.info(f"Created {len(new_cols)} interaction features using endgame {method}.")
+        self.engineered_feature_names[f"interactions_{method}"] = new_cols
         return self
 
     def get_engineered_feature_summary(self) -> Dict[str, Any]:
@@ -466,6 +786,6 @@ class FeatureEngineer:
         for op_type, names in self.engineered_feature_names.items():
             summary["engineered_operations"][op_type] = {
                 "count": len(names),
-                "features": names[:10] + (["..."] if len(names) > 10 else []) 
+                "features": names[:10] + (["..."] if len(names) > 10 else [])
             }
         return summary
