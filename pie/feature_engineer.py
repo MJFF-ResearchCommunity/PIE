@@ -80,7 +80,12 @@ class FeatureEngineer:
             The FeatureEngineer instance for chaining.
         """
         # Prepare the comprehensive list of columns to ignore for OHE
-        default_ignores_upper = {'PATNO', 'EVENT_ID', 'COHORT'}
+        default_ignores_upper = {
+            'PATNO', 'EVENT_ID', 'COHORT',
+            # PPMI metadata columns — identifiers/timestamps, not features
+            'PAG_NAME', 'REC_ID', 'INFODT', 'ORIG_ENTRY', 'LAST_UPDATE',
+            'SITE_APRV', 'GUID', 'APPRDX', 'PRIMDIAG',
+        }
 
         current_ignore_list = list(ignore_for_ohe) if ignore_for_ohe is not None else []
 
@@ -136,6 +141,8 @@ class FeatureEngineer:
             logger.info(f"User-specified columns for OHE (after ignores): {columns_to_encode}")
 
         encoded_cols_map: Dict[str, List[str]] = {}
+        all_dummy_frames: List[pd.DataFrame] = []
+        cols_to_drop: List[str] = []
 
         for col in columns_to_encode:
             if col not in self.df.columns: # Should be caught above, but double check
@@ -167,10 +174,17 @@ class FeatureEngineer:
                                      dummy_na=dummy_na, drop_first=drop_first)
 
             encoded_cols_map[col] = dummies.columns.tolist()
+            all_dummy_frames.append(dummies)
+            cols_to_drop.append(col)
 
-            self.df = pd.concat([self.df, dummies], axis=1)
-            self.df.drop(columns=[col], inplace=True)
-            logger.debug(f"Dropped original column '{col}' after OHE. New shape: {self.df.shape}")
+        # Batch concat: single operation instead of per-column concat+drop
+        if all_dummy_frames:
+            logger.info(f"Batch-concatenating {len(all_dummy_frames)} OHE frames...")
+            self.df = pd.concat(
+                [self.df.drop(columns=cols_to_drop)] + all_dummy_frames,
+                axis=1
+            )
+            logger.debug(f"OHE complete. New shape: {self.df.shape}")
 
         if encoded_cols_map:
              self.engineered_feature_names['one_hot_encoded'] = self.engineered_feature_names.get('one_hot_encoded', []) + \
