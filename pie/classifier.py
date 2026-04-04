@@ -181,27 +181,45 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
         }
         static = {**_sklearn_models, **_third_party, **_endgame_models}
 
-    # 3. Merge static into catalog (don't override entries already populated
-    #    by the dynamic registry, but add any that are missing)
-    for mid, info in static.items():
-        if mid not in catalog:
-            catalog[mid] = info
-
-    # 4. Validate: only keep entries whose module+class are actually importable
+    # 3. Start with the static catalog, then overlay with validated endgame
+    #    entries.  This ensures sklearn/xgboost/etc. are always available
+    #    even if the endgame registry entry for the same id lacks module/class.
     validated: Dict[str, Dict[str, Any]] = {}
-    for mid, info in catalog.items():
+
+    for mid, info in static.items():
         mod_name = info.get("module", "")
         cls_name = info.get("class", "")
-        if not mod_name or not cls_name:
-            # Entries from the dynamic registry may use a different schema
+        if mod_name and cls_name and _can_import(mod_name, cls_name):
             validated[mid] = info
-            continue
-        if _can_import(mod_name, cls_name):
+
+    # Overlay with endgame entries that are actually importable
+    for mid, info in catalog.items():
+        mod_name = _info_get(info, "module", "")
+        cls_name = _info_get(info, "class", "")
+        if mod_name and cls_name and _can_import(mod_name, cls_name):
             validated[mid] = info
-        else:
-            logger.debug(f"Model '{mid}' excluded from catalog: cannot import {mod_name}.{cls_name}")
 
     return validated
+
+
+def _info_get(info, key: str, default=""):
+    """Read a field from a catalog entry (dict or endgame ModelInfo).
+
+    ModelInfo uses ``class_path`` ('module.ClassName') instead of separate
+    ``module`` / ``class`` fields.  This helper transparently resolves both.
+    """
+    if isinstance(info, dict):
+        return info.get(key, default)
+
+    # Endgame ModelInfo: derive module/class from class_path
+    class_path = getattr(info, "class_path", "") or ""
+    if key == "module" and class_path:
+        return class_path.rsplit(".", 1)[0] if "." in class_path else default
+    if key == "class" and class_path:
+        return class_path.rsplit(".", 1)[-1] if "." in class_path else default
+    if key == "name":
+        return getattr(info, "display_name", "") or getattr(info, "name", default)
+    return getattr(info, key, default)
 
 
 def _instantiate_model(model_id: str, task_type: str = "classification", **kwargs):
@@ -212,9 +230,17 @@ def _instantiate_model(model_id: str, task_type: str = "classification", **kwarg
     if model_id not in catalog:
         raise ValueError(f"Unknown model_id '{model_id}'. Available: {list(catalog.keys())}")
     info = catalog[model_id]
-    mod = importlib.import_module(info["module"])
-    cls = getattr(mod, info["class"])
-    return cls(**kwargs)
+    mod = importlib.import_module(_info_get(info, "module"))
+    cls = getattr(mod, _info_get(info, "class"))
+
+    # Use endgame default_params as base, let caller kwargs override
+    defaults = {}
+    if not isinstance(info, dict):
+        dp = getattr(info, "default_params", None)
+        if isinstance(dp, dict):
+            defaults = dp.copy()
+    defaults.update(kwargs)
+    return cls(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +473,7 @@ class Classifier:
             try:
                 model = _instantiate_model(model_id, self._task_type)
                 if verbose:
-                    print(f"  Evaluating: {catalog[model_id]['name']} ({model_id})")
+                    print(f"  Evaluating: {_info_get(catalog[model_id], 'name', model_id)} ({model_id})")
 
                 fold_metrics: List[Dict[str, float]] = []
                 for train_idx, val_idx in skf.split(self._X_train, y_enc):
@@ -476,7 +502,7 @@ class Classifier:
                     k: np.round(np.mean([fm[k] for fm in fold_metrics]), round)
                     for k in fold_metrics[0]
                 }
-                mean_metrics["Model"] = catalog[model_id]["name"]
+                mean_metrics["Model"] = _info_get(catalog[model_id], "name", model_id)
                 rows.append(mean_metrics)
 
                 # Train a full model on all training data for later use
@@ -503,7 +529,7 @@ class Classifier:
         # Select top model(s)
         top_model_name = leaderboard.iloc[0]["Model"]
         top_model_id = next(
-            (mid for mid, info in catalog.items() if info["name"] == top_model_name),
+            (mid for mid, info in catalog.items() if _info_get(info, "name") == top_model_name),
             None,
         )
         self.best_model = self.models_dict.get(top_model_id)
@@ -517,7 +543,7 @@ class Classifier:
             selected = []
             for i in range(min(n_select, len(leaderboard))):
                 name = leaderboard.iloc[i]["Model"]
-                mid = next((m for m, info in catalog.items() if info["name"] == name), None)
+                mid = next((m for m, info in catalog.items() if _info_get(info, "name") == name), None)
                 if mid and mid in self.models_dict:
                     selected.append(self.models_dict[mid])
             self.best_model = selected[0] if selected else self.best_model
@@ -734,7 +760,7 @@ class Classifier:
     def get_available_models(self) -> pd.DataFrame:
         """Return a DataFrame of all available models."""
         catalog = get_model_catalog(self._task_type)
-        rows = [{"ID": mid, "Name": info.get("name", mid)} for mid, info in catalog.items()]
+        rows = [{"ID": mid, "Name": _info_get(info, "name", mid)} for mid, info in catalog.items()]
         return pd.DataFrame(rows).set_index("ID")
 
     # ------------------------------------------------------------------
