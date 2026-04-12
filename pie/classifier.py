@@ -102,13 +102,19 @@ def _can_import(module: str, cls_name: str) -> bool:
         return False
 
 
+_catalog_cache: Dict[str, Dict[str, Any]] = {}
+
+
 def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, Any]]:
     """
     Return ALL available models from endgame + sklearn + third-party.
 
     Each entry is ``{model_id: {"name": ..., "module": ..., "class": ...}}``.
     Models that cannot be imported are excluded from the returned catalog.
+    Results are cached after the first call per task_type.
     """
+    if task_type in _catalog_cache:
+        return _catalog_cache[task_type]
     catalog: Dict[str, Dict[str, Any]] = {}
 
     # 1. Pull from endgame's automl registry when available
@@ -199,6 +205,8 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
         if mod_name and cls_name and _can_import(mod_name, cls_name):
             validated[mid] = info
 
+    _catalog_cache[task_type] = validated
+    logger.info(f"Model catalog for {task_type}: {len(validated)} models available")
     return validated
 
 
@@ -369,6 +377,16 @@ class Classifier:
                 stratify=data[target],
             )
 
+        # Strip pandas Categorical dtypes — numpy cannot interpret them
+        for col in train_df.columns:
+            if isinstance(train_df[col].dtype, pd.CategoricalDtype):
+                base = train_df[col].cat.categories.dtype
+                train_df[col] = train_df[col].astype(base)
+        for col in test_df.columns:
+            if isinstance(test_df[col].dtype, pd.CategoricalDtype):
+                base = test_df[col].cat.categories.dtype
+                test_df[col] = test_df[col].astype(base)
+
         feature_cols = [c for c in train_df.columns if c != target and c not in ignore]
         self._feature_names = feature_cols
         self._X_train = train_df[feature_cols].copy()
@@ -377,7 +395,8 @@ class Classifier:
         self._y_test = test_df[target].copy()
 
         # Encode target if needed for metric computation
-        if not np.issubdtype(self._y_train.dtype, np.number):
+        is_numeric = np.issubdtype(self._y_train.dtype, np.number)
+        if not is_numeric:
             self._label_encoder = LabelEncoder()
             self._label_encoder.fit(pd.concat([self._y_train, self._y_test]).unique().astype(str))
 
@@ -423,7 +442,17 @@ class Classifier:
         if include:
             model_ids = [m for m in include if m in catalog]
         else:
-            model_ids = list(catalog.keys())
+            # Use a fast, representative default set rather than all 70+ models.
+            # Users can pass include=list(catalog.keys()) for the full catalog.
+            _DEFAULT_COMPARE = [
+                "lr", "rf", "et", "gbc", "dt", "knn", "nb",
+                "ridge", "lda", "ada",
+                "xgb", "lgbm", "catboost",
+            ]
+            if turbo:
+                model_ids = [m for m in _DEFAULT_COMPARE if m in catalog]
+            else:
+                model_ids = list(catalog.keys())
             if exclude:
                 model_ids = [m for m in model_ids if m not in exclude]
 
@@ -466,14 +495,18 @@ class Classifier:
         y_enc = self._encode_target(self._y_train)
         rows: List[Dict[str, Any]] = []
 
-        for model_id in model_ids:
+        logger.info(f"Evaluating {len(model_ids)} models with {n_folds}-fold CV on "
+                     f"{self._X_train.shape[0]:,} rows x {self._X_train.shape[1]} features...")
+
+        for i, model_id in enumerate(model_ids):
             if _time.time() > deadline:
                 logger.info("Time budget exhausted, stopping model comparison.")
                 break
+            model_name = _info_get(catalog.get(model_id, {}), "name", model_id)
             try:
+                t0 = _time.time()
                 model = _instantiate_model(model_id, self._task_type)
-                if verbose:
-                    print(f"  Evaluating: {_info_get(catalog[model_id], 'name', model_id)} ({model_id})")
+                logger.info(f"  [{i+1}/{len(model_ids)}] {model_name} ({model_id})...")
 
                 fold_metrics: List[Dict[str, float]] = []
                 for train_idx, val_idx in skf.split(self._X_train, y_enc):
@@ -498,12 +531,15 @@ class Classifier:
 
                     fold_metrics.append(_compute_metrics(yval_enc, preds, proba))
 
+                elapsed = _time.time() - t0
                 mean_metrics = {
                     k: np.round(np.mean([fm[k] for fm in fold_metrics]), round)
                     for k in fold_metrics[0]
                 }
-                mean_metrics["Model"] = _info_get(catalog[model_id], "name", model_id)
+                mean_metrics["Model"] = model_name
                 rows.append(mean_metrics)
+                logger.info(f"  [{i+1}/{len(model_ids)}] {model_name}: "
+                            f"Accuracy={mean_metrics.get('Accuracy', '?')} ({elapsed:.1f}s)")
 
                 # Train a full model on all training data for later use
                 full_model = _instantiate_model(model_id, self._task_type)
