@@ -109,7 +109,7 @@ For example, if you are predicting `COHORT`, you should exclude features like `s
 **2. Execute the Pipeline**
 Run the following command from the root `PIE/` directory:
 ```bash
-python3 pie/pipeline.py \
+python pie/pipeline.py \
     --data-dir ./PPMI \
     --output-dir ./output/my_first_run \
     --target-column COHORT \
