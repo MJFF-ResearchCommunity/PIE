@@ -10,7 +10,7 @@ ensembles, explainability, and more.
 import logging
 import pandas as pd
 import numpy as np
-from typing import Union, Optional, Any, Dict, List, Tuple
+from typing import Union, Optional, Any, Callable, Dict, List, Tuple
 from pathlib import Path
 import warnings
 import json
@@ -508,6 +508,7 @@ class Classifier:
         experiment_custom_tags: Optional[Dict[str, Any]] = None,
         engine: Optional[Dict[str, str]] = None,
         parallel: Optional[Any] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Union[Any, List[Any]]:
         """
         Compare multiple classification models and return the best one(s).
@@ -643,9 +644,27 @@ class Classifier:
         logger.info(f"Evaluating {len(model_ids)} models with {n_folds}-fold CV on "
                      f"{self._X_train.shape[0]:,} rows x {self._X_train.shape[1]} features...")
 
+        # Swallow callback failures so a broken UI hook can never take down CV.
+        def _emit(event: Dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(event)
+            except Exception as cb_exc:
+                logger.debug("progress_callback raised: %s", cb_exc)
+
+        _emit({
+            "phase": "compare_start",
+            "n_models": len(model_ids),
+            "n_folds": n_folds,
+            "n_rows": int(self._X_train.shape[0]),
+            "n_features": int(self._X_train.shape[1]),
+        })
+
         for i, model_id in enumerate(model_ids):
             if _time.time() > deadline:
                 logger.info("Time budget exhausted, stopping model comparison.")
+                _emit({"phase": "budget_exhausted", "completed_models": i})
                 break
             model_name = _info_get(catalog.get(model_id, {}), "name", model_id)
             try:
@@ -658,9 +677,25 @@ class Classifier:
                 ):
                     wrap_note = f" [wrapped in OneVsRest for {n_classes}-class target]"
                 logger.info(f"  [{i+1}/{len(model_ids)}] {model_name} ({model_id}){wrap_note}...")
+                _emit({
+                    "phase": "model_start",
+                    "model_id": model_id,
+                    "model_name": model_name,
+                    "model_idx": i,
+                    "n_models": len(model_ids),
+                })
 
                 fold_metrics: List[Dict[str, float]] = []
-                for train_idx, val_idx in skf.split(self._X_train, y_enc):
+                for fold_idx, (train_idx, val_idx) in enumerate(skf.split(self._X_train, y_enc)):
+                    _emit({
+                        "phase": "fold_start",
+                        "model_id": model_id,
+                        "model_name": model_name,
+                        "model_idx": i,
+                        "n_models": len(model_ids),
+                        "fold_idx": fold_idx,
+                        "n_folds": n_folds,
+                    })
                     Xtr = self._X_train.iloc[train_idx]
                     ytr = self._y_train.iloc[train_idx]
                     Xval = self._X_train.iloc[val_idx]
@@ -697,10 +732,27 @@ class Classifier:
                 ranked_ids.append(model_id)
                 logger.info(f"  [{i+1}/{len(model_ids)}] {model_name}: "
                             f"Accuracy={mean_metrics.get('Accuracy', '?')} ({elapsed:.1f}s)")
+                _emit({
+                    "phase": "model_done",
+                    "model_id": model_id,
+                    "model_name": model_name,
+                    "model_idx": i,
+                    "n_models": len(model_ids),
+                    "elapsed_seconds": float(elapsed),
+                    "metrics": {k: float(v) for k, v in mean_metrics.items() if k != "Model"},
+                })
 
             except Exception as exc:
                 if errors == "ignore":
                     logger.warning(f"Model {model_id} failed: {exc}")
+                    _emit({
+                        "phase": "model_failed",
+                        "model_id": model_id,
+                        "model_name": model_name,
+                        "model_idx": i,
+                        "n_models": len(model_ids),
+                        "error": str(exc),
+                    })
                 else:
                     raise
 

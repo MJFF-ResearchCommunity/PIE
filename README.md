@@ -16,7 +16,7 @@ For ease of understanding, there is a companion package called [PIE-clean which 
 - **Modular Pipeline**: Each step (Data Reduction, Feature Engineering, Feature Selection, Classification) generates its own detailed HTML report and intermediate data files.
 - **Intelligent Data Reduction**: Analyzes and removes low-value features *before* merging, drastically reducing memory usage and feature space complexity.
 - **Robust Feature Engineering**: Applies one-hot encoding, numeric scaling, and other transformations to prepare data for modeling.
-- **Advanced Model Training**: Leverages `pycaret` to compare a suite of models, tune the best performer, and evaluate its performance on a held-out test set.
+- **Advanced Model Training**: Uses [`endgame-ml`](https://pypi.org/project/endgame-ml/) to compare a suite of models, tune the best performer, and evaluate its performance on a held-out test set.
 - **Leakage Prevention**: Employs a configurable list of features to exclude, preventing data leakage and ensuring more realistic model evaluation.
 - **Comprehensive Reporting**: Generates a main HTML report that links to detailed reports for each stage of the pipeline, providing full transparency.
 
@@ -139,7 +139,13 @@ After the run completes, the specified output directory (`./output/my_first_run`
 - **`pipeline_report.html`**: A top-level summary report that links to all the individual step reports. The script will attempt to open this file in your browser automatically upon completion.
 
 ### Example Visualizations
-The PIE pipeline generates detailed HTML reports at each stage. Here is a preview of some of the visualizations from the final classification report:
+The PIE pipeline generates detailed HTML reports at each stage. Here is a preview of some of the visualizations from the final classification report.
+
+> **Note:** The screenshots below were captured from an earlier PyCaret-based
+> run. PIE's classification engine has since moved to
+> [`endgame-ml`](https://pypi.org/project/endgame-ml/), which produces
+> analogous visualizations with minor stylistic differences.
+
 
 <p align="center">
   <img src="assets/screenshots/1.png" width="30%" alt="Plot 1">&nbsp;
