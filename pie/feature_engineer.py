@@ -335,11 +335,22 @@ class FeatureEngineer:
             return self
 
         logger.info(f"Scaling columns using {scaler_type}: {columns_to_scale}")
+        all_nan_cols: List[str] = []
         for col in columns_to_scale:
             if self.df[col].notna().any():
-                 self.df[col] = scaler.fit_transform(self.df[[col]])
+                self.df[col] = scaler.fit_transform(self.df[[col]])
             else:
-                 logger.warning(f"Column '{col}' contains all NaN values. Skipping scaling for this column.")
+                # All-NaN columns can't be scaled and carry zero signal — drop
+                # them outright instead of leaving them to break downstream FS
+                # (constant-feature warnings) and training (NaN -> 0 fillna).
+                all_nan_cols.append(col)
+
+        if all_nan_cols:
+            logger.warning(
+                f"Dropping {len(all_nan_cols)} all-NaN columns before scaling: "
+                f"{all_nan_cols[:10]}{'...' if len(all_nan_cols) > 10 else ''}"
+            )
+            self.df = self.df.drop(columns=all_nan_cols)
         return self
 
     def engineer_polynomial_features(self,
