@@ -1237,6 +1237,20 @@ class Classifier:
 
         if ENDGAME_AVAILABLE:
             try:
+                # Resolve human-readable class labels.  We pass label-encoded
+                # integers to endgame (the model was trained on them, so its
+                # `classes_` attribute is [0, 1, 2, ...]), which means without
+                # an explicit `class_names=` the report renders confusion
+                # matrices / ROC legends / per-class tables as "0" / "1" /
+                # "2" instead of the actual target values ("PD" / "HC" / ...).
+                if kwargs.get("class_names") is None and self._label_encoder is not None:
+                    try:
+                        kwargs["class_names"] = [str(c) for c in self._label_encoder.classes_]
+                    except Exception:
+                        pass
+                if kwargs.get("feature_names") is None and hasattr(X_test, "columns"):
+                    kwargs["feature_names"] = [str(c) for c in X_test.columns]
+
                 report = EndgameClassificationReport(
                     estimator, X_test, self._encode_target(y_test), **kwargs
                 )
