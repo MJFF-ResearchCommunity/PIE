@@ -773,7 +773,7 @@ numpy>=1.21.2
 scikit-learn>=0.24.2
 
 # Automated ML
-pycaret[full]>=3.0.0
+endgame-ml[tabular]
 shap>=0.41.0
 
 # Visualization  

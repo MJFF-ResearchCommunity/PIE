@@ -114,13 +114,35 @@ class FeatureSelector:
 
         self.selector: Optional[Any] = None
         self.selected_feature_names_: List[str] = []
+        # Columns surviving the constant-feature pre-filter; the selector
+        # itself only ever sees these.
+        self._kept_input_features_: List[str] = []
 
     def fit(self, X: pd.DataFrame, y: pd.Series):
         """Fits the feature selector on the training data."""
-        self._initialize_selector(X.shape[1])
-        self.selector.fit(X, y)
+        # Drop zero-variance columns *before* handing X to the underlying
+        # selector. Univariate scorers like f_classif warn ("Features [...]
+        # are constant.") and produce NaN F-statistics (divide-by-zero in
+        # msb / msw) when constant columns are present — both noisy and they
+        # can drop genuinely useful neighbours via FDR correction.
+        nunique = X.nunique(dropna=False)
+        non_constant_mask = nunique > 1
+        n_constant = int((~non_constant_mask).sum())
+        if n_constant:
+            constant_cols = X.columns[~non_constant_mask].tolist()
+            logger.info(
+                f"Dropping {n_constant} constant feature(s) before selection: "
+                f"{constant_cols[:10]}{'...' if n_constant > 10 else ''}"
+            )
+            X_fit = X.loc[:, non_constant_mask]
+        else:
+            X_fit = X
+        self._kept_input_features_ = list(X_fit.columns)
+
+        self._initialize_selector(X_fit.shape[1])
+        self.selector.fit(X_fit, y)
         mask = self.selector.get_support()
-        self.selected_feature_names_ = X.columns[mask].tolist()
+        self.selected_feature_names_ = X_fit.columns[mask].tolist()
         logger.info(f"Selected {len(self.selected_feature_names_)} features using '{self.method}'.")
         return self
 

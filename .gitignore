@@ -192,3 +192,5 @@ nilearn_data/
 *.nii.gz
 *.mgz
 *.dcm
+# Profiling dumps (cProfile etc.)
+*.prof
