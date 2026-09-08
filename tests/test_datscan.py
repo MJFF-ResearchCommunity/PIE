@@ -100,3 +100,28 @@ def test_registration_on_phantom_keeps_left_right_ordering():
     affine[:3, 3] = -60.0
     out = datscan.quantify(nib.Nifti1Image(counts, affine), nib.Nifti1Image(counts * 100, affine), nib.Nifti1Image(lab, affine))
     assert out["sbr_putamen_l"] > out["sbr_putamen_r"] > 0 and out["n_label_voxels"] > 0
+
+
+def test_anterior_posterior_split_and_white_matter_reference():
+    """The A/P split follows the anterior-coordinate map; the white-matter SBR uses WM far from the striatum."""
+    shape = (40, 60, 40)
+    lab = np.zeros(shape, dtype=np.int16)
+    lab[15:21, 20:36, 10:16] = datscan.PUTAMEN_L        # 16 voxels long along axis 1
+    lab[15:21, 20:36, 24:30] = datscan.PUTAMEN_R
+    lab[10:30, 50:58, 10:30] = datscan.OCCIPITAL[0]
+    lab[5:35, 5:45, 5:35][lab[5:35, 5:45, 5:35] == 0] = datscan.WM[0]
+    ap = np.broadcast_to(np.arange(shape[1], dtype=float)[None, :, None], shape).copy()   # larger index = more anterior
+    counts = np.where(lab > 0, 1.0, 0.0).astype(np.float32)
+    counts[lab == datscan.PUTAMEN_L] = 3.0
+    counts[(lab == datscan.PUTAMEN_L) & (ap >= 28)] = 5.0                                  # anterior half hotter
+    counts[lab == datscan.WM[0]] = 2.0                                                      # WM reference twice the occipital
+    out = datscan.sbr_from_arrays(counts, lab, search_vox=0, ap=ap, spacing_mm=2.0)
+    assert abs(out["sbr_putamen_l_ant"] - 4.0) < 1e-6 and abs(out["sbr_putamen_l_post"] - 2.0) < 1e-6
+    assert abs(out["sbr_putamen_l"] - 3.0) < 1e-6 and abs(out["sbr_putamen_r_post"] - 0.0) < 1e-6
+    assert abs(out["sbrwm_putamen_l_post"] - 0.5) < 1e-6 and out["n_wm_voxels"] > 0
+    # WM within 15 mm of the striatum is excluded from the reference (7.5 voxels at 2 mm)
+    wm_used = out["n_wm_voxels"]
+    assert wm_used < (lab == datscan.WM[0]).sum()
+    assert out["n_wm_voxels"] == wm_used
+    out0 = datscan.sbr_from_arrays(counts, lab, search_vox=0)                             # without ap: no split columns
+    assert "sbr_putamen_l_post" not in out0 and abs(out0["sbr_putamen_l"] - 3.0) < 1e-6

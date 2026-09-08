@@ -79,19 +79,13 @@ def render_subject(modality, subj_dir, out_png, fastsurfer_dir=None, row=None):
     elif modality == "datscan":
         import SimpleITK as sitk
 
-        from .datscan import _sitk_from_nib
+        from .datscan import _sitk_from_nib, transform_from_row
 
         spect = nib.load(d)
         if row is None or fastsurfer_dir is None:
             raise ValueError("datscan galleries need the features row (reg_params/reg_center) and the FastSurfer directory")
         aparc = nib.load(Path(fastsurfer_dir) / "mri" / "aparc.DKTatlas+aseg.deep.mgz")
-        sv = sitk.ScaleVersor3DTransform()
-        sv.SetCenter([float(x) for x in str(row["reg_center"]).split()])
-        sv.SetParameters([float(x) for x in str(row["reg_params"]).split()])
-        tx = sitk.AffineTransform(3)                      # ScaleVersor3D has no inverse in ITK; the equivalent affine does
-        tx.SetCenter(sv.GetCenter())
-        tx.SetMatrix(sv.GetMatrix())
-        tx.SetTranslation(sv.GetTranslation())
+        tx = transform_from_row(row)
         moving = _sitk_from_nib(spect)
         labels = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(aparc.dataobj).astype(np.float32), aparc.affine))
         lab = np.transpose(sitk.GetArrayFromImage(sitk.Resample(labels, moving, tx.GetInverse(), sitk.sitkNearestNeighbor, 0.0)), (2, 1, 0))

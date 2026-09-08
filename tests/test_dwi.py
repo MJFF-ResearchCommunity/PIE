@@ -97,3 +97,20 @@ def test_labels_to_dwi_applies_the_inverse_registration():
     out = dwi.labels_to_dwi(nib.Nifti1Image(lab, aff), tgt, [tx])
     z, y, x = np.argwhere(out == 7)[0]
     assert (x, y, z) == (17, 25, 30)
+
+
+def test_denoise_reduces_noise_and_crop_even_drops_odd_axes():
+    rng = np.random.default_rng(0)
+    shape = (16, 16, 11)
+    zz, yy, xx = np.indices(shape)
+    head = ((xx - 8) ** 2 + (yy - 8) ** 2 + (zz - 5) ** 2) < 5.5 ** 2                       # a bright "brain" on a dark background
+    core = ((xx - 8) ** 2 + (yy - 8) ** 2 + (zz - 5) ** 2) < 3.0 ** 2
+    clean = (np.where(head, 100.0, 3.0)[..., None] * np.linspace(1.0, 0.4, 24)[None, None, None, :]).astype(np.float32)
+    noisy = clean + rng.normal(0, 8, clean.shape).astype(np.float32)
+    ds = {"data": noisy, "rev_b0": rng.random(shape + (2,)).astype(np.float32), "bvals": np.r_[0, np.full(23, 1000)]}
+    out = dwi.denoise_dwi(ds)
+    assert out["denoised"] and out["data"].shape == noisy.shape and out["data"].dtype == np.float32
+    assert np.abs(out["data"] - clean)[core].std() < 0.6 * np.abs(noisy - clean)[core].std()
+    even = dwi._crop_even(ds)
+    assert even["data"].shape[:3] == (16, 16, 10) and even["rev_b0"].shape[:3] == (16, 16, 10)
+    assert dwi._crop_even(even) is even

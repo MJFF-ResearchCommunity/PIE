@@ -29,6 +29,8 @@ I123_KEV = 159.0
 # FreeSurfer / DKT label ids
 CAUDATE_L, CAUDATE_R, PUTAMEN_L, PUTAMEN_R = 11, 50, 12, 51
 OCCIPITAL = [1005, 1011, 1013, 1021, 2005, 2011, 2013, 2021]  # cuneus, lateral occipital, lingual, pericalcarine (lh, rh)
+WM = [2, 41]  # cerebral white matter (lh, rh): alternative reference region, kept WM_MARGIN_MM clear of the striatum
+WM_MARGIN_MM = 15.0
 
 
 # ------------------------------------------------------------------------------------------ reading
@@ -349,16 +351,31 @@ def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc
     return tx, metric, moving
 
 
-def sbr_from_arrays(S, L, dilate=0, ref_dilate=0, search_vox=2):
+def _ap_split(mask, ap):
+    """Anterior / posterior halves of ``mask``, split at the median anterior coordinate of its voxels."""
+    if ap is None or mask.sum() < 20:                 # coarse cameras (4.8 mm voxels) hold ~38 putamen voxels
+        return {}
+    cut = np.median(ap[mask])
+    return {"ant": mask & (ap >= cut), "post": mask & (ap < cut)}
+
+
+def sbr_from_arrays(S, L, dilate=0, ref_dilate=0, search_vox=2, ap=None, spacing_mm=None):
     """SBRs from a counts array ``S`` and a co-registered label array ``L`` (same grid, any orientation).
     Striatal masks may be dilated (SPECT resolution ~10 mm); the occipital reference (cortical labels,
     optionally dilated into the brain, striatum excluded); a small translation search (+-``search_vox``
-    voxels) maximises the striatal counts, mimicking ROI placement on the hottest striatal region."""
+    voxels) maximises the striatal counts, mimicking ROI placement on the hottest striatal region.
+    With ``ap`` (per-voxel anterior coordinate) every striatal ROI is also split into anterior / posterior
+    halves (``_ant`` / ``_post``: the posterior putamen loses dopamine transporter first). A second SBR set
+    (``sbrwm_*``) uses cerebral white matter at least WM_MARGIN_MM from the striatum as the reference."""
     brain = L > 0
     striatum_ids = {"caudate_l": [CAUDATE_L], "caudate_r": [CAUDATE_R], "putamen_l": [PUTAMEN_L], "putamen_r": [PUTAMEN_R]}
     masks = {k: ndimage.binary_dilation(np.isin(L, v), iterations=dilate) if dilate else np.isin(L, v) for k, v in striatum_ids.items()}
     striatum = np.any(list(masks.values()), axis=0)
+    for k in list(masks):
+        masks.update({f"{k}_{s}": m for s, m in _ap_split(masks[k], ap).items()})
     occ = ndimage.binary_dilation(np.isin(L, OCCIPITAL), iterations=ref_dilate) & brain & ~striatum if ref_dilate else np.isin(L, OCCIPITAL)
+    far = ndimage.distance_transform_edt(~striatum) > WM_MARGIN_MM / (spacing_mm or 3.9) if striatum.any() else np.ones_like(striatum)
+    wm = np.isin(L, WM) & far
     best, best_shift = -np.inf, (0, 0, 0)
     r = range(-search_vox, search_vox + 1)
     for dz in r:
@@ -370,36 +387,79 @@ def sbr_from_arrays(S, L, dilate=0, ref_dilate=0, search_vox=2):
                     best, best_shift = v, (dz, dy, dx)
     if best_shift != (0, 0, 0):
         masks = {k: np.roll(m, best_shift, axis=(0, 1, 2)) for k, m in masks.items()}
-        occ = np.roll(occ, best_shift, axis=(0, 1, 2))
-    means = {k: float(S[m].mean()) if m.sum() >= 20 else np.nan for k, m in masks.items()}
+        occ, wm = (np.roll(m, best_shift, axis=(0, 1, 2)) for m in (occ, wm))
+    means = {k: float(S[m].mean()) if m.sum() >= (10 if k.endswith(("_ant", "_post")) else 20) else np.nan for k, m in masks.items()}
     means["occipital"] = float(S[occ].mean()) if occ.sum() >= 50 else np.nan
-    ref = means["occipital"]
-    out = {f"sbr_{k}": (v / ref - 1.0) if (ref and np.isfinite(ref) and ref > 0) else np.nan for k, v in means.items() if k != "occipital"}
+    means["wm"] = float(S[wm].mean()) if wm.sum() >= 50 else np.nan
+    sbr = lambda v, ref: (v / ref - 1.0) if (ref and np.isfinite(ref) and ref > 0) else np.nan
+    out = {f"sbr_{k}": sbr(means[k], means["occipital"]) for k in masks}
+    out.update({f"sbrwm_{k}": sbr(means[k], means["wm"]) for k in masks})
     out.update({f"mean_{k}": v for k, v in means.items()})
     out["n_label_voxels"] = int(striatum.sum())
     out["n_ref_voxels"] = int(occ.sum())
+    out["n_wm_voxels"] = int(wm.sum())
     out["shift_vox"] = float(np.sqrt(sum(d * d for d in best_shift)))
     return out
+
+
+def _anterior_map(ref, target, tx):
+    """Anterior (-LPS y) coordinate of ``ref``'s space at every voxel of ``target``, through ``tx``; (z, y, x) array."""
+    import SimpleITK as sitk
+
+    pts = sitk.PhysicalPointSource(sitk.sitkVectorFloat32, ref.GetSize(), ref.GetOrigin(), ref.GetSpacing(), ref.GetDirection())
+    return -sitk.GetArrayFromImage(sitk.Resample(sitk.VectorIndexSelectionCast(pts, 1), target, tx, sitk.sitkLinear, 0.0))
+
+
+def sbr_with_transform(spect_img, aparc_img, tx_inv, flip_lr=False, dilate=0, ref_dilate=0, search_vox=2):
+    """SBRs of ``spect_img`` given ``tx_inv``, the SPECT -> T1 mapping (inverse of the registration's
+    fixed -> moving transform): FastSurfer labels and the T1 anterior coordinate are resampled onto the
+    SPECT grid, then ``sbr_from_arrays`` on the un-thresholded counts."""
+    import SimpleITK as sitk
+
+    raw = spect_img if not flip_lr else nib.Nifti1Image(np.asanyarray(spect_img.dataobj)[::-1], spect_img.affine)
+    moving = _sitk_from_nib(raw)
+    labels = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(aparc_img.dataobj).astype(np.float32), aparc_img.affine))
+    L = sitk.GetArrayFromImage(sitk.Resample(labels, moving, tx_inv, sitk.sitkNearestNeighbor, 0.0))
+    return sbr_from_arrays(sitk.GetArrayFromImage(moving), L, dilate=dilate, ref_dilate=ref_dilate, search_vox=search_vox,
+                           ap=_anterior_map(labels, moving, tx_inv), spacing_mm=float(moving.GetSpacing()[0]))
+
+
+def transform_from_row(row):
+    """The stored registration of a results row (``reg_params`` / ``reg_center``) as an AffineTransform,
+    T1 (fixed) -> SPECT (moving). ScaleVersor3D itself has no inverse in ITK; the equivalent affine does."""
+    import SimpleITK as sitk
+
+    sv = sitk.ScaleVersor3DTransform()
+    sv.SetCenter([float(x) for x in str(row["reg_center"]).split()])
+    sv.SetParameters([float(x) for x in str(row["reg_params"]).split()])
+    tx = sitk.AffineTransform(3)
+    tx.SetCenter(sv.GetCenter())
+    tx.SetMatrix(sv.GetMatrix())
+    tx.SetTranslation(sv.GetTranslation())
+    return tx
 
 
 def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0, search_vox=2, mask_img=None, scale_fit=False):
     """Register SPECT -> T1 space (synthetic-template correlation), resample the FastSurfer labels onto the
     SPECT grid and compute SBRs (see ``sbr_from_arrays``). Returns SBRs, ROI means, the registration
     metric (negative normalised correlation; more negative is better) and QC fields."""
-    import SimpleITK as sitk
-
     tx, metric, moving = register_to_t1(spect_img, t1_img, flip_lr, rz=rz, search=search, aparc_img=aparc_img, mask_img=mask_img, scale_fit=scale_fit)
-    labels = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(aparc_img.dataobj).astype(np.float32), aparc_img.affine))
-    L = sitk.GetArrayFromImage(sitk.Resample(labels, moving, tx.GetInverse(), sitk.sitkNearestNeighbor, 0.0))
-    raw = spect_img if not flip_lr else nib.Nifti1Image(np.asanyarray(spect_img.dataobj)[::-1], spect_img.affine)
-    S = sitk.GetArrayFromImage(_sitk_from_nib(raw))  # un-thresholded counts on the same grid
-    out = sbr_from_arrays(S, L, dilate=dilate, ref_dilate=ref_dilate, search_vox=search_vox)
+    out = sbr_with_transform(spect_img, aparc_img, tx.GetInverse(), flip_lr=flip_lr, dilate=dilate, ref_dilate=ref_dilate, search_vox=search_vox)
     out["reg_metric"] = metric
     out["flip_lr"] = bool(flip_lr)
     out["reg_params"] = " ".join(f"{v:.6g}" for v in tx.GetParameters())  # ScaleVersor3D: versor xyz, translation xyz, scale xyz (fixed -> moving)
     out["reg_scale_x"], out["reg_scale_y"], out["reg_scale_z"] = (float(v) for v in tx.GetParameters()[6:9])
     out["reg_center"] = " ".join(f"{v:.6g}" for v in tx.GetFixedParameters()[:3])
     return out
+
+
+def requantify_row(row, fastsurfer_subject_dir):
+    """Recompute the SBR fields of a finished results row from its saved reconstruction (``nifti``) and stored
+    registration, without registering again: adds ROI / reference columns introduced after a full run."""
+    aparc = nib.load(Path(fastsurfer_subject_dir) / "mri" / "aparc.DKTatlas+aseg.deep.mgz")
+    flip = str(row.get("flip_lr", False)).lower() == "true"
+    out = sbr_with_transform(nib.load(row["nifti"]), aparc, transform_from_row(row).GetInverse(), flip_lr=flip)
+    return {**row, **out}
 
 
 # ------------------------------------------------------------------------------------- pipeline
@@ -440,6 +500,7 @@ def process_series(zip_path, member, out_dir, fastsurfer_subject_dir=None, fwhm_
         t1, aparc = nib.load(mri / "orig.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
         mask = nib.load(mri / "mask.mgz") if (mri / "mask.mgz").exists() else None
         row.update(quantify(img, t1, aparc, flip_lr=flip_lr, mask_img=mask, scale_fit=row.get("hdr_scale_fit", False)))
+        row["fs_image_id"] = Path(fastsurfer_subject_dir).name   # the T1 the transform refers to (needed to requantify)
     return row
 
 
@@ -465,6 +526,18 @@ def _prefer_photopeak_member(idx):
                 continue
         keep.append(chosen)
     return idx.loc[keep]
+
+
+def _requant_job(args):
+    row, fs_dir = args
+    if row.get("error") or not isinstance(row.get("reg_params"), str) or not fs_dir:
+        return row
+    try:
+        import SimpleITK as sitk
+        sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)
+        return requantify_row(row, fs_dir)
+    except Exception as e:
+        return {**row, "error": f"requantify: {str(e)[:150]}"}
 
 
 def _job(args):
@@ -506,6 +579,8 @@ def main(argv=None):
     ap.add_argument("--flip-lr", dest="flip_lr", choices=["true", "false"], default="false",
                     help="mirror the reconstruction left/right (validation against PPMI: no vendor needs it)")
     ap.add_argument("--attenuation", dest="attenuation", action="store_true", default=False, help="Chang attenuation correction (experimental; off by default)")
+    ap.add_argument("--requantify", action="store_true", help="recompute the SBR columns of every finished row from its saved reconstruction and "
+                    "stored registration (adds ROI/reference columns without re-registering); the previous CSV is kept as *.pre_requant.csv")
     a = ap.parse_args(argv)
 
     idx = pd.read_csv(a.index, dtype={"image_id": str})
@@ -521,6 +596,30 @@ def main(argv=None):
     out_dir = Path(a.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_csv = out_dir / "datscan_sbr.csv"
+    if a.requantify:
+        d = pd.read_csv(out_csv, dtype={"image_id": str})
+        d["error"] = d["error"].fillna("")
+        def _fs_dir(r):   # the T1 recorded with the row; older tables fall back to the subject's earliest FastSurfer session
+            if isinstance(r.get("fs_image_id"), str) and (fs_root / r["fs_image_id"] / "mri").exists():
+                return str(fs_root / r["fs_image_id"])
+            return str(fs_root / fs_by_patno[int(r["patno"])]) if int(r["patno"]) in fs_by_patno else None
+        only = {int(x) for x in Path(a.patnos).read_text().split()} if a.patnos else None
+        jobs = [(r, _fs_dir(r) if (only is None or int(r["patno"]) in only) else None) for r in d.to_dict("records")]   # fs_dir None = keep as is
+        rows = []
+        with ProcessPoolExecutor(max_workers=a.workers) as ex:
+            for i, row in enumerate(ex.map(_requant_job, jobs[:a.limit] if a.limit else jobs, chunksize=4), start=1):
+                rows.append(row)
+                if i % 100 == 0:
+                    print(f"{i}/{len(jobs)}", flush=True)
+        if a.limit:                                   # a sample run must not replace the full table
+            out_csv = out_csv.with_name("datscan_sbr_requant_sample.csv")
+        else:
+            bak = out_csv.with_suffix(".pre_requant.csv")
+            if not bak.exists():
+                out_csv.rename(bak)
+        pd.DataFrame(rows).to_csv(out_csv, index=False)
+        print(f"requantified {sum(1 for r in rows if 'sbr_putamen_l_post' in r)}/{len(rows)} rows ->", out_csv)
+        return
     done = set(pd.read_csv(out_csv, dtype={"image_id": str})["image_id"]) if out_csv.exists() else set()
     jobs = []
     for r in idx.itertuples():

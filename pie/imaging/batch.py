@@ -112,19 +112,45 @@ def run_batch(jobs, job_fn, out_csv, workers=4, log_every=10, pid_file=None):
     if pid_file:
         Path(pid_file).write_text(str(os.getpid()))
     print(f"{len(jobs)} subjects to process", flush=True)
-    with ProcessPoolExecutor(max_workers=workers) as ex, open(out_csv, "a", newline="") as fh:
-        writer = None
+    with ProcessPoolExecutor(max_workers=workers) as ex, open(out_csv, "a+", newline="") as fh:
+        writer, pending = None, []          # error rows seen before the first full row wait, so the header holds every column
+
+        def start(fieldnames):
+            nonlocal writer
+            existing = pd.read_csv(out_csv, dtype=str).fillna("") if out_csv.stat().st_size else None
+            if existing is not None and set(fieldnames) - set(existing.columns):     # a header written from error rows only
+                fieldnames = sorted(set(fieldnames) | set(existing.columns))
+                fh.seek(0)
+                fh.truncate()
+                writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(existing.to_dict("records"))
+            elif existing is not None:
+                writer = csv.DictWriter(fh, fieldnames=existing.columns.tolist(), extrasaction="ignore")
+            else:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+
+        def emit(row):
+            writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
+            fh.flush()
+
         for i, fut in enumerate(as_completed([ex.submit(job_fn, j) for j in jobs]), start=1):
             row = fut.result()
             row.setdefault("error", "")
-            if writer is None:
-                if out_csv.stat().st_size == 0:
-                    writer = csv.DictWriter(fh, fieldnames=sorted(row))
-                    writer.writeheader()
-                else:
-                    writer = csv.DictWriter(fh, fieldnames=pd.read_csv(out_csv, nrows=0).columns.tolist(), extrasaction="ignore")
-            writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
-            fh.flush()
+            if writer is None and row["error"]:
+                pending.append(row)
+            else:
+                if writer is None:
+                    start(sorted(set(row) | set().union(*(set(r) for r in pending))))
+                    for r in pending:
+                        emit(r)
+                    pending = []
+                emit(row)
             if i % log_every == 0 or row.get("error"):
                 print(f"{i}/{len(jobs)} {row['patno']} {'ERROR ' + str(row['error']) if row.get('error') else 'ok'}", flush=True)
+        if pending:                          # every job failed
+            start(sorted(set().union(*(set(r) for r in pending))))
+            for r in pending:
+                emit(r)
     print(f"done -> {out_csv}", flush=True)

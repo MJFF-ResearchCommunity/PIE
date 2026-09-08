@@ -11,15 +11,20 @@ by site ("AX T2 GRE MT", "2D GRE-MT", "AXIAL 2D GRE-MT", "2D GRE-MT_ACPC", "NM-G
                   onto the NM grid together with the FastSurfer brainstem / ventral DC labels.
 3. `features`     substantia nigra (SNc + SNr, left/right, anterior/posterior halves): mean signal, contrast ratio
                   CNR = (SN - ref) / ref against the crus cerebri (the part of a surrounding-midbrain ring, the
-                  atlas SN dilated 5 mm minus the nuclei inside brainstem/ventral DC, that lies anterior to the SN on
-                  the same side; the whole-ring CNR is kept as `*_cnr_ring`); placement-robust measures on a 1 mm-
-                  smoothed image: the contrast of the brightest half-SN-sized volume within the dilated search region
-                  (`*_top_cnr`) and the neuromelanin volume = search-region voxels above a fixed 10 % contrast
-                  (`nm_vol_*_voxels`, with their mean CNR). QC: repeats, inter-repeat motion, registration metric,
-                  slab coverage of the SN. The slab (~24 mm) does not reach the locus coeruleus.
+                  atlas SN dilated 3 mm minus the nuclei inside brainstem/ventral DC, that lies anterior to the SN on
+                  the same side; the whole-ring CNR is kept as `*_cnr_ring`). The affine-mapped atlas SN sits
+                  1-2 mm off the thin neuromelanin band in most subjects, so its position is refined per side by a
+                  translation (<= 2 mm in-plane, +-1 slice) that maximises the ROI mean on a 1 mm-smoothed copy while
+                  keeping the ROI inside brainstem labels (`nm_sn_shift_mm_*`; the unrefined value is `*_cnr_atlas`).
+                  Order statistics on single voxels (brightest-fraction contrast, fixed-threshold volumes) were removed
+                  after the 2026-09 audit: on PPMI slabs (per-voxel CV ~0.13) they tracked the noise level
+                  (Spearman 0.65-0.71) and carried no group signal. QC: repeats, inter-repeat motion, registration
+                  metric, slab coverage of the SN, reference-ring homogeneity. The slab (~24 mm) does not reach the
+                  locus coeruleus.
 
     venv_imaging/bin/python -m pie.imaging.nm --zips <MRI zips> --sessions Imaging/derived/sessions.csv \
         --fastsurfer-dir Imaging/derived/fastsurfer --work-dir Imaging/derived/nm --workers 4 [--keep-nifti]
+    venv_imaging/bin/python -m pie.imaging.nm ... --work-dir Imaging/derived/nm --refeature   # features again from saved slabs
 """
 
 import json
@@ -38,11 +43,10 @@ from scipy import ndimage
 from .convert import DCM2NIIX
 from .dwi import PAULI, _brain, _register_volume, _sitk_from_nib, _sitk_native, labels_to_dwi, mni_cache_path, pauli_atlas, register_t1_to_mni
 
-NM_PATTERN = r"GRE.?MT|MT.?GRE|GRE ?- ?MT|NM-|Neuromelanin|NM_MT|NM MT"
+NM_PATTERN = r"GRE.?MT|MT.?GRE|GRE ?- ?MT|NM\s*-|Neuromelanin|NM_MT|NM MT"
 EXCLUDE = r"MTC-NO|B0|Map|TRACEW|ADC|_FA"
-CNR_THRESHOLD = 0.10   # neuromelanin volume: smoothed voxels > (1 + CNR_THRESHOLD) x crus cerebri mean
-TOP_FRACTION = 0.5     # placement-robust contrast: the brightest (TOP_FRACTION x atlas-SN volume) voxels of the dilated search region
 DILATE_MM = 3.0
+REFINE_MM = 2.0        # max in-plane translation when refining the atlas SN position on the slab
 
 
 # ------------------------------------------------------------------------------------------ index / convert
@@ -161,14 +165,38 @@ def nm_rois(fs_lab, pauli_lab, spacing_mm):
     mid = (xl + xr) / 2
     xi = np.arange(pauli_lab.shape[2])[None, None, :]
     left = (xi > mid) if xl > xr else (xi < mid)
-    return {"sn_l": sn & left, "sn_r": sn & ~left, "search_l": search & left, "search_r": search & ~left, "ref": ref}
+    return {"sn_l": sn & left, "sn_r": sn & ~left, "search_l": search & left, "search_r": search & ~left, "ref": ref, "stem": np.isin(fs_lab, [16, 28, 60])}
+
+
+def _refine(sn, sm, stem, spacing_zyx, max_mm=REFINE_MM):
+    """Translation (voxels, z/y/x) of the atlas SN that maximises its mean on the smoothed slab, within ``max_mm``
+    in-plane and one slice, keeping >= 95 % of the ROI inside brainstem labels (the cistern lateral to the peduncle
+    is bright). The objective is an average over ~10^3 voxels, so noise barely biases the maximum."""
+    ny, nx = [int(round(max_mm / s)) for s in spacing_zyx[1:]]
+    zz, yy, xx = np.nonzero(sn)
+    box = tuple(slice(max(0, a.min() - p), a.max() + p + 1) for a, p in zip((zz, yy, xx), (2, ny + 1, nx + 1)))
+    sn_c, sm_c, stem_c = sn[box], sm[box], stem[box]
+    best, shift = -np.inf, (0, 0, 0)
+    for dz in (-1, 0, 1):
+        for dy in range(-ny, ny + 1):
+            for dx in range(-nx, nx + 1):
+                m = np.roll(sn_c, (dz, dy, dx), axis=(0, 1, 2))
+                if (m & stem_c).sum() < 0.95 * m.sum():
+                    continue
+                v = sm_c[m].mean()
+                if v > best:
+                    best, shift = v, (dz, dy, dx)
+    return shift
 
 
 def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0):
-    """Signal, CNR and thresholded neuromelanin volume per side (+ anterior/posterior halves of the SN).
-    Reference = crus cerebri: the part of the surrounding-midbrain ring anterior to the SN on the same side (the
-    whole ring mixes bright tegmentum with the dark peduncle and halves the contrast). The threshold volume uses a
-    lightly smoothed image (``smooth_fwhm_mm`` in-plane) so that ref mean + K_SD * SD reflects tissue, not voxel noise."""
+    """Signal and CNR per side (+ anterior/posterior halves of the SN) at the refined atlas-SN position.
+    Primary reference = the whole surrounding-midbrain ring (``nm_ring_mean``); the part of the ring anterior to the
+    SN on the same side (nominally crus cerebri) is kept as ``*_cnr_crus``. The audit of 2026-09 showed the anterior
+    part is contaminated by the neuromelanin band itself (it lies 1-2 mm off the atlas SN and is lost in PD: the
+    anterior/ring intensity ratio is lower in PD), which cancelled the group difference; the ring is diluted but not
+    biased. ``smooth_fwhm_mm`` (in-plane) only serves the position refinement; contrasts are read from the
+    unsmoothed slab."""
     out = {}
     sigma = [0.0] + [smooth_fwhm_mm / 2.3548 / s for s in spacing_zyx[1:]]
     sm = ndimage.gaussian_filter(nm, sigma=sigma) if smooth_fwhm_mm else nm
@@ -177,12 +205,13 @@ def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0):
     if len(ring_vals) < 20:
         return {"nm_error": "reference region empty"}
     out.update({"nm_ring_mean": float(ring_vals.mean()), "nm_ring_sd": float(ring_vals.std()), "n_ring": int(len(ring_vals))})
+    stem = rois.get("stem", np.ones_like(rois["ref"]))
     for side in ("l", "r"):
-        sn, search = rois[f"sn_{side}"], rois[f"search_{side}"]
-        out[f"n_sn_{side}"] = int(sn.sum())
-        if not sn.any():
+        sn0, search = rois[f"sn_{side}"], rois[f"search_{side}"]
+        out[f"n_sn_{side}"] = int(sn0.sum())
+        if not sn0.any():
             continue
-        y_sn = np.median(phys_y[sn])
+        y_sn = np.median(phys_y[sn0])
         crus = rois["ref"] & search & (phys_y < y_sn - 1.5)          # anterior (LPS: smaller y) to the SN, same side
         cv = nm[crus]
         cv = cv[cv > 0]
@@ -192,36 +221,90 @@ def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0):
             cv = cv[cv > 0]
         ref_mean, ref_sd = float(cv.mean()), float(cv.std())
         out[f"nm_ref_{side}_mean"], out[f"nm_ref_{side}_sd"], out[f"n_ref_{side}"] = ref_mean, ref_sd, int(len(cv))
-        vals = nm[sn]
-        vals = vals[vals > 0]
-        out[f"nm_sn_{side}_mean"] = float(vals.mean()) if len(vals) >= 3 else np.nan
-        out[f"nm_sn_{side}_cnr"] = float((vals.mean() - ref_mean) / ref_mean) if len(vals) >= 3 else np.nan
-        out[f"nm_sn_{side}_cnr_ring"] = float((vals.mean() - out["nm_ring_mean"]) / out["nm_ring_mean"]) if len(vals) >= 3 else np.nan
-        # placement-robust measures on the smoothed image, relative to the smoothed crus mean: the brightest quarter of
-        # the dilated search region (the neuromelanin band is thin and the atlas SN can sit 1-2 mm off it), and the
-        # neuromelanin volume above a fixed CNR_THRESHOLD (SD-based thresholds are dominated by peduncle anatomy)
-        cs_mean = float(sm[crus].mean())
-        sv = sm[search]
-        top = np.sort(sv)[-max(3, int(sn.sum() * TOP_FRACTION)):]   # brightest half-SN-sized volume inside the search region
-        out[f"nm_sn_{side}_top_cnr"] = float((top.mean() - cs_mean) / cs_mean)
-        hot = search & (sm > cs_mean * (1 + CNR_THRESHOLD))
-        out[f"nm_vol_{side}_voxels"] = int(hot.sum())
-        out[f"nm_vol_{side}_cnr"] = float((sm[hot].mean() - cs_mean) / cs_mean) if hot.sum() >= 3 else np.nan
+        shift = _refine(sn0, sm, stem, spacing_zyx)
+        sn = np.roll(sn0, shift, axis=(0, 1, 2))
+        out[f"nm_sn_shift_mm_{side}"] = float(np.sqrt(sum((d * s) ** 2 for d, s in zip(shift, spacing_zyx))))
+        cnr = lambda m, ref: float((nm[m][nm[m] > 0].mean() - ref) / ref) if (nm[m] > 0).sum() >= 3 else np.nan
+        out[f"nm_sn_{side}_mean"] = float(nm[sn][nm[sn] > 0].mean()) if (nm[sn] > 0).sum() >= 3 else np.nan
+        ring_mean = out["nm_ring_mean"]
+        out[f"nm_sn_{side}_cnr"] = cnr(sn, ring_mean)
+        out[f"nm_sn_{side}_cnr_crus"] = cnr(sn, ref_mean)
+        out[f"nm_sn_{side}_cnr_atlas"] = cnr(sn0, ring_mean)
         cut = np.median(phys_y[sn])
         for name, m in (("posterior", sn & (phys_y > cut)), ("anterior", sn & (phys_y <= cut))):   # LPS: larger y = posterior
-            v = nm[m]
-            v = v[v > 0]
-            out[f"nm_sn_{name}_{side}_cnr"] = float((v.mean() - ref_mean) / ref_mean) if len(v) >= 3 else np.nan
+            out[f"nm_sn_{name}_{side}_cnr"] = cnr(m, ring_mean)
     for base in ("nm_sn", "nm_sn_posterior", "nm_sn_anterior"):
         l, r = out.get(f"{base}_l_cnr", np.nan), out.get(f"{base}_r_cnr", np.nan)
         out[f"{base}_mean_cnr"] = float(np.nanmean([l, r])) if not (np.isnan(l) and np.isnan(r)) else np.nan
-    l, r = out.get("nm_sn_l_top_cnr", np.nan), out.get("nm_sn_r_top_cnr", np.nan)
-    out["nm_sn_mean_top_cnr"] = float(np.nanmean([l, r])) if not (np.isnan(l) and np.isnan(r)) else np.nan
-    out["nm_sn_min_top_cnr"] = float(np.nanmin([l, r])) if not (np.isnan(l) and np.isnan(r)) else np.nan
-    out["nm_vol_total_voxels"] = out.get("nm_vol_l_voxels", 0) + out.get("nm_vol_r_voxels", 0)
     l, r = out.get("nm_sn_l_cnr", np.nan), out.get("nm_sn_r_cnr", np.nan)
+    out["nm_sn_min_cnr"] = float(np.nanmin([l, r])) if not (np.isnan(l) and np.isnan(r)) else np.nan
+    la, ra = out.get("nm_sn_l_cnr_atlas", np.nan), out.get("nm_sn_r_cnr_atlas", np.nan)
+    out["nm_sn_mean_cnr_atlas"] = float(np.nanmean([la, ra])) if not (np.isnan(la) and np.isnan(ra)) else np.nan
     out["nm_sn_asym_cnr"] = float(abs(l - r)) if np.isfinite(l) and np.isfinite(r) else np.nan
     return out
+
+
+def _phys_y(tgt, shape_zyx):
+    """LPS y coordinate (posterior positive) of every voxel of a SimpleITK image, as a (z, y, x) array."""
+    zz, yy, xx = np.meshgrid(*[np.arange(s) for s in shape_zyx], indexing="ij")
+    origin, sp, direction = np.array(tgt.GetOrigin()), np.array(tgt.GetSpacing()), np.array(tgt.GetDirection()).reshape(3, 3)
+    return origin[1] + direction[1, 0] * xx * sp[0] + direction[1, 1] * yy * sp[1] + direction[1, 2] * zz * sp[2]
+
+
+def refeature_subject(work_dir, patno):
+    """Feature columns of a finished subject again, from the saved slab and label maps (``--keep-nifti`` outputs),
+    without registering: the way to apply a changed ``features`` to a whole run."""
+    d = Path(work_dir) / str(patno)
+    img = nib.load(d / "nm_mean.nii.gz")
+    nm = np.asanyarray(img.dataobj).astype(np.float32)
+    pauli = np.transpose(np.asanyarray(nib.load(d / "pauli_nm.nii.gz").dataobj), (2, 1, 0))
+    fs = np.transpose(np.asanyarray(nib.load(d / "aseg_nm.nii.gz").dataobj), (2, 1, 0))
+    spacing = [float(z) for z in img.header.get_zooms()[:3]]
+    tgt = _sitk_native(nm, img.affine)
+    rois = nm_rois(fs, pauli, spacing[::-1])
+    return features(np.transpose(nm, (2, 1, 0)), rois, _phys_y(tgt, pauli.shape), spacing_zyx=tuple(spacing[::-1]))
+
+
+def _refeature_job(args):
+    work_dir, row = args
+    keep = {k: v for k, v in row.items() if not k.startswith(("nm_", "n_sn_", "n_ref_", "n_ring"))}   # stale feature columns go
+    if row.get("error") or not (Path(work_dir) / str(row["patno"]) / "nm_mean.nii.gz").exists():
+        return keep
+    try:
+        out = refeature_subject(work_dir, row["patno"])
+        return {**keep, **out, "error": out.pop("nm_error", "")} if "nm_error" not in out else {**keep, "error": out["nm_error"]}
+    except Exception as e:
+        return {**keep, "error": f"refeature: {type(e).__name__}: {str(e)[:150]}"}
+
+
+def register_slab(nm_img, fastsurfer_dir):
+    """Rigid slab -> T1 registration with the protocol-aware initialisation: the same-session headers first, then
+    (if the atlas SN does not land on the slab) the slab centred on the atlas SN centroid; the result that covers the
+    SN better wins (ties: better metric). Returns (T1 -> slab transform, metric, init used, MNI -> T1 affine, its metric,
+    number of atlas-SN voxels in T1 space)."""
+    mri = Path(fastsurfer_dir) / "mri"
+    t1, t1_mask = nib.load(mri / "orig.mgz"), nib.load(mri / "mask.mgz")
+    spacing_guess = [float(z) for z in nm_img.header.get_zooms()[:3]]
+    tx_mni_t1, m_mni = register_t1_to_mni(t1, t1_mask, cache_path=mni_cache_path(fastsurfer_dir))
+    # atlas SN centroid in T1 (LPS) space: the protocol centres the slab on the midbrain, so start the slab there
+    t1_sitk = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(t1.dataobj).astype(np.float32), t1.affine))
+    pauli_t1 = labels_to_dwi(pauli_atlas(), t1_sitk, [tx_mni_t1])
+    sn_idx = np.argwhere(np.isin(pauli_t1, [7, 9]))
+    target = None
+    if len(sn_idx):
+        zc, yc, xc = sn_idx.mean(axis=0)
+        target = t1_sitk.TransformContinuousIndexToPhysicalPoint((float(xc), float(yc), float(zc)))
+    tgt = _sitk_native(np.asanyarray(nm_img.dataobj).astype(np.float32), nm_img.affine)
+    best = None
+    for init_target, name in ((None, "header"), (target, "sn_centroid")):
+        tx_try, m_try = register_nm_to_t1(nm_img, t1, target_center=init_target)
+        cov = int(np.isin(labels_to_dwi(pauli_atlas(), tgt, [tx_mni_t1, tx_try]), [7, 9]).sum())
+        if best is None or cov > best[2] * 1.2 or (abs(cov - best[2]) <= best[2] * 0.2 and m_try < best[1]):
+            best = (tx_try, m_try, cov, name)
+        if cov * np.prod(spacing_guess) >= 0.5 * max(len(sn_idx), 1):
+            break
+    tx_t1_nm, m_rigid, _, init_used = best
+    return tx_t1_nm, m_rigid, init_used, tx_mni_t1, m_mni, len(sn_idx)
 
 
 # ------------------------------------------------------------------------------------------ driver
@@ -240,44 +323,23 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
            "manufacturer": str(meta.get("Manufacturer", "")), "model": str(meta.get("ManufacturerModelName", "")),
            "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "flip_angle": meta.get("FlipAngle", np.nan),
            "mt_flag": str(meta.get("MTState", "")), "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
+    tx_t1_nm, m_rigid, init_used, tx_mni_t1, m_mni, n_sn_t1 = register_slab(nm_img, fastsurfer_dir)
     mri = Path(fastsurfer_dir) / "mri"
-    t1, t1_mask, aseg = nib.load(mri / "orig.mgz"), nib.load(mri / "mask.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
-    spacing_guess = [float(z) for z in nm_img.header.get_zooms()[:3]]
-    tx_mni_t1, m_mni = register_t1_to_mni(t1, t1_mask, cache_path=mni_cache_path(fastsurfer_dir))
-    # atlas SN centroid in T1 (LPS) space: the protocol centres the slab on the midbrain, so start the slab there
-    t1_sitk = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(t1.dataobj).astype(np.float32), t1.affine))
-    pauli_t1 = labels_to_dwi(pauli_atlas(), t1_sitk, [tx_mni_t1])
-    sn_idx = np.argwhere(np.isin(pauli_t1, [7, 9]))
-    target = None
-    if len(sn_idx):
-        zc, yc, xc = sn_idx.mean(axis=0)
-        target = t1_sitk.TransformContinuousIndexToPhysicalPoint((float(xc), float(yc), float(zc)))
+    aseg = nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
     nm = np.asanyarray(nm_img.dataobj).astype(np.float32)
     tgt = _sitk_native(nm, nm_img.affine)
-    # header initialisation first (right for most sessions); if the atlas SN does not land on the slab, retry from
-    # the SN centroid and keep whichever result covers the SN better (ties: better metric)
-    best = None
-    for init_target, name in ((None, "header"), (target, "sn_centroid")):
-        tx_try, m_try = register_nm_to_t1(nm_img, t1, target_center=init_target)
-        cov = int(np.isin(labels_to_dwi(pauli_atlas(), tgt, [tx_mni_t1, tx_try]), [7, 9]).sum())
-        if best is None or cov > best[2] * 1.2 or (abs(cov - best[2]) <= best[2] * 0.2 and m_try < best[1]):
-            best = (tx_try, m_try, cov, name)
-        if cov * np.prod(spacing_guess) >= 0.5 * max(len(sn_idx), 1):
-            break
-    tx_t1_nm, m_rigid, _, init_used = best
     row.update({"reg_nm_t1_mi": m_rigid, "reg_t1_mni_mi": m_mni, "reg_init": init_used})
     fs_lab = labels_to_dwi(aseg, tgt, [tx_t1_nm])
     pauli_lab = labels_to_dwi(pauli_atlas(), tgt, [tx_mni_t1, tx_t1_nm])
     spacing = [float(z) for z in nm_img.header.get_zooms()[:3]]
     rois = nm_rois(fs_lab, pauli_lab, spacing[::-1])
-    zz, yy, xx = np.meshgrid(*[np.arange(s) for s in pauli_lab.shape], indexing="ij")
-    origin, sp, direction = np.array(tgt.GetOrigin()), np.array(tgt.GetSpacing()), np.array(tgt.GetDirection()).reshape(3, 3)
-    phys_y = origin[1] + direction[1, 0] * xx * sp[0] + direction[1, 1] * yy * sp[1] + direction[1, 2] * zz * sp[2]
+    phys_y = _phys_y(tgt, pauli_lab.shape)
     nm_zyx = np.transpose(nm, (2, 1, 0))
     # slab coverage: fraction of the atlas SN (in T1 space, 1 mm^3 voxels) that falls inside the NM slab
-    row["sn_slab_coverage"] = float((rois["sn_l"].sum() + rois["sn_r"].sum()) * np.prod(spacing) / max(len(sn_idx) * 1.0, 1.0))
+    row["sn_slab_coverage"] = float((rois["sn_l"].sum() + rois["sn_r"].sum()) * np.prod(spacing) / max(n_sn_t1 * 1.0, 1.0))
     row.update(features(nm_zyx, rois, phys_y, spacing_zyx=tuple(spacing[::-1])))
     if keep_nifti:
+        sitk.WriteTransform(tx_t1_nm, str(work / "slab_to_t1.tfm"))     # T1 point -> slab point; reused by nm_template
         nib.save(nm_img, work / "nm_mean.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(pauli_lab, (2, 1, 0)).astype(np.int16), nm_img.affine), work / "pauli_nm.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(fs_lab, (2, 1, 0)).astype(np.int16), nm_img.affine), work / "aseg_nm.nii.gz")
@@ -301,9 +363,28 @@ def main(argv=None):
 
     from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows
 
-    a = add_common_args(argparse.ArgumentParser()).parse_args(argv)
+    ap = add_common_args(argparse.ArgumentParser())
+    ap.add_argument("--refeature", action="store_true", help="recompute the feature columns of every finished subject from the saved "
+                    "slab and label maps (--keep-nifti outputs); the previous table is kept as *.pre_refeature.csv")
+    a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
+    if a.refeature:
+        from concurrent.futures import ProcessPoolExecutor
+
+        out_csv = work / "nm_features.csv"
+        d = pd.read_csv(out_csv)
+        d["error"] = d["error"].fillna("")
+        only = {int(x) for x in Path(a.patnos).read_text().split()} if a.patnos else None
+        jobs = [(str(work), r) for r in d.to_dict("records") if only is None or int(r["patno"]) in only]
+        with ProcessPoolExecutor(max_workers=a.workers) as ex:
+            rows = list(ex.map(_refeature_job, jobs, chunksize=2))
+        bak = out_csv.with_suffix(".pre_refeature.csv")
+        if not bak.exists():
+            out_csv.rename(bak)
+        pd.DataFrame(rows).to_csv(out_csv, index=False)
+        print(f"refeatured {sum('nm_sn_shift_mm_l' in r for r in rows)}/{len(rows)} subjects ->", out_csv)
+        return
     idx = load_index(work / "nm_index.csv", a.zips, flag_nm)
     idx = idx[idx["selected"]]
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
