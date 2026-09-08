@@ -10,7 +10,7 @@ ensembles, explainability, and more.
 import logging
 import pandas as pd
 import numpy as np
-from typing import Union, Optional, Any, Dict, List, Tuple
+from typing import Union, Optional, Any, Callable, Dict, List, Tuple
 from pathlib import Path
 import warnings
 import json
@@ -92,14 +92,37 @@ def _compute_metrics(y_true, y_pred, y_proba=None):
 # ---------------------------------------------------------------------------
 
 def _can_import(module: str, cls_name: str) -> bool:
-    """Return True if *module*.*cls_name* is importable."""
+    """Return True if *module*.*cls_name* is importable AND the class can be
+    instantiated with no required runtime deps missing.
+
+    Classes like ``EBMClassifier`` / ``RuleFitClassifier`` import successfully
+    even when their optional backend (e.g. ``interpret``) isn't installed; the
+    ImportError only fires on first ``__init__``.  Catching that here keeps
+    such models out of the user-facing catalog instead of failing later inside
+    ``compare_models``.
+    """
     import importlib
     try:
         mod = importlib.import_module(module)
-        getattr(mod, cls_name)
-        return True
+        cls = getattr(mod, cls_name)
     except Exception:
         return False
+
+    # Try a no-arg instantiation.  Classes that legitimately *require* args
+    # raise TypeError, which we treat as "importable" — only ImportError /
+    # ModuleNotFoundError signal a missing optional backend.
+    try:
+        cls()
+    except (ImportError, ModuleNotFoundError):
+        return False
+    except Exception:
+        # Other failures (TypeError for required args, deprecation warnings
+        # raised as errors, etc.) are not our concern at catalog time.
+        pass
+    return True
+
+
+_catalog_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, Any]]:
@@ -108,7 +131,10 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
 
     Each entry is ``{model_id: {"name": ..., "module": ..., "class": ...}}``.
     Models that cannot be imported are excluded from the returned catalog.
+    Results are cached after the first call per task_type.
     """
+    if task_type in _catalog_cache:
+        return _catalog_cache[task_type]
     catalog: Dict[str, Dict[str, Any]] = {}
 
     # 1. Pull from endgame's automl registry when available
@@ -116,16 +142,8 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
         try:
             from endgame.automl import list_models, get_model_info
             for model_id in list_models(task_type=task_type):
-                mi = get_model_info(model_id)
-                # Convert ModelInfo to the dict schema used by the rest of the code
-                class_path = getattr(mi, "class_path", "")
-                parts = class_path.rsplit(".", 1) if class_path else ["", ""]
-                catalog[model_id] = {
-                    "name": getattr(mi, "display_name", model_id),
-                    "module": parts[0] if len(parts) == 2 else "",
-                    "class": parts[1] if len(parts) == 2 else "",
-                    "_model_info": mi,  # keep original for advanced use
-                }
+                info = get_model_info(model_id)
+                catalog[model_id] = info
             logger.info(f"Loaded {len(catalog)} models from endgame registry for {task_type}")
         except Exception as exc:
             logger.warning(f"Could not load endgame model registry: {exc}")
@@ -189,33 +207,106 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
         }
         static = {**_sklearn_models, **_third_party, **_endgame_models}
 
-    # 3. Merge static into catalog (don't override entries already populated
-    #    by the dynamic registry, but add any that are missing)
-    for mid, info in static.items():
-        if mid not in catalog:
-            catalog[mid] = info
-
-    # 4. Validate: only keep entries whose module+class are actually importable
+    # 3. Start with the static catalog, then overlay with validated endgame
+    #    entries.  This ensures sklearn/xgboost/etc. are always available
+    #    even if the endgame registry entry for the same id lacks module/class.
     validated: Dict[str, Dict[str, Any]] = {}
-    for mid, info in catalog.items():
+
+    for mid, info in static.items():
         mod_name = info.get("module", "")
         cls_name = info.get("class", "")
-        if not mod_name or not cls_name:
-            # Entries from the dynamic registry may use a different schema
+        if mod_name and cls_name and _can_import(mod_name, cls_name):
             validated[mid] = info
-            continue
-        if _can_import(mod_name, cls_name):
-            validated[mid] = info
-        else:
-            logger.debug(f"Model '{mid}' excluded from catalog: cannot import {mod_name}.{cls_name}")
 
+    # Overlay with endgame entries that are actually importable
+    for mid, info in catalog.items():
+        mod_name = _info_get(info, "module", "")
+        cls_name = _info_get(info, "class", "")
+        if mod_name and cls_name and _can_import(mod_name, cls_name):
+            validated[mid] = info
+
+    _catalog_cache[task_type] = validated
+    logger.info(f"Model catalog for {task_type}: {len(validated)} models available")
     return validated
 
 
-_MODEL_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "lr": {"max_iter": 1000},
-    "svm": {"max_iter": 2000},
-}
+def _info_get(info, key: str, default=""):
+    """Read a field from a catalog entry (dict or endgame ModelInfo).
+
+    ModelInfo uses ``class_path`` ('module.ClassName') instead of separate
+    ``module`` / ``class`` fields.  This helper transparently resolves both.
+    """
+    if isinstance(info, dict):
+        return info.get(key, default)
+
+    # Endgame ModelInfo: derive module/class from class_path
+    class_path = getattr(info, "class_path", "") or ""
+    if key == "module" and class_path:
+        return class_path.rsplit(".", 1)[0] if "." in class_path else default
+    if key == "class" and class_path:
+        return class_path.rsplit(".", 1)[-1] if "." in class_path else default
+    if key == "name":
+        return getattr(info, "display_name", "") or getattr(info, "name", default)
+    return getattr(info, key, default)
+
+
+# Conservative thread cap for fitted models. We deliberately do NOT use -1
+# (all cores) because joblib's loky backend copies the training data into
+# every worker — on wide PPMI feature matrices that quickly exhausts RAM.
+_MAX_MODEL_THREADS = 2
+
+
+class _SkipEndgame(Exception):
+    """Internal control-flow signal: skip the endgame fast-path and fall
+    through to the budgeted manual CV loop. Distinct from a real failure so
+    we don't log it as 'endgame unavailable'."""
+
+
+def _inject_thread_cap(cls, defaults: dict) -> dict:
+    """Inject conservative defaults that keep models honest on a desktop:
+
+    * Cap parallelism (``n_jobs`` / ``thread_count``) — joblib's loky backend
+      copies X into every worker, so unbounded parallelism is the dominant
+      RAM driver on wide PPMI matrices.
+    * Bump ``max_iter`` for solvers whose default (100) is too low for ~30k
+      rows × hundreds of features — otherwise every CV fold logs a noisy
+      ConvergenceWarning and ships a half-trained model.
+    * Quiet CatBoost, which is otherwise extremely chatty.
+
+    Caller kwargs always win — we only fill values the caller didn't set.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return defaults
+
+    if "n_jobs" in params and "n_jobs" not in defaults:
+        defaults["n_jobs"] = _MAX_MODEL_THREADS
+    if "thread_count" in params and "thread_count" not in defaults:
+        defaults["thread_count"] = _MAX_MODEL_THREADS
+
+    # Bump iteration budgets for iterative linear solvers. sklearn's defaults
+    # (100 for LR, 1000 for Ridge/SGD) are tuned for tiny demos.
+    _IGHIGH_ITER_CLASSES = {
+        "LogisticRegression", "LogisticRegressionCV",
+        "RidgeClassifier", "RidgeClassifierCV",
+        "Ridge", "Lasso", "ElasticNet",
+        "LinearRegression",  # noop — has no max_iter
+        "SGDClassifier", "SGDRegressor",
+    }
+    if (
+        "max_iter" in params
+        and "max_iter" not in defaults
+        and cls.__name__ in _IGHIGH_ITER_CLASSES
+    ):
+        defaults["max_iter"] = 2000
+
+    # CatBoost's verbosity defaults to chatty; quiet it when we own the call.
+    if "verbose" in params and "verbose" not in defaults and cls.__name__.startswith("CatBoost"):
+        defaults["verbose"] = False
+    return defaults
 
 
 def _instantiate_model(model_id: str, task_type: str = "classification", **kwargs):
@@ -226,10 +317,18 @@ def _instantiate_model(model_id: str, task_type: str = "classification", **kwarg
     if model_id not in catalog:
         raise ValueError(f"Unknown model_id '{model_id}'. Available: {list(catalog.keys())}")
     info = catalog[model_id]
-    mod = importlib.import_module(info["module"])
-    cls = getattr(mod, info["class"])
-    params = {**_MODEL_DEFAULTS.get(model_id, {}), **kwargs}
-    return cls(**params)
+    mod = importlib.import_module(_info_get(info, "module"))
+    cls = getattr(mod, _info_get(info, "class"))
+
+    # Use endgame default_params as base, let caller kwargs override
+    defaults = {}
+    if not isinstance(info, dict):
+        dp = getattr(info, "default_params", None)
+        if isinstance(dp, dict):
+            defaults = dp.copy()
+    defaults.update(kwargs)
+    defaults = _inject_thread_cap(cls, defaults)
+    return cls(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +413,10 @@ class Classifier:
         """
         logger.info("Setting up endgame classification experiment...")
 
+        # Metadata-only setup_params. The raw `data` / `test_data` frames are
+        # NOT stored here — they would otherwise pin the full dataset in RAM
+        # for the lifetime of the Classifier (in addition to _X_train/_X_test).
         self.setup_params = {
-            "data": data,
             "target": target,
             "session_id": session_id,
             "use_gpu": use_gpu,
@@ -338,9 +439,7 @@ class Classifier:
             "fold": fold,
             "fold_shuffle": fold_shuffle,
         }
-        if test_data is not None:
-            self.setup_params["test_data"] = test_data
-        else:
+        if test_data is None:
             self.setup_params["train_size"] = train_size
 
         self._target_name = target
@@ -350,8 +449,8 @@ class Classifier:
         ignore = set(ignore_features or [])
 
         if test_data is not None:
-            train_df = data.copy()
-            test_df = test_data.copy()
+            train_df = data
+            test_df = test_data
         else:
             train_df, test_df = train_test_split(
                 data, train_size=train_size, random_state=session_id,
@@ -372,13 +471,26 @@ class Classifier:
         self._col_rename_map = col_map  # keep for reverse mapping
 
         self._feature_names = feature_cols
+
+        # Slice once. df[list] returns a new DataFrame (not a view), so the
+        # caller's source can be GC'd as soon as they release their reference.
         self._X_train = train_df[feature_cols].copy()
         self._y_train = train_df[target].copy()
         self._X_test = test_df[feature_cols].copy()
         self._y_test = test_df[target].copy()
+        del train_df, test_df
+
+        # Strip pandas Categorical dtypes on the slim slices only — numpy
+        # cannot interpret them. Doing it here (rather than on the input)
+        # avoids mutating the caller's DataFrame.
+        for df in (self._X_train, self._X_test):
+            for col in df.columns:
+                if isinstance(df[col].dtype, pd.CategoricalDtype):
+                    df[col] = df[col].astype(df[col].cat.categories.dtype)
 
         # Encode target if needed for metric computation
-        if not np.issubdtype(self._y_train.dtype, np.number):
+        is_numeric = np.issubdtype(self._y_train.dtype, np.number)
+        if not is_numeric:
             self._label_encoder = LabelEncoder()
             self._label_encoder.fit(pd.concat([self._y_train, self._y_test]).unique().astype(str))
 
@@ -408,6 +520,7 @@ class Classifier:
         experiment_custom_tags: Optional[Dict[str, Any]] = None,
         engine: Optional[Dict[str, str]] = None,
         parallel: Optional[Any] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Union[Any, List[Any]]:
         """
         Compare multiple classification models and return the best one(s).
@@ -424,7 +537,17 @@ class Classifier:
         if include:
             model_ids = [m for m in include if m in catalog]
         else:
-            model_ids = list(catalog.keys())
+            # Use a fast, representative default set rather than all 70+ models.
+            # Users can pass include=list(catalog.keys()) for the full catalog.
+            _DEFAULT_COMPARE = [
+                "lr", "rf", "et", "gbc", "dt", "knn", "nb",
+                "ridge", "lda", "ada",
+                "xgb", "lgbm", "catboost",
+            ]
+            if turbo:
+                model_ids = [m for m in _DEFAULT_COMPARE if m in catalog]
+            else:
+                model_ids = list(catalog.keys())
             if exclude:
                 model_ids = [m for m in model_ids if m not in exclude]
 
@@ -439,20 +562,48 @@ class Classifier:
                 print(f"Time budget: {budget_time} minutes")
             print("=" * 60 + "\n")
 
-        # Try endgame quick.compare first
+        # Try endgame quick.compare first — but ONLY if (a) endgame is
+        # installed, AND (b) we either have no time budget or the installed
+        # signature exposes a way to honour one.  Older endgame releases run
+        # `compare()` to completion regardless of how long it takes; on a wide
+        # PPMI frame that means hours of CPU and gigabytes of resident worker
+        # copies even when the caller asked for a 30-minute budget.  In that
+        # case we skip straight to the manual loop, which respects the
+        # deadline check at the top of every model iteration.
         if ENDGAME_AVAILABLE:
             try:
-                result = quick_compare(
-                    self._X_train, self._y_train,
-                    preset="default",
-                    cv_folds=n_folds,
-                    metric=sort.lower(),
-                )
-                # leaderboard is a list of dicts with 'model', 'score', 'fit_time'
-                lb = pd.DataFrame(result.leaderboard)
-                if "score" in lb.columns:
-                    lb = lb.rename(columns={"score": sort, "model": "Model"})
-                self.comparison_results = lb.round(round)
+                import inspect as _inspect
+                try:
+                    qc_params = set(_inspect.signature(quick_compare).parameters)
+                except (TypeError, ValueError):
+                    qc_params = set()
+
+                budget_supported = bool(qc_params & {"time_limit", "timeout", "max_time"})
+
+                if budget_time and not budget_supported:
+                    logger.info(
+                        "endgame quick.compare doesn't support a time budget in this release; "
+                        "using the budgeted manual loop instead."
+                    )
+                    raise _SkipEndgame()
+
+                candidate_kwargs = {
+                    "preset": "default",
+                    "cv_folds": n_folds,
+                    "cv": n_folds,  # alias for older releases
+                    "metric": sort.lower(),
+                    "time_limit": int(budget_time * 60) if budget_time else None,
+                    "timeout": int(budget_time * 60) if budget_time else None,
+                    "max_time": int(budget_time * 60) if budget_time else None,
+                    "verbose": verbose,
+                }
+                accepted = {
+                    k: v for k, v in candidate_kwargs.items()
+                    if (not qc_params or k in qc_params) and v is not None
+                }
+
+                result = quick_compare(self._X_train, self._y_train, **accepted)
+                self.comparison_results = pd.DataFrame(result.leaderboard).round(round)
                 self.best_model = result.best_model
 
                 # Store all result models for later use
@@ -465,57 +616,104 @@ class Classifier:
                     self.best_model = top[0]
                     return top
                 return self.best_model
+            except _SkipEndgame:
+                pass
             except Exception as exc:
                 logger.info(f"endgame quick.compare unavailable ({exc}), falling back to manual loop")
 
-        # Manual fallback: loop over catalog, cross-validate each
+        # Manual fallback: loop over catalog, cross-validate each.
+        #
+        # Memory note: only CV metrics are retained per model. Full-data refits
+        # happen exactly once at the end, for the winner(s) — not per model.
+        import gc as _gc
         import time as _time
         deadline = _time.time() + budget_time * 60 if budget_time else float("inf")
         skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=self._random_state)
 
         y_enc = self._encode_target(self._y_train)
         rows: List[Dict[str, Any]] = []
+        ranked_ids: List[str] = []  # successful models, in evaluation order
 
-        # Prioritise GBDTs and explainable models first, then the rest
-        _priority_order = [
-            # GBDTs (fast, high performance)
-            "xgb", "lgbm", "catboost",
-            # Explainable / interpretable models
-            "ebm", "rulefit", "mars", "gam",
-            # Tree ensembles
-            "rf", "et", "extra_trees", "rotation_forest", "gbc",
-            # sklearn staples
-            "lr", "linear", "logistic_se", "ridge", "lda",
-            "ada", "dt", "nb", "naive_bayes",
-        ]
-        def _model_sort_key(mid):
+        # Detect how many classes we're dealing with so we can auto-wrap
+        # binary-only estimators (SLIM, FasterRisk, GOSDT, GAM, CORELS) with
+        # OneVsRestClassifier. Without this, compare_models would silently
+        # skip every binary-only model the user selected.
+        try:
+            n_classes = int(pd.Series(y_enc).nunique())
+        except Exception:
+            n_classes = 2
+
+        # Known binary-only models. Source of truth is the `binary_only` flag
+        # on endgame's ModelInfo, but the workbench's vendored endgame copy
+        # may be older; this fallback set keeps multiclass working until the
+        # registry is resynced.
+        _BINARY_ONLY_MODELS = {"slim", "fasterrisk", "gosdt", "gam", "corels"}
+
+        def _wrap_if_binary_only(estimator, model_id):
+            if n_classes <= 2:
+                return estimator
+            info = catalog.get(model_id, {})
+            binary_only = _info_get(info, "binary_only", False) or model_id in _BINARY_ONLY_MODELS
+            if not binary_only:
+                return estimator
+            from sklearn.multiclass import OneVsRestClassifier
+            return OneVsRestClassifier(estimator)
+
+        logger.info(f"Evaluating {len(model_ids)} models with {n_folds}-fold CV on "
+                     f"{self._X_train.shape[0]:,} rows x {self._X_train.shape[1]} features...")
+
+        # Swallow callback failures so a broken UI hook can never take down CV.
+        def _emit(event: Dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
             try:
-                return _priority_order.index(mid)
-            except ValueError:
-                return len(_priority_order)  # everything else comes after
-        model_ids = sorted(model_ids, key=_model_sort_key)
+                progress_callback(event)
+            except Exception as cb_exc:
+                logger.debug("progress_callback raised: %s", cb_exc)
 
-        for model_id in model_ids:
+        _emit({
+            "phase": "compare_start",
+            "n_models": len(model_ids),
+            "n_folds": n_folds,
+            "n_rows": int(self._X_train.shape[0]),
+            "n_features": int(self._X_train.shape[1]),
+        })
+
+        for i, model_id in enumerate(model_ids):
             if _time.time() > deadline:
                 logger.info("Time budget exhausted, stopping model comparison.")
+                _emit({"phase": "budget_exhausted", "completed_models": i})
                 break
+            model_name = _info_get(catalog.get(model_id, {}), "name", model_id)
             try:
-                model_name = catalog[model_id]["name"]
-                if verbose:
-                    elapsed = (_time.time() - (deadline - budget_time * 60)) / 60 if budget_time else 0
-                    remaining = (deadline - _time.time()) / 60 if budget_time else float("inf")
-                    print(f"  [{elapsed:.1f}m elapsed, {remaining:.1f}m remaining] Evaluating: {model_name} ({model_id})")
+                t0 = _time.time()
+                wrap_note = ""
+                _info_for_log = catalog.get(model_id, {})
+                if n_classes > 2 and (
+                    _info_get(_info_for_log, "binary_only", False)
+                    or model_id in _BINARY_ONLY_MODELS
+                ):
+                    wrap_note = f" [wrapped in OneVsRest for {n_classes}-class target]"
+                logger.info(f"  [{i+1}/{len(model_ids)}] {model_name} ({model_id}){wrap_note}...")
+                _emit({
+                    "phase": "model_start",
+                    "model_id": model_id,
+                    "model_name": model_name,
+                    "model_idx": i,
+                    "n_models": len(model_ids),
+                })
 
-                model_start = _time.time()
                 fold_metrics: List[Dict[str, float]] = []
-                budget_exceeded = False
-                for train_idx, val_idx in skf.split(self._X_train, y_enc):
-                    # Check budget before each fold
-                    if _time.time() > deadline:
-                        logger.info(f"Time budget exhausted during {model_id} CV, stopping.")
-                        budget_exceeded = True
-                        break
-
+                for fold_idx, (train_idx, val_idx) in enumerate(skf.split(self._X_train, y_enc)):
+                    _emit({
+                        "phase": "fold_start",
+                        "model_id": model_id,
+                        "model_name": model_name,
+                        "model_idx": i,
+                        "n_models": len(model_ids),
+                        "fold_idx": fold_idx,
+                        "n_folds": n_folds,
+                    })
                     Xtr = self._X_train.iloc[train_idx]
                     ytr = self._y_train.iloc[train_idx]
                     Xval = self._X_train.iloc[val_idx]
@@ -525,6 +723,7 @@ class Classifier:
                     yval_enc = self._encode_target(yval)
 
                     model_clone = _instantiate_model(model_id, self._task_type)
+                    model_clone = _wrap_if_binary_only(model_clone, model_id)
                     model_clone.fit(Xtr, ytr_enc)
                     preds = model_clone.predict(Xval)
 
@@ -537,33 +736,41 @@ class Classifier:
 
                     fold_metrics.append(_compute_metrics(yval_enc, preds, proba))
 
-                if budget_exceeded and not fold_metrics:
-                    break  # no folds completed, stop entirely
-                if budget_exceeded:
-                    logger.info(f"Using partial CV results ({len(fold_metrics)}/{n_folds} folds) for {model_id}")
+                    # Free the fold model + slices before the next fold
+                    del model_clone, Xtr, ytr, Xval, yval, ytr_enc, yval_enc, preds, proba
+                _gc.collect()
 
+                elapsed = _time.time() - t0
                 mean_metrics = {
                     k: np.round(np.mean([fm[k] for fm in fold_metrics]), round)
                     for k in fold_metrics[0]
                 }
                 mean_metrics["Model"] = model_name
-                model_time = _time.time() - model_start
-                mean_metrics["TT (Sec)"] = np.round(model_time, 2)
                 rows.append(mean_metrics)
-                if verbose:
-                    print(f"    -> {sort}: {mean_metrics.get(sort, 'N/A')} ({model_time:.1f}s)")
-
-                # Train a full model on all training data for later use
-                full_model = _instantiate_model(model_id, self._task_type)
-                full_model.fit(self._X_train, self._encode_target(self._y_train))
-                self.models_dict[model_id] = full_model
-
-                if budget_exceeded:
-                    break
+                ranked_ids.append(model_id)
+                logger.info(f"  [{i+1}/{len(model_ids)}] {model_name}: "
+                            f"Accuracy={mean_metrics.get('Accuracy', '?')} ({elapsed:.1f}s)")
+                _emit({
+                    "phase": "model_done",
+                    "model_id": model_id,
+                    "model_name": model_name,
+                    "model_idx": i,
+                    "n_models": len(model_ids),
+                    "elapsed_seconds": float(elapsed),
+                    "metrics": {k: float(v) for k, v in mean_metrics.items() if k != "Model"},
+                })
 
             except Exception as exc:
                 if errors == "ignore":
                     logger.warning(f"Model {model_id} failed: {exc}")
+                    _emit({
+                        "phase": "model_failed",
+                        "model_id": model_id,
+                        "model_name": model_name,
+                        "model_idx": i,
+                        "n_models": len(model_ids),
+                        "error": str(exc),
+                    })
                 else:
                     raise
 
@@ -577,29 +784,44 @@ class Classifier:
         leaderboard = leaderboard.sort_values(sort, ascending=False).reset_index(drop=True)
         self.comparison_results = leaderboard
 
-        # Select top model(s)
-        top_model_name = leaderboard.iloc[0]["Model"]
-        top_model_id = next(
-            (mid for mid, info in catalog.items() if info["name"] == top_model_name),
-            None,
-        )
-        self.best_model = self.models_dict.get(top_model_id)
+        # Map ranked names back to model_ids using their leaderboard order
+        name_to_id = {
+            _info_get(catalog.get(mid, {}), "name", mid): mid
+            for mid in ranked_ids
+        }
+        ordered_ids = [name_to_id[row_name] for row_name in leaderboard["Model"].tolist()
+                       if row_name in name_to_id]
 
+        top_model_name = leaderboard.iloc[0]["Model"]
         if verbose:
             print(f"\n{'=' * 60}")
             print(f"BEST MODEL: {top_model_name}")
             print(f"{'=' * 60}\n")
 
-        if n_select > 1:
-            selected = []
-            for i in range(min(n_select, len(leaderboard))):
-                name = leaderboard.iloc[i]["Model"]
-                mid = next((m for m, info in catalog.items() if info["name"] == name), None)
-                if mid and mid in self.models_dict:
-                    selected.append(self.models_dict[mid])
-            self.best_model = selected[0] if selected else self.best_model
-            return selected
+        # Refit ONLY the selected model(s) on the full training set.
+        # Previously every compared model was refit and retained in models_dict,
+        # which kept dozens of fully-trained estimators in RAM at once.
+        n_to_refit = max(1, min(n_select, len(ordered_ids)))
+        y_train_enc = self._encode_target(self._y_train)
+        selected: List[Any] = []
+        for mid in ordered_ids[:n_to_refit]:
+            try:
+                full_model = _instantiate_model(mid, self._task_type)
+                full_model = _wrap_if_binary_only(full_model, mid)
+                full_model.fit(self._X_train, y_train_enc)
+                self.models_dict[mid] = full_model
+                selected.append(full_model)
+            except Exception as exc:
+                logger.warning(f"Final refit of {mid} failed: {exc}")
 
+        if not selected:
+            raise RuntimeError("No models could be refit on the full training set")
+
+        self.best_model = selected[0]
+        _gc.collect()
+
+        if n_select > 1:
+            return selected
         return self.best_model
 
     def create_model(
@@ -698,7 +920,9 @@ class Classifier:
             cv=StratifiedKFold(n_splits=fold or self._fold, shuffle=True, random_state=self._random_state),
             scoring="accuracy" if optimize == "Accuracy" else optimize.lower(),
             random_state=self._random_state,
-            n_jobs=-1,
+            # Capped (not -1): loky workers each receive a copy of X_train, so
+            # n_jobs * sizeof(X_train) is the real RAM ceiling here.
+            n_jobs=_MAX_MODEL_THREADS,
             verbose=1 if verbose else 0,
         )
         search.fit(self._X_train, self._encode_target(self._y_train))
@@ -811,7 +1035,7 @@ class Classifier:
     def get_available_models(self) -> pd.DataFrame:
         """Return a DataFrame of all available models."""
         catalog = get_model_catalog(self._task_type)
-        rows = [{"ID": mid, "Name": info.get("name", mid)} for mid, info in catalog.items()]
+        rows = [{"ID": mid, "Name": _info_get(info, "name", mid)} for mid, info in catalog.items()]
         return pd.DataFrame(rows).set_index("ID")
 
     # ------------------------------------------------------------------
@@ -883,32 +1107,50 @@ class Classifier:
             raise ImportError("endgame-ml is required. pip install endgame-ml[tabular]")
         self._require_setup()
 
+        # Preserve (name, estimator) pairs — SuperLearner requires them, and
+        # they make logs/introspection far more useful for the other methods too.
         if base_models is None:
-            base_models = list(self.models_dict.values())
-        if not base_models:
+            named_models: List[tuple] = list(self.models_dict.items())
+        else:
+            named_models = [
+                (getattr(m, "__class__").__name__ + f"_{i}", m)
+                for i, m in enumerate(base_models)
+            ]
+        if not named_models:
             raise ValueError("No base models provided or available.")
+        bare_models = [m for _, m in named_models]
 
         method_lower = method.lower().replace(" ", "_")
+        y_train_enc = self._encode_target(self._y_train)
 
         if method_lower == "super_learner":
-            ensemble = SuperLearner(base_models=base_models, **kwargs)
+            ensemble = SuperLearner(base_estimators=named_models, **kwargs)
+            ensemble.fit(self._X_train, y_train_enc)
         elif method_lower == "bma":
+            # BMA uses information-criterion weights over *already fitted*
+            # estimators, scored on a held-out validation set. We re-use the
+            # test split as the validation set here since no separate val
+            # split is wired through.
             from endgame.ensemble import BayesianModelAveraging
-            ensemble = BayesianModelAveraging(base_models=base_models, **kwargs)
+            ensemble = BayesianModelAveraging(**kwargs)
+            X_val = self._X_test if self._X_test is not None else self._X_train
+            y_val_src = self._y_test if self._y_test is not None else self._y_train
+            ensemble.fit(bare_models, X_val, self._encode_target(y_val_src))
         elif method_lower == "blending":
             from endgame.ensemble import BlendingEnsemble
-            ensemble = BlendingEnsemble(base_models=base_models, **kwargs)
+            ensemble = BlendingEnsemble(base_estimators=bare_models, **kwargs)
+            ensemble.fit(self._X_train, y_train_enc)
         else:
             from sklearn.ensemble import BaggingClassifier, AdaBoostClassifier
             if method_lower == "bagging":
-                ensemble = BaggingClassifier(estimator=base_models[0], **kwargs)
+                ensemble = BaggingClassifier(estimator=bare_models[0], **kwargs)
             elif method_lower == "boosting":
-                ensemble = AdaBoostClassifier(estimator=base_models[0], **kwargs)
+                ensemble = AdaBoostClassifier(estimator=bare_models[0], **kwargs)
             else:
                 raise ValueError(f"Unknown ensemble method: {method}")
+            ensemble.fit(self._X_train, y_train_enc)
 
-        ensemble.fit(self._X_train, self._encode_target(self._y_train))
-        logger.info(f"Ensemble ({method}) created and trained.")
+        logger.info(f"Ensemble ({method}) created and trained over {len(named_models)} base models.")
         return ensemble
 
     def calibrate_model(
@@ -988,7 +1230,7 @@ class Classifier:
         train_data = train_data if train_data is not None else self._X_train
         test_data = test_data if test_data is not None else self._X_test
         validator = AdversarialValidator()
-        return validator.validate(train_data, test_data)
+        return validator.check_drift(train_data, test_data)
 
     def generate_report(
         self,
@@ -1013,6 +1255,20 @@ class Classifier:
 
         if ENDGAME_AVAILABLE:
             try:
+                # Resolve human-readable class labels.  We pass label-encoded
+                # integers to endgame (the model was trained on them, so its
+                # `classes_` attribute is [0, 1, 2, ...]), which means without
+                # an explicit `class_names=` the report renders confusion
+                # matrices / ROC legends / per-class tables as "0" / "1" /
+                # "2" instead of the actual target values ("PD" / "HC" / ...).
+                if kwargs.get("class_names") is None and self._label_encoder is not None:
+                    try:
+                        kwargs["class_names"] = [str(c) for c in self._label_encoder.classes_]
+                    except Exception:
+                        pass
+                if kwargs.get("feature_names") is None and hasattr(X_test, "columns"):
+                    kwargs["feature_names"] = [str(c) for c in X_test.columns]
+
                 report = EndgameClassificationReport(
                     estimator, X_test, self._encode_target(y_test), **kwargs
                 )

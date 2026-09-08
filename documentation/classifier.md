@@ -92,7 +92,7 @@ For advanced users who need more granular control, the `Classifier` class in `pi
 
 ### Key Methods
 
--   **`setup_experiment(...)`**: Initializes the PyCaret environment. This **must** be called before any other method. It handles data splitting, preprocessing, and experiment logging setup.
+-   **`setup_experiment(...)`**: Initializes the underlying `endgame-ml` experiment. This **must** be called before any other method. It handles data splitting, preprocessing, and experiment logging setup.
 -   **`compare_models(...)`**: Trains and evaluates a pool of models, returning a leaderboard of the results.
 -   **`create_model(...)`**: Creates and trains a single specified model (e.g., `'rf'` for Random Forest).
 -   **`tune_model(...)`**: Performs hyperparameter tuning on a given model.
@@ -117,7 +117,7 @@ from pie.classifier import Classifier
 clf = Classifier()
 
 # 2. Set up the experiment
-# We provide both train and test data to PyCaret
+# We provide both train and test data to the underlying endgame-ml engine
 clf.setup_experiment(
     data=train_df,
     test_data=test_df,
