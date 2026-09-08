@@ -133,14 +133,24 @@ def _generate_feature_selection_report_html(report_data, output_html_path):
 # --- PIPELINE STEPS ---
 
 @timing_decorator
-def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_path: Path, modalities: Optional[List[str]] = None) -> dict:
-    """Loads, reduces, merges, and consolidates data."""
+def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_path: Path, modalities: Optional[List[str]] = None, imaging_features: Optional[str] = None) -> dict:
+    """Loads, reduces, merges, and consolidates data.
+
+    ``imaging_features`` is an optional CSV keyed by PATNO/EVENT_ID (e.g. the
+    ``fastsurfer_idps.csv`` produced by ``pie.imaging.run``); it joins the tabular
+    modalities as the ``imaging`` modality.
+    """
     logger.info("Starting data loading and reduction step...")
     if not os.path.exists(data_dir):
         logger.error(f"Data directory not found: {data_dir}. Step cannot proceed.")
         raise FileNotFoundError(f"Data directory not found: {data_dir}")
 
     data_dict = DataLoader.load(data_path=data_dir, merge_output=False, modalities=modalities)
+    if imaging_features:
+        img = pd.read_csv(imaging_features)
+        img = img[[c for c in img.columns if c not in ("IMAGEID", "SCAN_DATE") and not img[c].dtype == object] + ["EVENT_ID"]]
+        data_dict["imaging"] = img
+        logger.info(f"Added imaging features {img.shape} from {imaging_features}")
     initial_size_mb = _calculate_dict_size(data_dict)
     initial_summary = _get_dict_summary(data_dict)
 
@@ -488,7 +498,8 @@ def run_pipeline(
     tune_best_model: bool = False,
     generate_plots: bool = True,
     budget_time_minutes: float = 30.0,
-    skip_to_step: Optional[str] = None
+    skip_to_step: Optional[str] = None,
+    imaging_features: Optional[str] = None
 ):
     """Executes the full PIE pipeline."""
     output_path = Path(output_dir)
@@ -510,7 +521,8 @@ def run_pipeline(
             data_dir,
             output_csv_path=reduced_csv,
             output_html_path=output_path / "data_reduction_report.html",
-            modalities=modalities if modalities else ALL_MODALITIES
+            modalities=modalities if modalities else ALL_MODALITIES,
+            imaging_features=imaging_features
         )
     
     # --- 2. Feature Engineering ---
@@ -599,6 +611,7 @@ if __name__ == "__main__":
     parser.add_argument('--target-column', type=str, default='COHORT', help='Name of the target variable.')
     parser.add_argument('--leakage-features-path', type=str, default='config/leakage_features.txt', help='Path to a file containing features to exclude to prevent data leakage.')
     parser.add_argument('--modalities', type=str, default='', help='Comma/space-separated list of modalities to include. Default: all. Options: subject_characteristics, medical_history, motor_assessments, non_motor_assessments, biospecimen')
+    parser.add_argument('--imaging-features', type=str, default=None, help='Optional CSV of imaging-derived phenotypes keyed by PATNO/EVENT_ID (see pie/imaging/run.py) to add as the "imaging" modality.')
     
     # Feature Selection Params
     parser.add_argument('--fs-method', type=str, default='fdr', help="Feature selection method ('fdr' or 'k_best').")
@@ -642,5 +655,6 @@ if __name__ == "__main__":
         tune_best_model=args.tune,
         generate_plots=args.plots,
         budget_time_minutes=args.budget,
-        skip_to_step=args.skip_to
+        skip_to_step=args.skip_to,
+        imaging_features=args.imaging_features
     )

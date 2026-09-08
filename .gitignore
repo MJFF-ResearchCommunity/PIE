@@ -180,3 +180,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# imaging layer (see documentation/imaging.md)
+venv_imaging/
+third_party/
+# pipeline outputs and run bookkeeping: derived data lives under Imaging/derived (ignored above)
+pie_output*/
+*.pid
+nilearn_data/
+*.nii
+*.nii.gz
+*.mgz
+*.dcm

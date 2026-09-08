@@ -116,8 +116,16 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
         try:
             from endgame.automl import list_models, get_model_info
             for model_id in list_models(task_type=task_type):
-                info = get_model_info(model_id)
-                catalog[model_id] = info
+                mi = get_model_info(model_id)
+                # Convert ModelInfo to the dict schema used by the rest of the code
+                class_path = getattr(mi, "class_path", "")
+                parts = class_path.rsplit(".", 1) if class_path else ["", ""]
+                catalog[model_id] = {
+                    "name": getattr(mi, "display_name", model_id),
+                    "module": parts[0] if len(parts) == 2 else "",
+                    "class": parts[1] if len(parts) == 2 else "",
+                    "_model_info": mi,  # keep original for advanced use
+                }
             logger.info(f"Loaded {len(catalog)} models from endgame registry for {task_type}")
         except Exception as exc:
             logger.warning(f"Could not load endgame model registry: {exc}")
@@ -204,6 +212,12 @@ def get_model_catalog(task_type: str = "classification") -> Dict[str, Dict[str, 
     return validated
 
 
+_MODEL_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "lr": {"max_iter": 1000},
+    "svm": {"max_iter": 2000},
+}
+
+
 def _instantiate_model(model_id: str, task_type: str = "classification", **kwargs):
     """Instantiate a model from the catalog by *model_id*."""
     import importlib
@@ -214,7 +228,8 @@ def _instantiate_model(model_id: str, task_type: str = "classification", **kwarg
     info = catalog[model_id]
     mod = importlib.import_module(info["module"])
     cls = getattr(mod, info["class"])
-    return cls(**kwargs)
+    params = {**_MODEL_DEFAULTS.get(model_id, {}), **kwargs}
+    return cls(**params)
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +359,18 @@ class Classifier:
             )
 
         feature_cols = [c for c in train_df.columns if c != target and c not in ignore]
+
+        # Sanitize column names: replace chars that break LightGBM/JSON
+        import re
+        _sanitize = lambda c: re.sub(r'[^A-Za-z0-9_]', '_', c)
+        col_map = {c: _sanitize(c) for c in feature_cols if c != _sanitize(c)}
+        if col_map:
+            train_df = train_df.rename(columns=col_map)
+            test_df = test_df.rename(columns=col_map)
+            feature_cols = [col_map.get(c, c) for c in feature_cols]
+            logger.info(f"Sanitized {len(col_map)} column names with special characters")
+        self._col_rename_map = col_map  # keep for reverse mapping
+
         self._feature_names = feature_cols
         self._X_train = train_df[feature_cols].copy()
         self._y_train = train_df[target].copy()
@@ -417,15 +444,24 @@ class Classifier:
             try:
                 result = quick_compare(
                     self._X_train, self._y_train,
-                    preset="competition",
-                    cv=n_folds,
+                    preset="default",
+                    cv_folds=n_folds,
                     metric=sort.lower(),
-                    time_limit=int(budget_time * 60) if budget_time else None,
                 )
-                self.comparison_results = pd.DataFrame(result.leaderboard).round(round)
+                # leaderboard is a list of dicts with 'model', 'score', 'fit_time'
+                lb = pd.DataFrame(result.leaderboard)
+                if "score" in lb.columns:
+                    lb = lb.rename(columns={"score": sort, "model": "Model"})
+                self.comparison_results = lb.round(round)
                 self.best_model = result.best_model
-                if n_select > 1 and hasattr(result, "top_models"):
-                    top = result.top_models(n_select)
+
+                # Store all result models for later use
+                if hasattr(result, "results"):
+                    for mr in result.results:
+                        self.models_dict[mr.name] = mr.model
+
+                if n_select > 1 and hasattr(result, "results"):
+                    top = [mr.model for mr in result.results[:n_select]]
                     self.best_model = top[0]
                     return top
                 return self.best_model
@@ -440,17 +476,46 @@ class Classifier:
         y_enc = self._encode_target(self._y_train)
         rows: List[Dict[str, Any]] = []
 
+        # Prioritise GBDTs and explainable models first, then the rest
+        _priority_order = [
+            # GBDTs (fast, high performance)
+            "xgb", "lgbm", "catboost",
+            # Explainable / interpretable models
+            "ebm", "rulefit", "mars", "gam",
+            # Tree ensembles
+            "rf", "et", "extra_trees", "rotation_forest", "gbc",
+            # sklearn staples
+            "lr", "linear", "logistic_se", "ridge", "lda",
+            "ada", "dt", "nb", "naive_bayes",
+        ]
+        def _model_sort_key(mid):
+            try:
+                return _priority_order.index(mid)
+            except ValueError:
+                return len(_priority_order)  # everything else comes after
+        model_ids = sorted(model_ids, key=_model_sort_key)
+
         for model_id in model_ids:
             if _time.time() > deadline:
                 logger.info("Time budget exhausted, stopping model comparison.")
                 break
             try:
-                model = _instantiate_model(model_id, self._task_type)
+                model_name = catalog[model_id]["name"]
                 if verbose:
-                    print(f"  Evaluating: {catalog[model_id]['name']} ({model_id})")
+                    elapsed = (_time.time() - (deadline - budget_time * 60)) / 60 if budget_time else 0
+                    remaining = (deadline - _time.time()) / 60 if budget_time else float("inf")
+                    print(f"  [{elapsed:.1f}m elapsed, {remaining:.1f}m remaining] Evaluating: {model_name} ({model_id})")
 
+                model_start = _time.time()
                 fold_metrics: List[Dict[str, float]] = []
+                budget_exceeded = False
                 for train_idx, val_idx in skf.split(self._X_train, y_enc):
+                    # Check budget before each fold
+                    if _time.time() > deadline:
+                        logger.info(f"Time budget exhausted during {model_id} CV, stopping.")
+                        budget_exceeded = True
+                        break
+
                     Xtr = self._X_train.iloc[train_idx]
                     ytr = self._y_train.iloc[train_idx]
                     Xval = self._X_train.iloc[val_idx]
@@ -472,17 +537,29 @@ class Classifier:
 
                     fold_metrics.append(_compute_metrics(yval_enc, preds, proba))
 
+                if budget_exceeded and not fold_metrics:
+                    break  # no folds completed, stop entirely
+                if budget_exceeded:
+                    logger.info(f"Using partial CV results ({len(fold_metrics)}/{n_folds} folds) for {model_id}")
+
                 mean_metrics = {
                     k: np.round(np.mean([fm[k] for fm in fold_metrics]), round)
                     for k in fold_metrics[0]
                 }
-                mean_metrics["Model"] = catalog[model_id]["name"]
+                mean_metrics["Model"] = model_name
+                model_time = _time.time() - model_start
+                mean_metrics["TT (Sec)"] = np.round(model_time, 2)
                 rows.append(mean_metrics)
+                if verbose:
+                    print(f"    -> {sort}: {mean_metrics.get(sort, 'N/A')} ({model_time:.1f}s)")
 
                 # Train a full model on all training data for later use
                 full_model = _instantiate_model(model_id, self._task_type)
                 full_model.fit(self._X_train, self._encode_target(self._y_train))
                 self.models_dict[model_id] = full_model
+
+                if budget_exceeded:
+                    break
 
             except Exception as exc:
                 if errors == "ignore":
@@ -1076,50 +1153,71 @@ class Classifier:
 
     @staticmethod
     def _default_param_grid(estimator) -> dict:
-        """Return a reasonable random-search grid for common estimators."""
+        """Return a lightweight random-search grid for common estimators.
+
+        Grids are intentionally small to keep tuning fast (< 5 min on
+        medium datasets).  For endgame GBDT wrappers we tune only the
+        parameters that matter most and keep n_estimators fixed (early
+        stopping handles that).
+        """
         name = type(estimator).__name__.lower()
+
+        # Endgame GBDT wrappers — tune learning rate & regularisation,
+        # leave n_estimators to early stopping
+        if "lgbmwrapper" in name:
+            return {
+                "learning_rate": [0.01, 0.05, 0.1],
+                "num_leaves": [31, 63, 127],
+                "min_child_samples": [5, 20, 50],
+            }
+        if "xgbwrapper" in name:
+            return {
+                "learning_rate": [0.01, 0.05, 0.1],
+                "max_depth": [4, 6, 8],
+                "subsample": [0.7, 0.8, 1.0],
+            }
+        if "catboostwrapper" in name:
+            return {
+                "learning_rate": [0.01, 0.05, 0.1],
+                "depth": [4, 6, 8],
+            }
+
+        # Standard sklearn / third-party models
         if "randomforest" in name or "extratrees" in name:
             return {
-                "n_estimators": [50, 100, 200, 500],
-                "max_depth": [None, 5, 10, 20, 30],
-                "min_samples_split": [2, 5, 10],
+                "n_estimators": [100, 200],
+                "max_depth": [None, 10, 20],
                 "min_samples_leaf": [1, 2, 4],
             }
         if "gradientboosting" in name:
             return {
-                "n_estimators": [50, 100, 200],
+                "n_estimators": [100, 200],
                 "max_depth": [3, 5, 7],
-                "learning_rate": [0.01, 0.05, 0.1, 0.2],
-                "subsample": [0.7, 0.8, 0.9, 1.0],
+                "learning_rate": [0.05, 0.1, 0.2],
             }
         if "xgb" in name:
             return {
-                "n_estimators": [50, 100, 200, 500],
-                "max_depth": [3, 5, 7, 9],
-                "learning_rate": [0.01, 0.05, 0.1, 0.2],
-                "subsample": [0.7, 0.8, 0.9],
-                "colsample_bytree": [0.7, 0.8, 0.9],
+                "n_estimators": [100, 200],
+                "max_depth": [4, 6, 8],
+                "learning_rate": [0.05, 0.1],
             }
         if "lgbm" in name or "lightgbm" in name:
             return {
-                "n_estimators": [50, 100, 200, 500],
-                "max_depth": [-1, 5, 10, 20],
-                "learning_rate": [0.01, 0.05, 0.1],
-                "num_leaves": [31, 50, 100],
-                "subsample": [0.7, 0.8, 0.9],
+                "n_estimators": [100, 200],
+                "num_leaves": [31, 63],
+                "learning_rate": [0.05, 0.1],
             }
         if "catboost" in name:
             return {
-                "iterations": [100, 200, 500],
-                "depth": [4, 6, 8, 10],
-                "learning_rate": [0.01, 0.05, 0.1],
+                "iterations": [100, 200],
+                "depth": [4, 6, 8],
+                "learning_rate": [0.05, 0.1],
             }
         if "logistic" in name:
             return {
-                "C": [0.001, 0.01, 0.1, 1, 10, 100],
+                "C": [0.01, 0.1, 1, 10],
                 "penalty": ["l2"],
-                "solver": ["lbfgs", "saga"],
-                "max_iter": [200, 500, 1000],
+                "max_iter": [500],
             }
         if "svc" in name or "svm" in name:
             return {
