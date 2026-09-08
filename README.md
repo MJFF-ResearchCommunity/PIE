@@ -167,6 +167,15 @@ pytest tests/test_pipeline.py
 ```
 This test will create its own output in `output/test_pipeline_run` and check that all expected files are generated and that data leakage prevention is working.
 
+## Imaging Data (raw MRI from LONI)
+PIE can now ingest the raw PPMI MRI downloads (zipped DICOM) and turn them into imaging-derived
+phenotypes (regional brain volumes from FastSurfer) keyed by `PATNO`/`EVENT_ID`, plus
+session-aligned DaTscan and CSF SAA labels, can reconstruct raw DaTscan SPECT projections into
+striatal binding ratios (`pie/imaging/datscan.py`), and turns diffusion MRI into nigral free-water and tensor
+features (`pie/imaging/dwi.py`). See [**Imaging layer**](documentation/imaging.md);
+setup with `bash scripts/setup_imaging.sh`, run with `python -m pie.imaging.run ...`, and pass
+the resulting table to the pipeline with `--imaging-features`.
+
 ## Deeper Dive: Understanding the Modules
 While the main pipeline is the recommended entry point, PIE is composed of modular components. You can learn more about each one in the detailed documentation:
 - [**Data Loaders**](documentation/data_loader.md)
@@ -175,6 +184,7 @@ While the main pipeline is the recommended entry point, PIE is composed of modul
 - [**Feature Engineer**](documentation/feature_engineer.md)
 - [**Feature Selector**](documentation/feature_selector.md)
 - [**Classifier & Reporting**](documentation/classifier.md)
+- [**Imaging layer**](documentation/imaging.md)
 
 ## Contributing
 Contributions are welcome! Please follow these steps:
