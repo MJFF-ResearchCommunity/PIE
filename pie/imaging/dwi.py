@@ -115,6 +115,51 @@ def assemble(runs):
 
 
 # ------------------------------------------------------------------------------------------ preprocess / fit
+def denoise_dwi(ds, work_dir=None):
+    """Marchenko-Pastur PCA denoising then Gibbs-ringing removal on the raw volumes, before any interpolation.
+    MRtrix3's dwidenoise / mrdegibbs are used when on PATH (brain-masked, 5^3 patch, 4 threads: a few minutes per
+    subject); otherwise DIPY's mppca and gibbs_removal (the same methods; ~4 + 9 min per three-shell subject). Lowers the noise floor that biases
+    the free-water fit (most of all the single-shell one). Returns the dataset with denoised data."""
+    if shutil.which("dwidenoise") and shutil.which("mrdegibbs") and work_dir:
+        from dipy.segment.mask import median_otsu
+
+        work = Path(work_dir) / "denoise"
+        work.mkdir(parents=True, exist_ok=True)
+        nib.save(nib.Nifti1Image(ds["data"], ds["affine"]), work / "raw.nii.gz")
+        # a dilated brain mask halves the work, and the patch is capped at 5^3: MRtrix's default (the smallest patch with
+        # more voxels than volumes) reaches 7^3 for the 200-volume three-shell data and then costs ~2 CPU-hours per subject
+        _, mask = median_otsu(ds["data"][..., ds["bvals"] <= 50].mean(axis=3), median_radius=3, numpass=2)
+        nib.save(nib.Nifti1Image(ndimage.binary_dilation(mask, iterations=4).astype(np.uint8), ds["affine"]), work / "mask.nii.gz")
+        for cmd in (["dwidenoise", "raw.nii.gz", "dn.nii.gz", "-mask", "mask.nii.gz", "-extent", "5,5,5"], ["mrdegibbs", "dn.nii.gz", "dg.nii.gz"]):
+            r = subprocess.run(cmd + ["-force", "-quiet", "-nthreads", "4"], cwd=work, capture_output=True, text=True)
+            if r.returncode:
+                log.warning("%s failed: %s", cmd[0], r.stderr[-300:])
+                break
+        else:
+            data = np.asanyarray(nib.load(work / "dg.nii.gz").dataobj).astype(np.float32)
+            shutil.rmtree(work, ignore_errors=True)
+            return dict(ds, data=np.clip(data, 0, None), denoised=True)
+    from dipy.denoise.gibbs import gibbs_removal
+    from dipy.denoise.localpca import mppca
+    from dipy.segment.mask import median_otsu
+
+    _, mask = median_otsu(ds["data"][..., ds["bvals"] <= 50].mean(axis=3), median_radius=3, numpass=2)
+    mask = ndimage.binary_dilation(mask, iterations=3)
+    data = mppca(ds["data"], mask=mask, patch_radius=2)
+    data[~mask] = ds["data"][~mask]                     # mppca zeroes voxels outside the mask; keep the raw background
+    data = gibbs_removal(data, slice_axis=2, num_processes=1)
+    return dict(ds, data=np.clip(data, 0, None).astype(np.float32), denoised=True)
+
+
+def _crop_even(ds):
+    """Drop the last slice/row of every odd-sized axis: topup's b02b0.cnf subsamples by 2 and needs even dimensions."""
+    odd = [s % 2 for s in ds["data"].shape[:3]]
+    if not any(odd):
+        return ds
+    sl = tuple(slice(0, s - o) for s, o in zip(ds["data"].shape[:3], odd))
+    return dict(ds, data=ds["data"][sl], rev_b0=ds["rev_b0"][sl])
+
+
 FSLDIR = os.environ.get("FSLDIR") or (str(Path.home() / "fsl") if (Path.home() / "fsl" / "bin" / "topup").exists() else None)
 
 
@@ -127,6 +172,8 @@ def susceptibility_correct(ds, work_dir, threads=2):
     pe, trt = meta.get("PhaseEncodingDirection"), meta.get("TotalReadoutTime")
     if not FSLDIR or rev is None or not pe or not trt:
         return dict(ds, topup=False)
+    ds = _crop_even(ds)
+    rev = ds["rev_b0"]
     work = Path(work_dir) / "topup"
     work.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, FSLDIR=FSLDIR, PATH=f"{FSLDIR}/bin:" + os.environ.get("PATH", ""), FSLOUTPUTTYPE="NIFTI_GZ", OMP_NUM_THREADS=str(threads))
@@ -461,7 +508,7 @@ def features(maps, rois, min_voxels=3):
 
 
 # ------------------------------------------------------------------------------------------ per-subject driver
-def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False):
+def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False):
     """All steps for one subject. Returns a flat dict (features + QC)."""
     import SimpleITK as sitk
 
@@ -472,7 +519,9 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     for r in series_rows:
         runs += convert(r["zip"], r["prefix"], work / "nii")
     ds = assemble(runs)
-    row = {"patno": patno, "n_series": len(series_rows), "n_runs_used": ds["n_runs"], "n_volumes": int(ds["data"].shape[3]),
+    if denoise:
+        ds = denoise_dwi(ds, work)
+    row = {"patno": patno, "denoised": bool(ds.get("denoised", False)), "n_series": len(series_rows), "n_runs_used": ds["n_runs"], "n_volumes": int(ds["data"].shape[3]),
            "shells": " ".join(map(str, ds["shells"])), "voxel_mm": float(np.round(np.abs(np.diag(ds["affine"])[:3]).mean(), 2)),
            "manufacturer": str(ds["meta"].get("Manufacturer", "")), "model": str(ds["meta"].get("ManufacturerModelName", "")),
            "pe_direction": str(ds["meta"].get("PhaseEncodingDirection", "")), "readout_s": ds["meta"].get("TotalReadoutTime", np.nan),
@@ -518,15 +567,14 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
         nib.save(nib.Nifti1Image(np.transpose(pauli_lab, (2, 1, 0)).astype(np.int16), ds["affine"]), work / "pauli_dwi.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(fs_lab, (2, 1, 0)).astype(np.int16), ds["affine"]), work / "aseg_dwi.nii.gz")
         nib.save(b0_img, work / "b0.nii.gz")
-    else:
-        shutil.rmtree(work / "nii", ignore_errors=True)
+    shutil.rmtree(work / "nii", ignore_errors=True)     # raw conversions (~130 MB/subject) are reproducible from the zips
     return row
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep, fsl = args
+    patno, rows, fs_dir, work_dir, keep, fsl, denoise = args
     try:
-        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl)
+        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl, denoise=denoise)
         out["error"] = ""
     except Exception as e:  # keep the batch going
         out = {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -544,6 +592,7 @@ def main(argv=None):
 
     ap = add_common_args(argparse.ArgumentParser())
     ap.add_argument("--fsl", action="store_true", help="FSL topup/applytopup susceptibility correction where a reverse-phase b0 exists")
+    ap.add_argument("--denoise", action="store_true", help="MP-PCA denoising + Gibbs-ringing removal (DIPY) before motion correction")
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -552,7 +601,7 @@ def main(argv=None):
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
     out_csv = work / "dwi_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl)
+    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, pid_file=a.pid_file)
 

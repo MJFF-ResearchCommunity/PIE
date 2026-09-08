@@ -88,6 +88,10 @@ components, using the subject's own FastSurfer segmentation as the ROI atlas:
 4. `quantify` — mean counts in caudate/putamen (left/right) and occipital cortex (cuneus, lateral occipital,
    lingual, pericalcarine) from the DKT labels resampled into SPECT space, after a +-2-voxel translation
    search maximising striatal counts (mimics hottest-region ROI placement); SBR = target/occipital - 1.
+   Each striatal ROI is also split into anterior / posterior halves along the T1's anterior axis
+   (`sbr_putamen_l_post` etc.; the posterior putamen loses dopamine transporter first), and a second SBR set
+   (`sbrwm_*`) uses cerebral white matter at least 15 mm from the striatum as the reference (after the
+   MJFF Research Community DaT pipeline, which references the superior longitudinal fasciculus).
 
 ```bash
 venv_imaging/bin/python -m pie.imaging.datscan --index Imaging/derived/spect_index.csv \
@@ -100,7 +104,9 @@ absolute values sit below PPMI's; the study code calibrates PIE SBRs against PPM
 vendor on the cohorts that have them and applies the mapping to the others (prodromal). QC fields:
 `reg_metric` (negative correlation; < 0.4 in magnitude flags a poor fit), `reg_scale_x/y/z`, `shift_vox`,
 `n_label_voxels`, `point_source_voxels`; `reg_params`/`reg_center` store the fixed-to-moving transform
-(ScaleVersor3D) so ROI variants can be recomputed without re-registering.
+(ScaleVersor3D) so ROI variants can be recomputed without re-registering: `--requantify` rewrites the SBR
+columns of every finished row from the saved NIfTI and stored transform (`requantify_row`; ~2 s/scan; the
+previous table is kept as `datscan_sbr.pre_requant.csv`).
 Validation against PPMI on 237 reference subjects: see `Parkinsons/study1_virtual_biomarkers/results/datscan_agreement.csv`.
 Unit tests: `tests/test_datscan.py`.
 
@@ -137,7 +143,11 @@ directions each, reverse-phase b0s). Per subject (one session, the FastSurfer T1
    three-shell PPMI-2 Prisma protocol, 107 subjects; GE "Ax DWI B-0 A/P"), `susceptibility_correct` first runs
    FSL topup on the b0 pair and applytopup (Jacobian) on every volume (~3-7 min/subject; `topup` column records
    it). eddy is not run: eddy_cuda measured 26 min per three-shell subject on the RTX 2080, so eddy-current
-   distortion remains uncorrected. FSL lives in `~/fsl` (fslinstaller; the `FSLDIR` env var overrides).
+   distortion remains uncorrected. FSL lives in `~/fsl` (fslinstaller; the `FSLDIR` env var overrides). Odd-sized
+   axes are cropped by one voxel before topup (its `b02b0.cnf` subsamples by 2). With `--denoise`, DIPY's
+   Marchenko-Pastur PCA denoising and Gibbs-ringing removal run on the raw volumes first (`denoise_dwi`, the
+   dwidenoise -> mrdegibbs order of MRtrix; `denoised` column), which lowers the noise floor that biases the
+   single-shell free-water fit.
 4. `fit_models` — FA/MD from a weighted-least-squares tensor (b <= 1000, whole brain); free-water fraction (FW)
    and tissue FA (FAt) from the bi-tensor model inside the deep-grey/nigral ROI neighbourhood: DIPY's multi-shell
    NLS (Hoy et al. 2014) for PPMI-2, a bounded voxel-wise fit with a tissue-diffusivity prior for single-shell data
@@ -152,7 +162,7 @@ directions each, reverse-phase b0s). Per subject (one session, the FastSurfer T1
 
 ```bash
 venv_imaging/bin/python -m pie.imaging.dwi --zips <DTI zips> --sessions Imaging/derived/sessions.csv \
-    --fastsurfer-dir Imaging/derived/fastsurfer --work-dir Imaging/derived/dwi --workers 8 [--keep-nifti] [--fsl]
+    --fastsurfer-dir Imaging/derived/fastsurfer --work-dir Imaging/derived/dwi --workers 8 [--keep-nifti] [--fsl] [--denoise]
 # -> Imaging/derived/dwi/dwi_features.csv (one row per subject), dwi_index.csv (series index)
 ```
 
@@ -180,14 +190,21 @@ download (433 prodromal, 172 PD, 49 HC). Per subject:
    start from the SN centroid in T1 space is tried and the better-covered result kept (`reg_init`). The T1 -> MNI
    affine shared with the diffusion module brings the CIT168 atlas onto the slab.
 3. `nm_rois` / `features` — SN (SNc + SNr) left/right and anterior/posterior halves: contrast ratio
-   CNR = (SN - ref) / ref against the crus cerebri (the part of a surrounding-midbrain ring, atlas SN dilated 3 mm
-   minus the nuclei inside brainstem / ventral DC / peduncle white matter, lying anterior to the SN on the same
-   side; whole-ring CNR kept as `*_cnr_ring`). Because the atlas SN can sit 1-2 mm off the thin neuromelanin band,
-   two placement-robust measures are computed on a 1 mm-smoothed image inside a search region (dilated SN restricted
-   to brainstem / ventral DC labels, away from the other nuclei; outside them arteries are bright on gradient echo):
-   `nm_sn_*_top_cnr` = contrast of the brightest half-SN-sized volume, and the neuromelanin volume
-   `nm_vol_*_voxels` = search voxels above a fixed 10 % contrast (with their mean CNR). Left/right CNR asymmetry.
-   QC: `reg_nm_t1_mi`, `sn_slab_coverage` (fraction of the atlas SN inside the slab), `n_sn_*`, `nm_ref_*`. The slab
+   CNR = (SN - ref) / ref against the surrounding-midbrain ring (atlas SN dilated 3 mm minus the nuclei, inside
+   brainstem / ventral DC / peduncle white matter). The part of the ring anterior to the SN (nominally crus cerebri)
+   is kept as `*_cnr_crus` but is not the primary reference: the audit showed it is contaminated by the neuromelanin
+   band itself (its intensity relative to the ring is lower in PD), which cancelled the group difference. The
+   affine-mapped atlas SN sits 1-2 mm off the thin neuromelanin
+   band in most subjects, so its position is refined per side by the translation (<= 2 mm in-plane, +-1 slice) that
+   maximises the ROI mean on a 1 mm-smoothed copy while keeping >= 95 % of the ROI inside brainstem labels (the
+   cistern lateral to the peduncle is bright); `nm_sn_shift_mm_*` records it and `*_cnr_atlas` keeps the unrefined
+   value. Left/right CNR asymmetry. Earlier "placement-robust" measures (brightest-fraction contrast, fixed-threshold
+   volumes) were removed after the 2026-09 audit: on PPMI slabs (per-voxel CV ~0.13, PPMI's 5-average 1.5 mm protocol)
+   they tracked the noise level (Spearman 0.65-0.71 with the reference CV) and showed no PD-vs-HC difference, whereas
+   the refined ROI mean is ~9-10 % lower in de novo PD (AUROC ~0.6 on 23 HC vs 103 PD). `--refeature` recomputes the
+   feature columns from the saved slabs and label maps (`--keep-nifti` outputs) without registering.
+   QC: `reg_nm_t1_mi`, `sn_slab_coverage` (fraction of the atlas SN inside the slab), `n_sn_*`, `nm_ref_*` (a reference
+   ring partly outside the slab shows as SD >= 0.4 x mean and is rejected by `manifest.QC`; 7 of 646 Philips scans). The slab
    (~24 mm) does not reach the locus coeruleus.
 
 ```bash
@@ -197,6 +214,27 @@ venv_imaging/bin/python -m pie.imaging.nm --zips <full-MRI zips> --sessions Imag
 ```
 
 Unit tests: `tests/test_nm.py` (ROI construction and contrast / thresholded-volume arithmetic on a phantom).
+
+### Neuromelanin template pipeline (`pie/imaging/nm_template.py`)
+
+The atlas pipeline above measures the band through a T1/T2-defined SN label and a reference next to it. The template
+pipeline follows Wengler et al. 2020 / Cassidy et al. 2019 instead: every averaged slab is warped into a 0.5 mm MNI
+midbrain box through the rigid slab -> T1 transform (`slab_to_t1.tfm`, saved by `--keep-nifti` runs or recomputed) and
+a deformable ANTs SyN T1 -> MNI warp cached per FastSurfer subject (`mri/transforms/t1_to_mni_syn_*`, ~2 min each,
+reusable by `dwi_refine`); a study neuromelanin template is the mean of the intensity-normalised slabs; the SN mask
+(template CNR above an Otsu / 0.06 threshold within 3 mm of the CIT168 prior) and the crus-cerebri reference (the
+darker half of the sector 4-9 mm anterior-lateral to the prior) are defined on the template itself; per subject the
+CNR map is `I / mode(crus) - 1` and the features are the mean CNR in the template SN and its anterior/posterior and
+medial/lateral halves (`nmt_*`, plus coverage and crus CV as QC). No threshold volume is reported (noise-driven).
+
+```bash
+for stage in syn normalize template features; do
+  venv_imaging/bin/python -m pie.imaging.nm_template $stage --sessions Imaging/derived/sessions.csv \
+      --fastsurfer-dir Imaging/derived/fastsurfer --work-dir Imaging/derived/nm --workers 4; done
+# -> Imaging/derived/nm/template/nm_template*.nii.gz, Imaging/derived/nm/nm_template_features.csv
+```
+
+Unit tests: `tests/test_nm_template.py`.
 
 ## FLAIR white-matter hyperintensities (`pie/imaging/flair.py`)
 

@@ -21,7 +21,8 @@ import pandas as pd
 QC = {
     "dat": lambda d: (d["reg_metric"].abs() >= 0.4) & (d["n_label_voxels"] >= 100),
     "dwi": lambda d: (d["motion_mm_max"] < 6) & (d["n_sn_l"] >= 3) & (d["n_sn_r"] >= 3) & (d["fa_wm_median"] > 0.25),
-    "nm": lambda d: (d["n_sn_l"] >= 20) & (d["n_sn_r"] >= 20) & (d["sn_slab_coverage"] >= 0.5) & (d["repeat_motion_mm_max"] < 3),
+    "nm": lambda d: (d["n_sn_l"] >= 20) & (d["n_sn_r"] >= 20) & (d["sn_slab_coverage"] >= 0.5) & (d["repeat_motion_mm_max"] < 3)
+    & (d["nm_ref_l_sd"] < 0.4 * d["nm_ref_l_mean"]) & (d["nm_ref_r_sd"] < 0.4 * d["nm_ref_r_mean"]),   # reference ring partly outside the slab -> CV ~1, CNR garbage
     "flair": lambda d: (d["reg_flair_t1_mi"] < -0.2) & (d["wm_mm3"] > 200000) & (d["flair_wm_mad"] > 0),
 }
 DAT_COLS = ["sbr_caudate_l", "sbr_caudate_r", "sbr_putamen_l", "sbr_putamen_r", "reg_metric", "hdr_manufacturer", "hdr_model", "hdr_scale_fit", "image_id"]
