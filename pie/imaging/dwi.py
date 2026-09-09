@@ -8,8 +8,8 @@ Prisma (b = 700/1000/2000, 64 directions each, plus reverse-phase b0s). Pipeline
 1. `convert`      dcm2niix on every diffusion series (bval/bvec/json), derived series (ADC, "Reg -") dropped.
 2. `assemble`     one DWI dataset: same-geometry, same-phase-encoding runs concatenated (the PPMI-2 shells);
                   opposite-phase runs (Philips LR/RL) are not merged, the run with more directions is used.
-3. `preprocess`   brain mask (median Otsu on b0), rigid volume-to-b0 motion correction (SimpleITK MI).
-                  No topup/eddy (FSL is not installed): eddy-current and susceptibility distortions remain.
+3. `preprocess`   optional denoising and topup, brain mask, rigid volume-to-b0 correction with gradient rotation.
+                  This is not eddy-current or slice-outlier correction; eddy remains a separate upgrade.
 4. `fit`          DTI (weighted least squares, b <= 1000) for FA/MD over the brain; free-water bi-tensor model for
                   FW and tissue FA inside the ROI neighbourhood: DIPY's multi-shell NLS (Hoy et al. 2014) for the
                   PPMI-2 shells, a bounded voxel-wise fit with a tissue-diffusivity prior for single-shell PPMI-1
@@ -79,6 +79,21 @@ def convert(zip_path, prefix, out_dir):
     return runs
 
 
+def acquisition_metadata_key(meta):
+    """Conservative run compatibility, including estimated timing when actual timing is absent.
+
+    An estimate can detect an acquisition mismatch; it cannot supply missing PE
+    polarity or qualify a scan for topup/eddy. Receiver bandwidth is retained too.
+    """
+    actual = meta.get('TotalReadoutTime')
+    value = actual if actual is not None else meta.get('EstimatedTotalReadoutTime')
+    # dcm2niix's Philips estimates differ by sub-microsecond rounding even within
+    # one protocol. Preserve millisecond mismatches without splitting roundoff.
+    readout = ('recorded' if actual is not None else 'estimated', round(float(value), 6) if value is not None else None)
+    return (meta.get('PhaseEncodingDirection'), meta.get('PhaseEncodingAxis'), readout,
+            meta.get('EchoTime'), meta.get('RepetitionTime'), meta.get('PixelBandwidth'))
+
+
 def assemble(runs):
     """Choose/concatenate runs into one dataset. Returns dict(data, affine, bvals, bvecs, meta, n_runs)."""
     loaded = []
@@ -96,10 +111,10 @@ def assemble(runs):
     loaded = [x for x in loaded if (x[1] > 50).sum() >= 6]
     if not loaded:
         raise ValueError("no diffusion-weighted run")
-    # group by geometry + phase encoding; take the group with the most directions
+    # Include the full affine, not just voxel sizes: shifted/oblique grids cannot be concatenated voxelwise.
     groups = {}
     for img, b, v, meta in loaded:
-        key = (img.shape[:3], tuple(np.round(img.header.get_zooms()[:3], 2)), meta.get("PhaseEncodingDirection"))
+        key = (img.shape[:3], tuple(np.round(img.affine, 4).ravel()), acquisition_metadata_key(meta))
         groups.setdefault(key, []).append((img, b, v, meta))
     best = max(groups.values(), key=lambda g: sum((x[1] > 50).sum() for x in g))
     data = np.concatenate([np.asanyarray(x[0].dataobj).astype(np.float32) for x in best], axis=3)
@@ -107,11 +122,21 @@ def assemble(runs):
     bvecs = np.concatenate([x[2] for x in best], axis=1)
     meta = best[0][3]
     pe = meta.get("PhaseEncodingDirection")
-    rev = [x for x in b0_runs if x[0].shape[:3] == best[0][0].shape[:3] and x[3].get("PhaseEncodingDirection") not in (None, pe)
+    # Full opposite-PE runs (e.g. Philips LR/RL) also contain usable reverse b0s.
+    rev = [x for x in b0_runs + loaded if x[0].shape[:3] == best[0][0].shape[:3]
+           and np.allclose(x[0].affine, best[0][0].affine, atol=1e-4, rtol=0)
+           and (x[1] <= 50).any() and x[3].get("PhaseEncodingDirection") not in (None, pe)
            and x[3].get("PhaseEncodingDirection", "")[:1] == (pe or "")[:1]]
-    rev_b0 = np.concatenate([np.asanyarray(x[0].dataobj).astype(np.float32).reshape(x[0].shape[:3] + (-1,)) for x in rev], axis=3) if rev and pe else None
+    # Keep one reverse acquisition; it can have a different readout time from the main acquisition.
+    reverse = max(rev, key=lambda x: int((x[1] <= 50).sum())) if rev and pe else None
+    rev_b0 = np.asanyarray(reverse[0].dataobj)[..., reverse[1] <= 50].astype(np.float32) if reverse else None
+    if not (bvals <= 50).any():
+        raise ValueError("diffusion dataset has no b0 reference")
+    if not np.isfinite(bvecs).all() or np.any(np.linalg.norm(bvecs[:, bvals > 50], axis=0) < 1e-6):
+        raise ValueError("missing or invalid diffusion gradients")
     return {"data": data, "affine": best[0][0].affine, "bvals": bvals, "bvecs": bvecs, "meta": meta, "n_runs": len(best),
-            "shells": sorted(set(int(round(x / 100.0)) * 100 for x in bvals if x > 50)), "rev_b0": rev_b0}
+            "shells": sorted(set(int(round(x / 100.0)) * 100 for x in bvals if x > 50)), "rev_b0": rev_b0,
+            "rev_meta": reverse[3] if reverse else {}, "source_nifti": [x[0].get_filename() for x in best]}
 
 
 # ------------------------------------------------------------------------------------------ preprocess / fit
@@ -170,7 +195,8 @@ def susceptibility_correct(ds, work_dir, threads=2):
     eddy was measured at 26 min/subject on the RTX 2080 for the three-shell data and is not run."""
     meta, rev = ds["meta"], ds.get("rev_b0")
     pe, trt = meta.get("PhaseEncodingDirection"), meta.get("TotalReadoutTime")
-    if not FSLDIR or rev is None or not pe or not trt:
+    rev_trt = ds.get("rev_meta", {}).get("TotalReadoutTime")
+    if not FSLDIR or rev is None or not pe or not trt or not rev_trt:
         return dict(ds, topup=False)
     ds = _crop_even(ds)
     rev = ds["rev_b0"]
@@ -182,7 +208,7 @@ def susceptibility_correct(ds, work_dir, threads=2):
     nib.save(nib.Nifti1Image(np.stack([b0_main, b0_rev], axis=3), ds["affine"]), work / "b0_pair.nii.gz")
     vec = np.array({"i": [1, 0, 0], "j": [0, 1, 0], "k": [0, 0, 1]}[pe[0]]) * (-1 if pe.endswith("-") else 1)
     fmt = lambda v: " ".join(str(int(x)) for x in v)
-    (work / "acqparams.txt").write_text(f"{fmt(vec)} {trt}\n{fmt(-vec)} {trt}\n")
+    (work / "acqparams.txt").write_text(f"{fmt(vec)} {trt}\n{fmt(-vec)} {rev_trt}\n")
     nib.save(nib.Nifti1Image(ds["data"], ds["affine"]), work / "dwi.nii.gz")
     r = subprocess.run(["topup", f"--imain={work / 'b0_pair.nii.gz'}", f"--datain={work / 'acqparams.txt'}", "--config=b02b0.cnf",
                         f"--out={work / 'topup'}", f"--nthr={threads}"], env=env, capture_output=True, text=True)
@@ -216,7 +242,7 @@ def _sitk_native(arr, affine):
     return img
 
 
-def _register_volume(fixed, moving, sampling=0.1, iterations=50):
+def _register_volume(fixed, moving, sampling=0.1, iterations=50, sampling_seed=0):
     """Rigid MI registration (SimpleITK, 2-level pyramid) of one DWI volume to the b0 reference. Returns the Euler transform."""
     import SimpleITK as sitk
 
@@ -224,7 +250,7 @@ def _register_volume(fixed, moving, sampling=0.1, iterations=50):
     reg = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(32)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(sampling, seed=0)
+    reg.SetMetricSamplingPercentage(sampling, seed=int(sampling_seed))
     reg.SetInterpolator(sitk.sitkLinear)
     reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-3, numberOfIterations=iterations, relaxationFactor=0.6)
     reg.SetOptimizerScalesFromPhysicalShift()
@@ -232,17 +258,36 @@ def _register_volume(fixed, moving, sampling=0.1, iterations=50):
     reg.SetSmoothingSigmasPerLevel([2, 1])
     reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
     reg.SetInitialTransform(tx, inPlace=True)
-    try:
-        reg.Execute(fixed, moving)
-    except RuntimeError:
-        pass
+    reg.Execute(fixed, moving)  # failures must reach the subject error/QC record, not masquerade as zero motion
     return tx
 
 
-def preprocess(ds):
+def rotate_bvec(bvec, affine, fixed_to_moving_lps):
+    """Reorient one dcm2niix/FSL gradient into the motion-corrected reference grid.
+
+    ITK resampling maps fixed -> moving, so use its inverse rotation. FSL bvecs use voxel axes with an
+    x reflection for positive-determinant NIfTI affines; convert through physical LPS and back explicitly.
+    A single common reflection does not change FA/MD, but volume-specific missing rotations bias the fit.
+    """
+    g = np.asarray(bvec, dtype=float)
+    if np.linalg.norm(g) < 1e-8:
+        return np.zeros(3)
+    axes = np.asarray(affine, dtype=float)[:3, :3]
+    axes = axes / np.linalg.norm(axes, axis=0)
+    if not np.allclose(axes.T @ axes, np.eye(3), atol=1e-4):
+        raise ValueError("sheared DWI affine: resample and reorient gradients explicitly")
+    basis = np.diag([-1., -1., 1.]) @ axes
+    if np.linalg.det(axes) > 0:
+        basis[:, 0] *= -1
+    rotation = np.asarray(fixed_to_moving_lps, dtype=float).reshape(3, 3)
+    out = basis.T @ rotation.T @ basis @ g
+    return out / np.linalg.norm(out)
+
+
+def preprocess(ds, sampling_seed=0):
     """Brain mask + rigid motion correction of every volume to the mean b0 (SimpleITK mutual information, ~0.7 s per
-    volume against ~5 s for DIPY's affine pipeline). b-vectors are not rotated: PPMI head rotations are ~1 degree,
-    below what changes the rotation-invariant scalars used here. Returns the dataset with corrected data, mask,
+    volume against ~5 s for DIPY's affine pipeline). Reorients FSL b-vectors for each volume's rotation.
+    Returns the dataset with corrected data, gradients, mask,
     b0 and motion summaries (mm translation per volume)."""
     import SimpleITK as sitk
     from dipy.segment.mask import median_otsu
@@ -255,15 +300,17 @@ def preprocess(ds):
     mask = ndimage.binary_fill_holes(ndimage.binary_dilation(mask, iterations=2))
     ref = _sitk_native(b0, ds["affine"])
     cdata = np.empty_like(data)
+    bvecs = np.asarray(ds["bvecs"], dtype=float).copy()
     fd, rot = [], []
     for i in range(data.shape[3]):
         mov = _sitk_native(data[..., i], ds["affine"])
-        tx = _register_volume(ref, mov)
+        tx = _register_volume(ref, mov, sampling_seed=sampling_seed)
+        bvecs[:, i] = rotate_bvec(bvecs[:, i], ds["affine"], tx.GetMatrix()) if not b0s[i] else 0.0
         cdata[..., i] = np.transpose(sitk.GetArrayFromImage(sitk.Resample(mov, ref, tx, sitk.sitkLinear, 0.0)), (2, 1, 0))
         p = np.array(tx.GetParameters())
         fd.append(float(np.linalg.norm(p[3:6])))
         rot.append(float(np.degrees(np.linalg.norm(p[:3]))))
-    return dict(ds, data=cdata, mask=mask, b0=cdata[..., b0s].mean(axis=3),
+    return dict(ds, data=cdata, bvecs=bvecs, bvecs_rotated=True, mask=mask, b0=cdata[..., b0s].mean(axis=3),
                 motion_mm_mean=float(np.mean(fd)), motion_mm_max=float(np.max(fd)), rotation_deg_max=float(np.max(rot)))
 
 
@@ -283,8 +330,8 @@ def _fw_single_shell(data, bvals, bvecs, mask, prior_weight=0.05):
     g = bvecs.T
     B = np.c_[g[:, 0] ** 2, g[:, 1] ** 2, g[:, 2] ** 2, 2 * g[:, 0] * g[:, 1], 2 * g[:, 0] * g[:, 2], 2 * g[:, 1] * g[:, 2]] * bvals[:, None]
     water = np.exp(-bvals * D_WATER)
-    f_map = np.zeros(mask.shape, dtype=np.float32)
-    fat_map = np.zeros(mask.shape, dtype=np.float32)
+    f_map = np.full(mask.shape, np.nan, dtype=np.float32)
+    fat_map = np.full(mask.shape, np.nan, dtype=np.float32)
     idx = np.argwhere(mask)
     scale = 1e-3
 
@@ -321,9 +368,11 @@ def _fw_single_shell(data, bvals, bvecs, mask, prior_weight=0.05):
         hi = np.r_[np.inf, 0.95, [np.inf] * 6]
         try:
             sol = least_squares(resid, p0, args=(y,), bounds=(lo, hi), max_nfev=60, xtol=1e-4, ftol=1e-4)
+            if not sol.success or not np.isfinite(sol.x).all():
+                continue
             p = sol.x
         except Exception:
-            p = p0
+            continue  # a failed optimisation is missing data, never a successful measurement at its prior
         L = np.zeros((3, 3))
         L[np.tril_indices(3)] = p[2:8]
         evt = np.linalg.eigvalsh(L @ L.T * scale)
@@ -373,7 +422,7 @@ def _brain(img, mask_img, mm=2.0):
     return sitk.Shrink(out, [max(1, int(round(mm / sp))) for sp in out.GetSpacing()])
 
 
-def register_b0_to_t1(b0_img, t1_img, t1_mask_img):
+def register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0):
     """Rigid (mutual information) registration of the mean b0 to the brain-masked conformed T1 at 2 mm.
     Returns (transform fixed(T1)->moving(b0), metric). EPI susceptibility distortion is not corrected: a
     T1-guided B-spline restricted to the phase-encoding axis was tried and cost 9 min per subject without
@@ -387,7 +436,7 @@ def register_b0_to_t1(b0_img, t1_img, t1_mask_img):
     reg = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(32)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.2, seed=0)
+    reg.SetMetricSamplingPercentage(0.2, seed=int(sampling_seed))
     reg.SetInterpolator(sitk.sitkLinear)
     reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-3, numberOfIterations=200, relaxationFactor=0.6)
     reg.SetOptimizerScalesFromPhysicalShift()
@@ -399,7 +448,7 @@ def register_b0_to_t1(b0_img, t1_img, t1_mask_img):
     return tx, float(reg.GetMetricValue())
 
 
-def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None):
+def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None, sampling_seed=0):
     """Affine T1 (brain) -> MNI152NLin2009cAsym (nilearn template, brain-masked). Returns (transform fixed(MNI)->moving(T1),
     metric). With ``cache_path`` (e.g. <fastsurfer subject>/mri/transforms/t1_to_mni152_affine.tfm) the transform is
     read back if present and written after fitting, so every modality of a subject uses the same atlas mapping."""
@@ -417,7 +466,7 @@ def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None):
     reg = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(32)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.2, seed=0)
+    reg.SetMetricSamplingPercentage(0.2, seed=int(sampling_seed))
     reg.SetInterpolator(sitk.sitkLinear)
     reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-4, numberOfIterations=300, relaxationFactor=0.6)
     reg.SetOptimizerScalesFromPhysicalShift()
@@ -459,6 +508,16 @@ def pauli_atlas():
 
 
 # ------------------------------------------------------------------------------------------ features
+def _left_mask(fs_lab):
+    """Left-hemisphere half-space on the DWI grid from FastSurfer's explicit left/right putamen: midline = midpoint of
+    the two centroids along the x index, left = the side of label 12 (orientation-independent)."""
+    xl = np.nonzero(fs_lab == 12)[2].mean() if (fs_lab == 12).any() else fs_lab.shape[2] * 0.75
+    xr = np.nonzero(fs_lab == 51)[2].mean() if (fs_lab == 51).any() else fs_lab.shape[2] * 0.25
+    mid = (xl + xr) / 2
+    xi = np.arange(fs_lab.shape[2])[None, None, :]
+    return np.broadcast_to((xi > mid) if xl > xr else (xi < mid), fs_lab.shape)
+
+
 def _roi_masks(fs_lab, pauli_lab, y_index):
     """ROI name -> boolean mask on the DWI grid (arrays in sitk (z, y, x) order). ``y_index`` gives each voxel's
     anterior-posterior coordinate for the anterior/posterior split of the substantia nigra."""
@@ -468,13 +527,7 @@ def _roi_masks(fs_lab, pauli_lab, y_index):
     for name, ids in FS_SINGLE.items():
         rois[name] = np.isin(fs_lab, ids)
     code = {n: i + 1 for i, n in enumerate(PAULI)}
-    # left/right of the (bilateral) atlas labels from FastSurfer's explicit left/right putamen: midline = midpoint of
-    # the two centroids along the x index, left = the side of label 12 (orientation-independent)
-    xl = np.nonzero(fs_lab == 12)[2].mean() if (fs_lab == 12).any() else pauli_lab.shape[2] * 0.75
-    xr = np.nonzero(fs_lab == 51)[2].mean() if (fs_lab == 51).any() else pauli_lab.shape[2] * 0.25
-    mid = (xl + xr) / 2
-    xi = np.arange(pauli_lab.shape[2])[None, None, :]
-    left = (xi > mid) if xl > xr else (xi < mid)
+    left = _left_mask(fs_lab)
     for name, parts in PAULI_ROIS.items():
         m = np.isin(pauli_lab, [code[p] for p in parts])
         rois[f"{name}_l"], rois[f"{name}_r"] = m & left, m & ~left
@@ -508,8 +561,9 @@ def features(maps, rois, min_voxels=3):
 
 
 # ------------------------------------------------------------------------------------------ per-subject driver
-def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False):
-    """All steps for one subject. Returns a flat dict (features + QC)."""
+def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False, fba=False, keep_preproc=False):
+    """All steps for one subject. Returns a flat dict (features + QC). ``fba`` adds the MRtrix3 nigrostriatal fixel measures
+    (pie.imaging.fba); ``keep_preproc`` keeps the preprocessed DWI + gradients under <work>/<patno>/fba/."""
     import SimpleITK as sitk
 
     sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)
@@ -522,7 +576,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     if denoise:
         ds = denoise_dwi(ds, work)
     row = {"patno": patno, "denoised": bool(ds.get("denoised", False)), "n_series": len(series_rows), "n_runs_used": ds["n_runs"], "n_volumes": int(ds["data"].shape[3]),
-           "shells": " ".join(map(str, ds["shells"])), "voxel_mm": float(np.round(np.abs(np.diag(ds["affine"])[:3]).mean(), 2)),
+           "shells": " ".join(map(str, ds["shells"])), "voxel_mm": float(np.round(np.linalg.norm(ds["affine"][:3, :3], axis=0).mean(), 2)),
            "manufacturer": str(ds["meta"].get("Manufacturer", "")), "model": str(ds["meta"].get("ManufacturerModelName", "")),
            "pe_direction": str(ds["meta"].get("PhaseEncodingDirection", "")), "readout_s": ds["meta"].get("TotalReadoutTime", np.nan),
            "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
@@ -531,7 +585,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     row["topup"] = bool(ds.get("topup", False))
     row["n_rev_b0"] = int(ds["rev_b0"].shape[3]) if ds.get("rev_b0") is not None else 0
     ds = preprocess(ds)
-    row.update({"motion_mm_mean": ds["motion_mm_mean"], "motion_mm_max": ds["motion_mm_max"], "rotation_deg_max": ds["rotation_deg_max"]})
+    row.update({"motion_mm_mean": ds["motion_mm_mean"], "motion_mm_max": ds["motion_mm_max"], "rotation_deg_max": ds["rotation_deg_max"],
+                "bvecs_rotated": ds["bvecs_rotated"], "processing_version": "2026-09-09-acquisition-metadata-v3",
+                "fs_image_id": Path(fastsurfer_dir).name, "acquisition_date": series_rows[0]["date"],
+                "source_image_ids": ";".join(sorted({Path(p).name.split("_")[0] for p in ds["source_nifti"]}))})
     b0_img = nib.Nifti1Image(ds["b0"], ds["affine"])
     mri = Path(fastsurfer_dir) / "mri"
     t1, t1_mask, aseg = nib.load(mri / "orig.mgz"), nib.load(mri / "mask.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
@@ -551,6 +608,8 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     # maps are computed in (x, y, z); ROI masks are in sitk (z, y, x): transpose the maps once
     maps = fit_models(ds, fw_mask=fw_mask_xyz)
     row["fw_method"] = maps.pop("fw_method")
+    fitted_mask = fw_mask_xyz & ds["mask"]
+    row["fw_fit_valid_fraction"] = float(np.isfinite(maps["fw"][fitted_mask]).mean()) if fitted_mask.any() else np.nan
     maps = {k: np.transpose(v, (2, 1, 0)) for k, v in maps.items()}
     # tissue-restricted nigral variants (suffix _t): the affine-mapped atlas SN at 2 mm takes in cerebral-peduncle
     # fibres (FA ~0.45) and interpeduncular CSF; keep voxels with FA < 0.5 and free water < 0.7
@@ -561,6 +620,20 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     row.update(features(maps, rois))
     row["fw_brain_median"] = float(np.median(maps["fw"][np.transpose(ds["mask"], (2, 1, 0)) & (maps["fw"] > 0)])) if (maps["fw"] > 0).any() else np.nan
     row["fa_wm_median"] = float(np.median(maps["fa"][rois["cerebral_wm_l"] | rois["cerebral_wm_r"]])) if (rois["cerebral_wm_l"] | rois["cerebral_wm_r"]).any() else np.nan
+    if fba or keep_preproc:
+        from .fba import nigrostriatal, write_preproc
+        (work / "fba").mkdir(exist_ok=True)
+        write_preproc(ds, work / "fba")
+    if fba:
+        left = _left_mask(fs_lab)
+        aux = {"hemi_l": left, "hemi_r": ~left, "cerebellum": np.isin(fs_lab, [7, 8, 46, 47])}
+        try:
+            row.update(nigrostriatal(ds, {**rois, **aux}, maps, work, threads=2))
+        except Exception as e:      # the tensor features stand on their own
+            row["fba_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        if not keep_preproc:
+            for f in ("preproc.nii.gz", "preproc.bval", "preproc.bvec"):
+                (work / "fba" / f).unlink(missing_ok=True)
     if keep_nifti:
         for k, v in maps.items():
             nib.save(nib.Nifti1Image(np.transpose(v, (2, 1, 0)), ds["affine"]), work / f"{k}.nii.gz")
@@ -572,9 +645,9 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep, fsl, denoise = args
+    patno, rows, fs_dir, work_dir, keep, fsl, denoise, fba, keep_preproc = args
     try:
-        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl, denoise=denoise)
+        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl, denoise=denoise, fba=fba, keep_preproc=keep_preproc)
         out["error"] = ""
     except Exception as e:  # keep the batch going
         out = {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -593,6 +666,9 @@ def main(argv=None):
     ap = add_common_args(argparse.ArgumentParser())
     ap.add_argument("--fsl", action="store_true", help="FSL topup/applytopup susceptibility correction where a reverse-phase b0 exists")
     ap.add_argument("--denoise", action="store_true", help="MP-PCA denoising + Gibbs-ringing removal (DIPY) before motion correction")
+    ap.add_argument("--fba", action="store_true", help="MRtrix3 nigrostriatal fixel measures (FOD, iFOD2 tractography SN -> striatum, AFD along the tract)")
+    ap.add_argument("--keep-preproc", action="store_true", help="keep the preprocessed DWI + gradients under <work>/<patno>/fba/")
+    ap.add_argument("--priority", help="text file of PATNOs to process first")
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -601,8 +677,11 @@ def main(argv=None):
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
     out_csv = work / "dwi_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise)
+    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
+    if a.priority:
+        order = {int(p): i for i, p in enumerate(Path(a.priority).read_text().split())}
+        jobs.sort(key=lambda j: order.get(j[0], len(order)))
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, pid_file=a.pid_file)
 
 

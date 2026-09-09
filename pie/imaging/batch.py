@@ -63,7 +63,10 @@ def fastsurfer_by_patno(sessions_csv, fastsurfer_dir, require="stats/aseg+DKT.st
     sess = pd.read_csv(sessions_csv, dtype={"image_id": str})
     root = Path(fastsurfer_dir)
     done = {p.parts[-3] for p in root.glob(f"*/{require}")}
-    return {int(r.patno): str(root / r.image_id) for r in sess.sort_values("session_date").itertuples() if r.image_id in done}
+    # A dict comprehension over ascending dates overwrites the first session with the last.
+    sess = sess[sess["image_id"].isin(done)].sort_values(["session_date", "image_id"], kind="stable")
+    sess = sess.drop_duplicates("patno", keep="first")
+    return {int(r.patno): str(root / r.image_id) for r in sess.itertuples()}
 
 
 def session_rows(group):
@@ -132,6 +135,17 @@ def run_batch(jobs, job_fn, out_csv, workers=4, log_every=10, pid_file=None):
                 writer.writeheader()
 
         def emit(row):
+            nonlocal writer
+            new = set(row) - set(writer.fieldnames)
+            if new:                          # a later row brings columns the header lacks (e.g. optional stages): rewrite with the union
+                fh.flush()
+                existing = pd.read_csv(out_csv, dtype=str).fillna("") if out_csv.stat().st_size else pd.DataFrame()
+                fields = list(writer.fieldnames) + sorted(new)
+                fh.seek(0)
+                fh.truncate()
+                writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(existing.to_dict("records"))
             writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
             fh.flush()
 

@@ -9,7 +9,7 @@ Modalities and what is drawn (one PNG per subject, three orthogonal views):
   nm     mean neuromelanin slab with SN (red) and reference ring (lime) contours
   flair  FLAIR resampled onto the T1 grid with the WMH mask (red)
   datscan reconstructed SPECT with the striatal labels, using the stored registration (reg_params) and the FastSurfer labels
-``--worst`` sorts subjects by a QC column of the features CSV (ascending) so the poorest registrations come first;
+``--worst`` orders a QC column in its failure direction (negative MI: largest first; correlation: weakest first);
 otherwise a random sample. A contact-sheet index (gallery.png) tiles the first 16.
 """
 
@@ -24,6 +24,18 @@ import numpy as np
 import pandas as pd
 
 VIEWS = ("axial", "coronal", "sagittal")
+
+
+def worst_first(frame, column):
+    """ITK minimises negative mutual information/correlation: ascending MI selects the BEST registrations."""
+    values = pd.to_numeric(frame[column], errors="coerce")
+    if column == "reg_metric":
+        badness = -values.abs()  # SPECT normalised correlation magnitude
+    elif column.endswith("_mi") or "motion" in column or "rotation" in column:
+        badness = values
+    else:
+        badness = -values  # coverage/ROI count, where larger is better
+    return frame.loc[badness.sort_values(ascending=False, na_position="first").index]
 
 
 def _slices(img, mask):
@@ -72,7 +84,9 @@ def render_subject(modality, subj_dir, out_png, fastsurfer_dir=None, row=None):
         montage(fa, [(np.isin(pauli, [7, 9]), "red"), (np.isin(aseg, [11, 12, 50, 51]), "cyan"), (np.isin(aseg, [10, 49]), "magenta")], out_png, title=d.name, zoom=40)
     elif modality == "nm":
         nm, pauli, ref = _load(d / "nm_mean.nii.gz"), _load(d / "pauli_nm.nii.gz"), _load(d / "ref_nm.nii.gz")
-        montage(nm, [(np.isin(pauli, [7, 9]), "red"), (ref > 0, "lime")], out_png, title=d.name, zoom=90)
+        refined = d / "sn_refined_nm.nii.gz"
+        contours = [(_load(refined) > 0, "red"), (np.isin(pauli, [7, 9]), "cyan"), (ref > 0, "lime")] if refined.exists() else [(np.isin(pauli, [7, 9]), "red"), (ref > 0, "lime")]
+        montage(nm, contours, out_png, title=d.name + (" refined SN" if refined.exists() else " atlas only"), zoom=90)
     elif modality == "flair":
         fl, wmh = _load(d / "flair_t1.nii.gz"), _load(d / "wmh_t1.nii.gz")
         montage(fl, [(wmh > 0, "red")], out_png, title=d.name)
@@ -131,7 +145,7 @@ def main(argv=None):
         keep = {int(x) for x in Path(a.patnos).read_text().split()}
         feats = feats[feats["patno"].isin(keep)]
     if a.worst and a.worst in feats:
-        feats = feats.sort_values(a.worst)
+        feats = worst_first(feats, a.worst)
     else:
         feats = feats.sample(frac=1.0, random_state=0)
     fs_by_patno = {}

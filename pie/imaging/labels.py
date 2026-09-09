@@ -5,9 +5,10 @@ dat_labels : DaTscan closest in time to the MRI. ``dat_visual`` = PPMI visual re
              ``dat_deficit_sbr`` = lowest putamen SBR below ``threshold`` x the age/sex-expected
              value, the expectation being a linear fit on visually-negative healthy controls
              (PPMI's prodromal-cohort convention, 65 %).
-saa_labels : CSF alpha-synuclein SAA status (Positive=1 / Negative=0; Inconclusive dropped),
-             sample at the MRI visit if present, else baseline, else the earliest visit.
-covariates : sex, birth month, cohort, enrolment, LRRK2/GBA/SNCA/APOE genotype per PATNO.
+saa_labels : CSF alpha-synuclein SAA status at the MRI visit (SC/BL pairs allowed).
+             Unmatched visits require an explicit sensitivity-analysis opt-in; provenance is retained.
+covariates : sex, birth month, cohort, enrolment, LRRK2/GBA/SNCA/APOE genotype and (when the Polygenic_Risk_Scores table
+             is present) the GP2 and META5-without-LRRK2/GBA polygenic risk scores per PATNO.
 """
 
 from pathlib import Path
@@ -38,7 +39,12 @@ def covariates(ppmi_dir):
     for g in ["LRRK2", "GBA", "SNCA"]:
         gen[f"{g}_carrier"] = np.where(gen[g].isna(), np.nan, (gen[g].astype(str) != "0").astype(float))
     gen["APOE_e4"] = gen["APOE"].astype(str).str.count("E4").where(gen["APOE"].notna())
-    return ps.merge(dm, on="PATNO", how="left").merge(gen, on="PATNO", how="left")
+    out = ps.merge(dm, on="PATNO", how="left").merge(gen, on="PATNO", how="left")
+    prs = sorted(Path(ppmi_dir, "_Subject_Characteristics").glob("Polygenic_Risk_Scores_*.csv"))
+    if prs:  # PPMI Risk_SNP_PGS table: PD-GWAS polygenic scores; META5 variant excludes the LRRK2 and GBA loci already coded above
+        p = pd.read_csv(prs[-1]).drop_duplicates("PATNO")[["PATNO", "GP2_PGS", "META5_excl_LRRK2_GBA_PGS"]]
+        out = out.merge(p.rename(columns={"GP2_PGS": "PRS_GP2", "META5_excl_LRRK2_GBA_PGS": "PRS_META5_noLRRK2GBA"}), on="PATNO", how="left")
+    return out
 
 
 def _age_at(cov, patnos, dates):
@@ -89,11 +95,16 @@ def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18):
     return pd.DataFrame(out).rename(columns={"EVENT_ID": "DATSCAN_EVENT_ID"})
 
 
-def saa_labels(ppmi_dir, sessions):
-    """Return PATNO, IMAGEID, SAA_EVENT_ID, SAA_Status, saa_positive (1/0)."""
+def saa_labels(ppmi_dir, sessions, allow_unmatched=False):
+    """Visit-aligned SAA with match provenance. RUNDATE is an assay date, not a CSF collection date.
+
+    Do not substitute a future positive/negative assay for an inconclusive concurrent visit. Conflicting calls
+    at the selected visit have no binary label. ``allow_unmatched`` reproduces the historical fallback for a
+    separately labelled sensitivity analysis; it does not establish temporal alignment.
+    """
     saa = _latest(ppmi_dir, "Biospecimen", "SAA_Biospecimen_Analysis_Results_*.csv")
-    saa = saa[saa["SAA_Status"].isin(["Positive", "Negative"])]
-    saa = saa[["PATNO", "CLINICAL_EVENT", "SAA_Status", "RUNDATE"]].drop_duplicates(["PATNO", "CLINICAL_EVENT"])
+    saa = saa.assign(SAA_Type=saa.get("SAA_Type"))
+    saa = saa[["PATNO", "CLINICAL_EVENT", "SAA_Status", "SAA_Type"]].copy()
     order = {"BL": 0, "SC": 1}
     out = []
     for s in sessions[["patno", "image_id", "EVENT_ID"]].itertuples(index=False):
@@ -101,10 +112,22 @@ def saa_labels(ppmi_dir, sessions):
         if cand.empty:
             continue
         pick = cand[cand["CLINICAL_EVENT"] == s.EVENT_ID]
-        if pick.empty:
+        match = "same_visit"
+        if pick.empty and s.EVENT_ID in ("SC", "BL"):
+            pick = cand[cand["CLINICAL_EVENT"].isin(["SC", "BL"])]
+            match = "screening_baseline_pair"
+        if pick.empty and allow_unmatched:
             cand = cand.assign(_o=cand["CLINICAL_EVENT"].map(order).fillna(9))
-            pick = cand.sort_values(["_o", "CLINICAL_EVENT"]).head(1)
+            event = cand.sort_values(["_o", "CLINICAL_EVENT"]).iloc[0]["CLINICAL_EVENT"]
+            pick = cand[cand["CLINICAL_EVENT"] == event]
+            match = "unmatched_visit"
+        if pick.empty:
+            continue
+        statuses = pick["SAA_Status"].dropna().unique()
+        valid = len(statuses) == 1 and statuses[0] in ("Positive", "Negative")
         r = pick.iloc[0]
         out.append({"PATNO": s.patno, "IMAGEID": s.image_id, "SAA_EVENT_ID": r["CLINICAL_EVENT"],
-                    "SAA_Status": r["SAA_Status"], "saa_positive": float(r["SAA_Status"] == "Positive")})
-    return pd.DataFrame(out)
+                    "SAA_Status": r["SAA_Status"] if len(statuses) <= 1 else "Conflicting",
+                    "SAA_Type": r["SAA_Type"], "saa_positive": float(r["SAA_Status"] == "Positive") if valid else np.nan,
+                    "saa_match": match, "saa_visit_concurrent": match != "unmatched_visit"})
+    return pd.DataFrame(out, columns=["PATNO", "IMAGEID", "SAA_EVENT_ID", "SAA_Status", "SAA_Type", "saa_positive", "saa_match", "saa_visit_concurrent"])
