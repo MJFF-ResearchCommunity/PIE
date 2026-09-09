@@ -63,6 +63,42 @@ def load(
 
 ---
 
+### Extended modalities: every other PPMI study-data folder
+
+The five modalities above are the clinical core and are what `modalities=None` loads. The other folders of a full PPMI
+study-data download are loaded generically — every CSV in the folder, `patno`/`event_id` upper-cased (the FOUND tables are
+lower-case), files without a `PATNO` column (codebooks, dictionaries) skipped — when you name them explicitly:
+
+| constant | folder | returns |
+|---|---|---|
+| `STUDY_ENROLLMENT` | `Study_Enrollment` | dict of tables (consent, eligibility incl. `INSAA`, screen fail, visit type, ...) |
+| `IMAGING` | `Imaging` | dict of tables (Xing core-lab DaTscan SBR / visual reads, FreeSurfer-7 IDPs, MRIQC, DTI ROIs, PET) |
+| `PPMI_ONLINE` | `PPMI_Online` | dict of tables; `EVENT_ID`s are online visits, not clinic visits |
+| `REMOTE_SCREENING` | `PPMI_Remote_Screening` | one table merged on `PATNO`/`EVENT_ID` |
+| `FOUND` | `Follow_Up_persons_w_Neurologic_Disease` | one table merged on `PATNO` (risk-factor questionnaires) |
+| `ROCHE_APP` | `Roche_Smartphone_App` | dict with the long-format app table (one row per test result) |
+
+`EXTENDED_MODALITIES` maps each constant to its merge policy and `KNOWN_MODALITIES` lists everything `DataLoader.load`
+accepts. With `merge_output=True` the table-dict modalities are merged table by table on `PATNO`/`EVENT_ID` like medical
+history; with `output_file` each gets its own subdirectory. `load_ppmi_folder(folder, name, merge)` is the underlying
+helper and `load_data_dictionary(data_path)` returns the annotated data dictionary, code list and deprecated-variable
+tables from the `Data___Databases` download (keys `dictionary`, `code_list`, `deprecated`) for decoding any column.
+
+Core-folder tables added in the 2026 data cuts are picked up too: polygenic risk scores, race/ethnicity and ST-Direct
+demographics (subject characteristics); `Primary_Research_Diagnosis` and the newer PET/tau/FD4 substudy forms (medical
+history); CANTAB cognitive activities, `Smell_and_Genetic_Testing` and the renamed RBD screening questionnaire
+(non-motor); the underscore-named MDS-UPDRS Part II file (motor); and, in the biospecimen `standard_files` group, the
+CSF alpha-synuclein SAA results (`SAA_Status`, `SAA_Type`), SynOne and whole-blood substudy forms, neuropathology and
+pathology-core tables.
+
+```python
+from pie_clean import DataLoader, load_data_dictionary
+from pie_clean.constants import STUDY_ENROLLMENT, IMAGING, FOUND
+d = DataLoader.load("./PPMI", modalities=[STUDY_ENROLLMENT, IMAGING, FOUND])
+d[IMAGING]["Xing_Core_Lab_-_Quant_SBR"].head()
+codes = load_data_dictionary("./PPMI")["code_list"]
+```
+
 ## Practical Usage Examples
 
 Please see the [PIE-clean documentation for modality-specific details for loading](https://github.com/MJFF-ResearchCommunity/PIE-clean/tree/main/documentation) the more complex data types, such as biospecimens and non-motor exams. The examples below show the key use cases when loading data for PIE.

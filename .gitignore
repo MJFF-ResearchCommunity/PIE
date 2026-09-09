@@ -194,3 +194,5 @@ nilearn_data/
 *.dcm
 # Profiling dumps (cProfile etc.)
 *.prof
+PPMI
+PPMI_2025-03/

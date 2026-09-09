@@ -610,7 +610,7 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', type=str, default='output/pipeline_run', help='Directory to save all pipeline outputs and reports.')
     parser.add_argument('--target-column', type=str, default='COHORT', help='Name of the target variable.')
     parser.add_argument('--leakage-features-path', type=str, default='config/leakage_features.txt', help='Path to a file containing features to exclude to prevent data leakage.')
-    parser.add_argument('--modalities', type=str, default='', help='Comma/space-separated list of modalities to include. Default: all. Options: subject_characteristics, medical_history, motor_assessments, non_motor_assessments, biospecimen')
+    parser.add_argument('--modalities', type=str, default='', help='Comma/space-separated list of modalities to include. Default: all. Options: subject_characteristics, medical_history, motor_assessments, non_motor_assessments, biospecimen, study_enrollment, imaging, ppmi_online, remote_screening, found, roche_app')
     parser.add_argument('--imaging-features', type=str, default=None, help='Optional CSV of imaging-derived phenotypes keyed by PATNO/EVENT_ID (see pie/imaging/run.py) to add as the "imaging" modality.')
     
     # Feature Selection Params

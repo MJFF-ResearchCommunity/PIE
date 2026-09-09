@@ -51,14 +51,17 @@ parallel on the CPU.
 | `link.py` | Maps the DICOM acquisition date to a PPMI `EVENT_ID` through the `Magnetic_Resonance_Imaging` table (same month, else nearest within 3 months, else `UNK`). |
 | `fastsurfer.py` | Runs FastSurferVINN inference (GPU, serialised with a file lock), N4 bias correction and partial-volume-corrected `segstats` at 1 mm isotropic; `parse_stats` reads `.stats` files. |
 | `features.py` | Builds the wide IDP table: every regional volume (`vol_*`, mm^3), global measures (`MaskVol`, `BrainSegVol`, ...), bilateral sums and left/right asymmetry indices (`sum_*`, `asym_*`), ventricle total, plus scanner metadata and `protocol_phase` (which zip the scan came from). |
-| `labels.py` | Session-aligned outcomes: `dat_labels` (closest DaTscan: SBR values, PPMI visual read, and SBR-based deficit = lowest putamen SBR < 65 % of the age/sex expectation fitted on visually-negative controls), `saa_labels` (CSF SAA status at the MRI visit, else baseline), `covariates` (sex, birth month, cohort, LRRK2/GBA/SNCA/APOE). |
+| `labels.py` | Session-aligned outcomes: `dat_labels` (closest DaTscan: SBR values, PPMI visual read, and SBR-based deficit = lowest putamen SBR < 65 % of the age/sex expectation fitted on visually-negative controls), `saa_labels` (CSF SAA status at the MRI visit, else baseline), `covariates` (sex, birth month, cohort, LRRK2/GBA/SNCA/APOE, and the GP2 / META5-without-LRRK2-GBA polygenic scores when the `Polygenic_Risk_Scores` table is present). `saa_labels` also returns `SAA_Type` (Type1/Type2 seeding kinetics). |
 | `run.py` | The CLI above. |
 | `datscan.py` | DaTscan SPECT: raw projections -> FBP reconstruction -> T1-guided SBR quantification (see below). |
 | `dwi.py` | Diffusion MRI: dcm2niix -> motion correction -> tensor + free-water fits -> nigral/subcortical ROI features (see below). |
+| `fba.py` | Nigrostriatal fixel measures with MRtrix3 (`--fba` of the DWI runner): multi-tissue CSD, `mtnormalise`, iFOD2 tractography from the atlas SN to the FastSurfer striatum, AFD along the tract, seed success, FA/MD along the streamlines (see below). |
+| `cnn.py` | Whole-image 3D CNN baseline (SFCN) on the conformed T1 with patient-grouped out-of-fold predictions — the "did region features miss a pattern?" check (see below). |
+| `embed.py` | Fixed-length T1 embeddings from pretrained open-weight models (BrainIAC ViT, 3D-Neuro-SimCLR ResNet-18, SFCN brain age) on the affine-MNI-aligned masked T1, one CSV row per subject (see below). |
 | `nm.py` | Neuromelanin-sensitive MRI: repeat averaging -> T1/atlas registration -> nigral contrast ratio and neuromelanin volume (see below). |
 | `flair.py` | FLAIR: N4 -> rigid registration to T1 -> white-matter-hyperintensity burden by robust threshold (see below). |
 | `batch.py` | Shared plumbing for the modality pipelines: LONI series index, dcm2niix conversion, FastSurfer lookup, session choice, resumable parallel runner (CSV append, `--retry-errors`, `--pid-file`). |
-| `manifest.py` | `build_manifest` (per subject: session used per modality, dates and intervals to the T1, scanner batch per modality, QC flags) and `assemble_features` (one wide table: FastSurfer IDPs + `dat_*`, `dwi_*`, `nm_*`, `flair_*`, QC-failed values blanked); `feature_blocks` groups columns by modality for block-wise harmonisation / stacking. |
+| `manifest.py` | `build_manifest` (per subject: session used per modality, dates and intervals to the T1, scanner batch per modality, QC flags) and `assemble_features` (one wide table: FastSurfer IDPs + `dat_*`, `dwi_*`, `nm_*`, `flair_*`, QC-failed values blanked; `QC["t1"]` = the key subcortical labels are non-empty, so a failed FastSurfer run is flagged `t1_qc_pass=False` and blanked); `feature_blocks` groups columns by modality for block-wise harmonisation / stacking. |
 | `qc.py` | QC galleries: per-subject overlay montages (ROI contours on the image) for dwi / nm / flair / datscan outputs, sorted by a QC metric or sampled, plus a contact sheet. |
 
 ## DaTscan SPECT (`pie/imaging/datscan.py`)
@@ -174,6 +177,60 @@ subject it moved the nigral centroid by under a voxel, so it is not in the defau
 
 Unit tests: `tests/test_dwi.py` (run assembly, ROI construction, label resampling direction, single-shell free-water phantom).
 
+### Nigrostriatal fixel measures (`pie/imaging/fba.py`, `--fba`)
+
+Fixel-based analysis without a population template, per subject in native diffusion space (MRtrix3 3.0.4 on PATH):
+Dhollander multi-tissue response functions, multi-shell multi-tissue CSD (WM + GM + CSF; WM + CSF on single-shell
+PPMI-1 data), `mtnormalise`, then iFOD2 tractography seeded in the (refined) atlas substantia nigra of one hemisphere,
+required to reach the FastSurfer putamen or caudate of the same hemisphere, stopped there, and excluded from the
+contralateral hemisphere and the cerebellum (20,000 seeds, 15-90 mm). CSD and `mtnormalise` run inside a box around the
+nigra, striatum, pallidum and thalamus (dilated ~10 mm, cut to the brain mask: ~25 % of the brain voxels, ~5x faster);
+response functions use the whole brain. Features: `nst_afd_{l,r}` = apparent fibre density along the tract (sum of the AFD
+of the traversed fixels over the streamline volume, Raffelt 2012, `afdconnectivity`) on the first 2,000 accepted streamlines,
+because the value grows with the number of streamlines (fixed count: run-to-run CV ~1 %; fewer than 500 accepted -> no AFD);
+`nst_seed_success_{l,r}` = fraction of seeds that produced an accepted streamline (tract-density proxy);
+`nst_n_streamlines_{l,r}`; `nst_fa_{l,r}`, `nst_md_{l,r}` = FA / MD sampled along all accepted streamlines. `--keep-preproc` keeps `<work>/<patno>/fba/preproc.nii.gz` +
+gradients; the normalised WM FOD and `.tck` files stay in that folder. AFD is b-value dependent: compare within the
+acquisition scheme (the manifest's `dwi_batch`). Adds ~2-3 min per subject on 2 threads (~1.5 min of it CSD). The manifest exposes the
+features as `dwi_nst_*`; the study's feature sets `X_nigrostriatal_fba_demo_genetics` and `NX_nigral_fw_fba_demo_genetics`
+use them.
+
+### Whole-image 3D CNN baseline (`pie/imaging/cnn.py`)
+
+`load_volume` takes the FastSurfer `orig_nu.mgz`, masks it with `mask.mgz`, z-scores inside the brain, crops a
+176 x 192 x 176 mm box around the brain centroid and mean-pools to 2 mm (88 x 96 x 88); `cache_volumes` stores every
+subject once as a float16 memmap (~1.5 MB each). `sfcn()` is the SFCN of Peng et al. 2021 (five conv-BN-ReLU-maxpool
+blocks 32-64-128-256-256, 1x1 conv, global average pooling, dropout, one logit); `cross_validate` gives patient-grouped
+stratified out-of-fold probabilities (inner split for early stopping on AUROC, AdamW, weighted BCE, left-right flips,
+random shifts, mixed precision; ~0.8 GB GPU at batch 8). CLI: `python -m pie.imaging.cnn --labels labels.csv
+--fastsurfer-dir ... --cache vol.npy --out oof.csv`. `--pretrained` instead fine-tunes Peng et al.'s UK Biobank brain-age
+SFCN (weights from `pie.imaging.embed`) with a fresh one-logit head on 1 mm MNI volumes (`load_volume_mni`: 160 x 192 x 160,
+the authors' normalisation; 9.8 MB per subject as float16, so keep that cache on a large disk; batch 4, lr 1e-4). A network
+trained from scratch on ~700 subjects is a weak reviewer baseline; the pretrained backbone is the fair one. The study driver
+`dl_baseline.py [--pretrained]` compares the CNN, demographics / genetics, and their late fusion on the same subjects, with
+PD-vs-HC as the positive control.
+
+### Pretrained-model embeddings (`pie/imaging/embed.py`)
+
+Complements the CNN baseline with frozen representations from three open-weight models, so the tabular pipeline
+can test whether a generic image embedding carries information beyond the region features. `to_mni(fastsurfer_dir,
+image_id, shape, origin)` masks `orig_nu.mgz` with `mask.mgz` and resamples it linearly with the per-subject cached
+T1 -> MNI affine (`dwi.register_t1_to_mni`, ~6 s when not yet cached) onto the 1 mm grid each model was trained on
+(`GRID`); each `embed_<backend>(volume, net)` then reproduces the authors' array order and intensity normalisation:
+**brainiac** (Tak et al. 2026; MONAI ViT-B/16, 170 x 206 x 162 mm head-template box in LAS order, trilinear resize
+to 96^3, z-score of nonzero voxels; 768-d token 0 of the last layer, which is the first patch token — the checkpoint
+has no CLS token), **simclr** (Kaczmarek et al. 2025; 3D ResNet-18, ICBM 2009c box transposed to (z, y, x) =
+150 x 192 x 192, masked z-score; 512-d pooled features), **sfcn** (Peng et al. 2021 UK Biobank brain age;
+FSL MNI152 182 x 218 x 182 box in LAS order divided by its mean, then the authors' 160 x 192 x 160 centre crop; 64 penultimate channels
+plus `brainage_sfcn` = expected age over the 40 one-year bins 42-82). Deviations from the authors' pipelines: affine
+instead of rigid alignment for BrainIAC and SimCLR (brain size is normalised away), the FastSurfer mask instead of
+HD-BET / SynthStrip, nilearn's MNI152NLin2009cAsym affine target for all three template variants, no WhiteStripe
+(redundant under the masked z-score). Weights (BrainIAC research-only license, SimCLR MIT, SFCN MIT) live under
+`third_party/weights/` with sources and checksums in `WEIGHTS.md`; a backend without weights is skipped. `run` writes
+`emb_<backend>_<k>` columns one subject per row and resumes from the existing CSV (~5-8 s per subject for all three,
+peak 3.3 GB GPU for the SimCLR ResNet at 1 mm). CLI: `python -m pie.imaging.embed --fastsurfer-dir ... --ids-csv
+dataset.csv --out emb.csv --backends brainiac simclr sfcn --device cuda [--limit N]`.
+
 ## Neuromelanin-sensitive MRI (`pie/imaging/nm.py`)
 
 PPMI-2 acquires a 2D T1-weighted gradient echo with a magnetization-transfer pulse through the midbrain
@@ -282,3 +339,81 @@ venv_imaging/bin/python -m pie.imaging.qc --work-dir Imaging/derived/datscan_ful
 The T1 -> MNI affine used by the diffusion and neuromelanin modules is cached per subject at
 `fastsurfer/<IMAGEID>/mri/transforms/t1_to_mni152_affine.tfm` (`dwi.register_t1_to_mni(..., cache_path=...)`), so all
 modalities of a subject share one atlas mapping and it is fitted once.
+
+## Measurement follow-up safeguards (September 2026)
+
+Run concatenation now checks TR, receiver bandwidth, and estimated readout timing
+when recorded readout timing is absent, in addition to physical affine, PE and TE.
+Readout grouping rounds to a microsecond so sub-microsecond JSON rounding does not
+split a protocol. Estimated timing is only a mismatch guard: it does not supply
+missing PE polarity or establish eligibility for topup/eddy. New complete DWI
+processing is labelled `2026-09-09-acquisition-metadata-v3`.
+
+`pie.imaging.dwi_acquisition` is an **opt-in development module**, not the cohort
+default. It can regrid runs with different origins but identical axes/spacing in
+physical coordinates, retain per-run b0/gradient/metadata lineage, and instrument
+DIPY NLS to expose optimizer status, residuals and the un-clipped tissue tensor.
+Changed axes are rejected until gradient and PE transformations are explicitly
+handled. The diagnostic fit also supports a Cholesky positive-definite sensitivity
+arm and an explicitly experimental positive-definite WLS initialization repair.
+Direct Cholesky fitting can fail on singular initial tensors; nonfinite failures
+are retained per voxel. A positive MINPACK return code alone is insufficient:
+require finite outputs/residuals and a nonnegative raw tensor within numerical
+roundoff (1e-12 mm^2/s). The initialization repair does not prevent all iteration
+limit failures, and none of these checks validates the FW biological model.
+Conditional averages over surviving voxels are not validated regional measures.
+Do not run its temporary
+optimizer instrumentation concurrently with another optimizer in the same Python
+process. The earlier bounded CPU follow-up called `eddy_cpu`; the current
+reassessment explicitly selects `eddy_cuda` with verified acquisition metadata.
+Both consume eddy's rotated gradients once and do not apply topup twice.
+
+NM repeat selection uses one homogeneous reconstruction class: paired Siemens
+NORM/non-NORM outputs are not independent acquisitions. Ambiguous acquisition
+identity is a visible error, not proof of duplicate scans. Missing metadata is
+recorded and must be resolved for independent-acquisition reliability studies.
+The new 20-person replication did not establish superiority of independently
+anchor-refined over same-image-refined NM ROIs; no default ROI-method change was
+made on the initial small pilot's apparent advantage. Neither conditional
+repeatability nor an atlas overlay establishes anatomical accuracy.
+
+### What is reusable in PIE, and what remains study-specific
+
+Processing improvements are not evidence of improved SAA prediction. The completed
+T1/NM reassessments did not establish incremental prediction benefit. Keep reusable
+measurement safeguards separate from the study's labels, models and decision rules.
+
+| Insight | PIE implementation | Integration status |
+|---|---|---|
+| Match the selected T1/session and avoid future/conflicting SAA labels | `batch.py`, `labels.py`, `manifest.py` | Existing pipeline safeguards; explicit opt-in for unmatched labels |
+| Keep affine and acquisition timing/PE differences when assembling DWI | `dwi.py:assemble`, `acquisition_metadata_key` | Existing pipeline safeguards; estimated timing detects mismatches but cannot authorize eddy |
+| Rotate FSL gradients in the correct physical frame after rigid motion | `dwi.py:rotate_bvec`, `preprocess` | Existing pipeline; oblique-grid regression fixtures |
+| Separate NM reconstructions from independent acquisitions; preserve repeat support and hemisphere coordinates | `nm.py:compatible_repeats`, `average_repeats`, `nm_rois` | Existing pipeline; strict study eligibility thresholds remain study-specific |
+| Keep one complete tensor acquisition and its own b0s; validate slice groups; preserve odd-sized grids | `dwi_correction.py` | New reusable opt-in selection/command/geometry helpers; no study imports |
+| Inspect raw tensor eigenvalues and nonpositive signal before accepting FA/MD/AD/RD | `dwi_tensor_qc.py:tensor_measurements` | Opt-in measurement API already used by the reassessment, not silently substituted for legacy free-water features |
+| Expose free-water optimizer status, residuals and raw tensor failures | `dwi_acquisition.py:diagnostic_multishell` | Development diagnostics only; positive-definite initialization repair is not a validated estimator |
+
+`dwi_correction.build_eddy_command` requires verified PE/readout metadata and an
+explicit assertion of raw, uncorrected input. It builds volume-motion/single-slice
+outlier correction (`mporder=0`, `ol_type=sw`) and omits unverifiable slice groups.
+`topup_config` selects `b02b0_1.cnf` for odd dimensions instead of cropping the scan.
+`validate_corrected_geometry` checks image grids and rotated gradients; it does not
+check image intensities or replace registration/ROI QC. The command and slice
+decisions reproduced all 114 saved study attempts available at integration time.
+
+The package helpers do **not** yet provide an end-to-end GPU cohort CLI. External
+process execution, memory admission, restart handling, subject-level QC thresholds,
+and the frozen statistical comparisons remain in the study. The current run keeps
+its original hashed implementation; it is not hot-swapped to these new helpers.
+The maintained follow-up should call these package APIs from one configurable
+driver, rather than accumulate more independent scheduling scripts. Historical
+script snapshots stay available for reproducibility; they are not alternative
+recommended production entry points.
+
+For this project, large derived images belong under
+`/media/cameron/Seagate Portable Drive/PPMI/Imaging/derived/`. Local source code,
+small result tables and provenance can remain in the study directory. The current
+storage amendment checksum-verifies external copies before replacing local image
+folders with links; active image writers are excluded until their files close.
+The earlier NTFS3 write crash remains an infrastructure warning, not a scan exclusion
+or evidence that the drive has been repaired. Do not delete original acquisitions.

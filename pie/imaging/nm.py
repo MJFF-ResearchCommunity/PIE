@@ -5,14 +5,15 @@ PPMI-2 acquires a 2D T1-weighted gradient echo with a magnetization-transfer pul
 through the midbrain, TR ~0.45-0.65 s, TE ~5 ms, FA 40), typically five repeats to be averaged; descriptions vary
 by site ("AX T2 GRE MT", "2D GRE-MT", "AXIAL 2D GRE-MT", "2D GRE-MT_ACPC", "NM-GRE", "NM-MT", ...). Per subject:
 
-1. `convert`      dcm2niix per series; repeats with the same geometry are rigidly aligned to the first and averaged.
+1. `convert`      dcm2niix per series; compatible magnitude acquisitions from one reconstruction class are aligned
+                  to the first and averaged. Paired NORM/non-NORM reconstructions are not independent repeats.
 2. `register`     mean NM slab -> conformed T1 (rigid, mutual information, header-initialised: same session);
                   T1 -> MNI affine (shared with `pie.imaging.dwi`) brings the CIT168 atlas (Pauli 2017) SNc/SNr/RN/VTA/STN
                   onto the NM grid together with the FastSurfer brainstem / ventral DC labels.
 3. `features`     substantia nigra (SNc + SNr, left/right, anterior/posterior halves): mean signal, contrast ratio
-                  CNR = (SN - ref) / ref against the crus cerebri (the part of a surrounding-midbrain ring, the
-                  atlas SN dilated 3 mm minus the nuclei inside brainstem/ventral DC, that lies anterior to the SN on
-                  the same side; the whole-ring CNR is kept as `*_cnr_ring`). The affine-mapped atlas SN sits
+                  CNR = (SN - ref) / ref against the surrounding-midbrain ring (atlas SN dilated 3 mm minus nuclei,
+                  inside brainstem/ventral DC). The same-side anterior ring, nominally crus cerebri, is retained
+                  as `*_cnr_crus`. This is a contrast ratio, not a noise-SD-normalized CNR. The affine-mapped atlas SN sits
                   1-2 mm off the thin neuromelanin band in most subjects, so its position is refined per side by a
                   translation (<= 2 mm in-plane, +-1 slice) that maximises the ROI mean on a 1 mm-smoothed copy while
                   keeping the ROI inside brainstem labels (`nm_sn_shift_mm_*`; the unrefined value is `*_cnr_atlas`).
@@ -66,48 +67,97 @@ def index_nm(zips):
 from .batch import convert_series as convert  # noqa: E402  (kept as the module-level name used by process_subject)
 
 
-def average_repeats(niis):
-    """Load repeats (same shape/spacing), rigidly align each to the first, average. Returns (img, meta, n_used, motion_mm_max)."""
+def compatible_repeats(niis, minimum=1, limit=None):
+    """Select one magnitude reconstruction/protocol; reject ambiguous repeat identity.
+
+    Siemens NORM/non-NORM images can reconstruct the *same* acquisition. Neither
+    different pixel values nor different series IDs establish independence. Keep
+    the largest compatible group (prefer NORM on a tie), in stable path order.
+    Missing acquisition timestamps cannot certify independence; provenance flags it.
+    """
+    groups, excluded = {}, []
+    for path in sorted(map(str, niis)):
+        meta_path = Path(path[:-7] + '.json')
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        tags = meta.get('ImageType', [])
+        tags = [tags] if isinstance(tags, str) else tags
+        tags = {str(t).upper() for t in tags}
+        if tags & {'P', 'PHASE', 'R', 'REAL', 'I', 'IMAGINARY'}:
+            excluded.append({'path': path, 'reason': 'non-magnitude'}); continue
+        img = nib.load(path)
+        if img.ndim not in (3, 4):
+            excluded.append({'path': path, 'reason': 'not 3D/4D'}); continue
+        data = np.asarray(img.dataobj, dtype=np.float32)
+        reconstruction = tuple(sorted(tags - {'ORIGINAL', 'PRIMARY', 'M', 'MAGNITUDE', 'OTHER'}))
+        key = (img.shape[:3], tuple(np.round(img.header.get_zooms()[:3], 3)),
+               meta.get('EchoTime'), meta.get('RepetitionTime'), meta.get('FlipAngle'), meta.get('MTState'), reconstruction)
+        group = groups.setdefault(key, [])
+        for k in range(data.shape[-1] if img.ndim == 4 else 1):
+            stamp = meta.get('AcquisitionDateTime') or meta.get('AcquisitionTime')
+            identity = (stamp, meta.get('AcquisitionNumber'), k) if stamp else None
+            if identity and any(v['acquisition_identity'] == identity for v in group):
+                # Identical times may be anonymized, not true duplicates. Fail visibly
+                # instead of silently collapsing a five-repeat session to one image.
+                raise ValueError('Ambiguous NM acquisition identity: repeated timestamp/number within one reconstruction; verify original acquisition provenance')
+            arr = data[..., k] if img.ndim == 4 else data
+            group.append({'image': nib.Nifti1Image(arr, img.affine), 'path': path, 'volume': k,
+                          'meta': meta, 'acquisition_identity': identity})
+    if not groups:
+        raise ValueError('No magnitude NM repeats')
+    key = max(groups, key=lambda k: (len(groups[k]), 'NORM' in k[-1]))
+    selected = groups[key][:limit]
+    if len(selected) < minimum:
+        raise ValueError(f'Only {len(selected)} compatible magnitude repeats; need {minimum}')
+    for i, v in enumerate(selected):
+        if any(np.array_equal(np.asarray(v['image'].dataobj), np.asarray(u['image'].dataobj)) for u in selected[:i]):
+            raise ValueError('Exact duplicate NM arrays would inflate repeatability')
+    info = {'n_groups': len(groups), 'group_sizes': [len(g) for g in groups.values()],
+            'selected_reconstruction': key[-1], 'excluded': excluded,
+            'n_missing_acquisition_identity': sum(v['acquisition_identity'] is None for v in selected)}
+    return selected, info
+
+
+def average_repeats(niis, sampling_seed=0, transforms_dir=None):
+    """Align/average one compatible reconstruction per acquisition; return image, metadata, count, motion."""
     import SimpleITK as sitk
 
-    imgs = []
-    for p in niis:
-        img = nib.load(p)
-        data = np.asanyarray(img.dataobj).astype(np.float32)
-        if data.ndim == 4:  # some vendors stack repeats in one file
-            for i in range(data.shape[3]):
-                imgs.append((nib.Nifti1Image(data[..., i], img.affine), p))
-        elif data.ndim == 3:
-            imgs.append((img, p))
-    if not imgs:
-        raise ValueError("no neuromelanin volume")
-    shapes = {}
-    for img, p in imgs:
-        shapes.setdefault((img.shape, tuple(np.round(img.header.get_zooms()[:3], 2))), []).append((img, p))
-    group = max(shapes.values(), key=len)
+    selected, info = compatible_repeats(niis)
+    group = [(r['image'], r['path']) for r in selected]
     ref_img = group[0][0]
     ref = _sitk_native(np.asanyarray(ref_img.dataobj).astype(np.float32), ref_img.affine)
     acc = sitk.GetArrayFromImage(ref).astype(np.float64)
+    support = np.ones_like(acc)
     motion = [0.0]
-    for img, _ in group[1:]:
+    for index, (img, _) in enumerate(group[1:], 1):
         mov = _sitk_native(np.asanyarray(img.dataobj).astype(np.float32), img.affine)
-        tx = _register_volume(ref, mov, sampling=0.2, iterations=60)
+        tx = _register_volume(ref, mov, sampling=0.2, iterations=60, sampling_seed=sampling_seed)
         acc += sitk.GetArrayFromImage(sitk.Resample(mov, ref, tx, sitk.sitkLinear, 0.0))
+        if transforms_dir is not None:
+            Path(transforms_dir).mkdir(parents=True, exist_ok=True)
+            sitk.WriteTransform(tx, str(Path(transforms_dir) / f'repeat_{index}_to_anchor.tfm'))
+            ones = sitk.Image(mov.GetSize(), sitk.sitkFloat32) + 1
+            ones.CopyInformation(mov)
+            support += sitk.GetArrayFromImage(sitk.Resample(ones, ref, tx, sitk.sitkLinear, 0.0))
         motion.append(float(np.linalg.norm(np.array(tx.GetParameters())[3:6])))
     mean = (acc / len(group)).astype(np.float32)
-    meta_path = group[0][1][:-7] + ".json"
-    meta = json.load(open(meta_path)) if Path(meta_path).exists() else {}
+    if transforms_dir is not None:
+        Path(transforms_dir).mkdir(parents=True, exist_ok=True)
+        nib.save(nib.Nifti1Image((support / len(group)).transpose(2, 1, 0).astype(np.float32), ref_img.affine),
+                 Path(transforms_dir) / 'repeat_support_fraction.nii.gz')
+    meta = dict(selected[0]['meta'])
+    meta['PIERepeatSelection'] = dict(info, volumes=[{k: v for k, v in r.items() if k != 'image'} for r in selected])
     return nib.Nifti1Image(np.transpose(mean, (2, 1, 0)), ref_img.affine), meta, len(group), float(max(motion))
 
 
 # ------------------------------------------------------------------------------------------ registration / ROIs
-def register_nm_to_t1(nm_img, t1_img, target_center=None):
+def register_nm_to_t1(nm_img, t1_img, target_center=None, sampling_seed=0):
     """Rigid MI registration between the NM slab (fixed: every metric sample lies inside the 24 mm slab) and the
     *unmasked* conformed T1 (moving). The full head matters: with a brain-masked T1 a thin slab of brain tissue
     matches several heights equally well and the optimizer settled on the striatum for some subjects; the eyes,
     sinuses and skull in the slab pin its height. ``target_center`` (LPS mm) initialises the slab centre there
     (atlas SN centroid in T1 space); otherwise the same-session headers are trusted.
-    Returns (transform fixed(T1)->moving(NM), metric), the convention used by ``labels_to_dwi``."""
+    Returns (transform fixed(T1)->moving(NM), metric), the convention used by ``labels_to_dwi``.
+    ``sampling_seed=0`` preserves the legacy ITK wall-clock seed; pass a nonzero seed for repeatability studies."""
     import SimpleITK as sitk
 
     t1 = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(t1_img.dataobj).astype(np.float32), t1_img.affine))
@@ -120,7 +170,7 @@ def register_nm_to_t1(nm_img, t1_img, target_center=None):
     reg = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(32)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.3, seed=0)
+    reg.SetMetricSamplingPercentage(0.3, seed=int(sampling_seed))
     reg.SetInterpolator(sitk.sitkLinear)
     reg.SetOptimizerAsRegularStepGradientDescent(learningRate=0.5, minStep=1e-4, numberOfIterations=200, relaxationFactor=0.6)
     reg.SetOptimizerScalesFromPhysicalShift()
@@ -128,15 +178,12 @@ def register_nm_to_t1(nm_img, t1_img, target_center=None):
     reg.SetSmoothingSigmasPerLevel([1, 0])
     reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
     reg.SetInitialTransform(tx, inPlace=True)
-    try:
-        reg.Execute(slab, t1)          # tx: slab (fixed) point -> T1 (moving) point
-        metric = float(reg.GetMetricValue())
-    except RuntimeError:
-        metric = np.nan
+    reg.Execute(slab, t1)          # tx: slab (fixed) point -> T1 (moving) point
+    metric = float(reg.GetMetricValue())
     return tx.GetInverse(), metric     # T1 point -> slab point
 
 
-def nm_rois(fs_lab, pauli_lab, spacing_mm):
+def nm_rois(fs_lab, pauli_lab, spacing_mm, left_mask=None):
     """Masks on the NM grid: SN (SNc+SNr) left/right, nuclei union, search region (SN dilated DILATE_MM) and the
     reference ring (SN dilated DILATE_MM minus dilated nuclei, inside brainstem / ventral DC / peduncle WM). The search region
     for the threshold measures is the dilated SN restricted to brainstem / ventral DC labels minus the other nuclei."""
@@ -160,12 +207,22 @@ def nm_rois(fs_lab, pauli_lab, spacing_mm):
     # them lie the cisterns, where arteries are bright on gradient-echo images and swamp any threshold measure
     other = ndimage.binary_dilation(nuclei & ~sn, structure=struct, iterations=1)
     search = search & np.isin(fs_lab, [16, 28, 60]) & ~other
-    xl = np.nonzero(fs_lab == 12)[2].mean() if (fs_lab == 12).any() else pauli_lab.shape[2] * 0.75
-    xr = np.nonzero(fs_lab == 51)[2].mean() if (fs_lab == 51).any() else pauli_lab.shape[2] * 0.25
-    mid = (xl + xr) / 2
-    xi = np.arange(pauli_lab.shape[2])[None, None, :]
-    left = (xi > mid) if xl > xr else (xi < mid)
+    if left_mask is None:
+        if not (fs_lab == 12).any() or not (fs_lab == 51).any():
+            raise ValueError("NM slab has no bilateral putamen landmarks; provide the transformed atlas hemisphere mask")
+        xl, xr = np.nonzero(fs_lab == 12)[2].mean(), np.nonzero(fs_lab == 51)[2].mean()
+        xi = np.arange(pauli_lab.shape[2])[None, None, :]
+        left = (xi > (xl + xr) / 2) if xl > xr else (xi < (xl + xr) / 2)
+    else:
+        left = np.asarray(left_mask, dtype=bool)
+        if left.shape != pauli_lab.shape:
+            raise ValueError("hemisphere mask must match the NM grid")
     return {"sn_l": sn & left, "sn_r": sn & ~left, "search_l": search & left, "search_r": search & ~left, "ref": ref, "stem": np.isin(fs_lab, [16, 28, 60])}
+
+
+def _shift_mask(mask, shift):
+    """Translate a mask with zero padding; anatomical labels must never wrap across image borders."""
+    return ndimage.shift(mask.astype(np.uint8), shift, order=0, mode="constant", cval=0, prefilter=False).astype(bool)
 
 
 def _refine(sn, sm, stem, spacing_zyx, max_mm=REFINE_MM):
@@ -180,8 +237,8 @@ def _refine(sn, sm, stem, spacing_zyx, max_mm=REFINE_MM):
     for dz in (-1, 0, 1):
         for dy in range(-ny, ny + 1):
             for dx in range(-nx, nx + 1):
-                m = np.roll(sn_c, (dz, dy, dx), axis=(0, 1, 2))
-                if (m & stem_c).sum() < 0.95 * m.sum():
+                m = _shift_mask(sn_c, (dz, dy, dx))
+                if m.sum() != sn_c.sum() or (m & stem_c).sum() < 0.95 * m.sum():
                     continue
                 v = sm_c[m].mean()
                 if v > best:
@@ -189,13 +246,13 @@ def _refine(sn, sm, stem, spacing_zyx, max_mm=REFINE_MM):
     return shift
 
 
-def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0):
+def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None):
     """Signal and CNR per side (+ anterior/posterior halves of the SN) at the refined atlas-SN position.
     Primary reference = the whole surrounding-midbrain ring (``nm_ring_mean``); the part of the ring anterior to the
     SN on the same side (nominally crus cerebri) is kept as ``*_cnr_crus``. The audit of 2026-09 showed the anterior
     part is contaminated by the neuromelanin band itself (it lies 1-2 mm off the atlas SN and is lost in PD: the
-    anterior/ring intensity ratio is lower in PD), which cancelled the group difference; the ring is diluted but not
-    biased. ``smooth_fwhm_mm`` (in-plane) only serves the position refinement; contrasts are read from the
+    anterior/ring intensity ratio is lower in PD), which cancelled the group difference. The ring is an alternative
+    reference, not an established unbiased biological standard. ``smooth_fwhm_mm`` (in-plane) only serves the position refinement; contrasts are read from the
     unsmoothed slab."""
     out = {}
     sigma = [0.0] + [smooth_fwhm_mm / 2.3548 / s for s in spacing_zyx[1:]]
@@ -222,7 +279,9 @@ def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0):
         ref_mean, ref_sd = float(cv.mean()), float(cv.std())
         out[f"nm_ref_{side}_mean"], out[f"nm_ref_{side}_sd"], out[f"n_ref_{side}"] = ref_mean, ref_sd, int(len(cv))
         shift = _refine(sn0, sm, stem, spacing_zyx)
-        sn = np.roll(sn0, shift, axis=(0, 1, 2))
+        sn = _shift_mask(sn0, shift)
+        if mask_out is not None:
+            mask_out[f"sn_{side}"] = sn
         out[f"nm_sn_shift_mm_{side}"] = float(np.sqrt(sum((d * s) ** 2 for d, s in zip(shift, spacing_zyx))))
         cnr = lambda m, ref: float((nm[m][nm[m] > 0].mean() - ref) / ref) if (nm[m] > 0).sum() >= 3 else np.nan
         out[f"nm_sn_{side}_mean"] = float(nm[sn][nm[sn] > 0].mean()) if (nm[sn] > 0).sum() >= 3 else np.nan
@@ -251,7 +310,16 @@ def _phys_y(tgt, shape_zyx):
     return origin[1] + direction[1, 0] * xx * sp[0] + direction[1, 1] * yy * sp[1] + direction[1, 2] * zz * sp[2]
 
 
-def refeature_subject(work_dir, patno):
+def atlas_left_mask(tgt, chain):
+    """Map the MNI anatomical left hemisphere to the slab; its voxel x direction is not an anatomical label."""
+    atlas = pauli_atlas()
+    ix = np.indices(atlas.shape, sparse=True)
+    x = atlas.affine[0, 3] + sum(atlas.affine[0, k] * ix[k] for k in range(3))
+    left = nib.Nifti1Image(np.broadcast_to(x < 0, atlas.shape).astype(np.float32), atlas.affine)
+    return labels_to_dwi(left, tgt, chain).astype(bool)
+
+
+def refeature_subject(work_dir, patno, fastsurfer_dir=None):
     """Feature columns of a finished subject again, from the saved slab and label maps (``--keep-nifti`` outputs),
     without registering: the way to apply a changed ``features`` to a whole run."""
     d = Path(work_dir) / str(patno)
@@ -261,23 +329,33 @@ def refeature_subject(work_dir, patno):
     fs = np.transpose(np.asanyarray(nib.load(d / "aseg_nm.nii.gz").dataobj), (2, 1, 0))
     spacing = [float(z) for z in img.header.get_zooms()[:3]]
     tgt = _sitk_native(nm, img.affine)
-    rois = nm_rois(fs, pauli, spacing[::-1])
+    # The saved hemisphere map permits refeaturing without new registration or guessing voxel handedness.
+    hemi_path = d / "left_nm.nii.gz"
+    left = np.transpose(np.asanyarray(nib.load(hemi_path).dataobj), (2, 1, 0)).astype(bool) if hemi_path.exists() else None
+    if left is None and fastsurfer_dir is not None:
+        import SimpleITK as sitk
+        cache = mni_cache_path(fastsurfer_dir)
+        slab = d / "slab_to_t1.tfm"
+        if cache.exists() and slab.exists():
+            left = atlas_left_mask(tgt, [sitk.ReadTransform(str(cache)), sitk.ReadTransform(str(slab))])
+    rois = nm_rois(fs, pauli, spacing[::-1], left_mask=left)
     return features(np.transpose(nm, (2, 1, 0)), rois, _phys_y(tgt, pauli.shape), spacing_zyx=tuple(spacing[::-1]))
 
 
 def _refeature_job(args):
-    work_dir, row = args
+    work_dir, row, *fs_dir = args
     keep = {k: v for k, v in row.items() if not k.startswith(("nm_", "n_sn_", "n_ref_", "n_ring"))}   # stale feature columns go
     if row.get("error") or not (Path(work_dir) / str(row["patno"]) / "nm_mean.nii.gz").exists():
         return keep
     try:
-        out = refeature_subject(work_dir, row["patno"])
+        out = refeature_subject(work_dir, row["patno"], fs_dir[0] if fs_dir else None)
+        keep["processing_version"] = "2026-09-08-hemisphere-v2"
         return {**keep, **out, "error": out.pop("nm_error", "")} if "nm_error" not in out else {**keep, "error": out["nm_error"]}
     except Exception as e:
         return {**keep, "error": f"refeature: {type(e).__name__}: {str(e)[:150]}"}
 
 
-def register_slab(nm_img, fastsurfer_dir):
+def register_slab(nm_img, fastsurfer_dir, sampling_seed=0):
     """Rigid slab -> T1 registration with the protocol-aware initialisation: the same-session headers first, then
     (if the atlas SN does not land on the slab) the slab centred on the atlas SN centroid; the result that covers the
     SN better wins (ties: better metric). Returns (T1 -> slab transform, metric, init used, MNI -> T1 affine, its metric,
@@ -297,18 +375,23 @@ def register_slab(nm_img, fastsurfer_dir):
     tgt = _sitk_native(np.asanyarray(nm_img.dataobj).astype(np.float32), nm_img.affine)
     best = None
     for init_target, name in ((None, "header"), (target, "sn_centroid")):
-        tx_try, m_try = register_nm_to_t1(nm_img, t1, target_center=init_target)
+        try:
+            tx_try, m_try = register_nm_to_t1(nm_img, t1, target_center=init_target, sampling_seed=sampling_seed)
+        except RuntimeError:
+            continue
         cov = int(np.isin(labels_to_dwi(pauli_atlas(), tgt, [tx_mni_t1, tx_try]), [7, 9]).sum())
         if best is None or cov > best[2] * 1.2 or (abs(cov - best[2]) <= best[2] * 0.2 and m_try < best[1]):
             best = (tx_try, m_try, cov, name)
         if cov * np.prod(spacing_guess) >= 0.5 * max(len(sn_idx), 1):
             break
+    if best is None:
+        raise RuntimeError("both NM-to-T1 registration initialisations failed")
     tx_t1_nm, m_rigid, _, init_used = best
     return tx_t1_nm, m_rigid, init_used, tx_mni_t1, m_mni, len(sn_idx)
 
 
 # ------------------------------------------------------------------------------------------ driver
-def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False):
+def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, sampling_seed=0, keep_raw=False):
     import SimpleITK as sitk
 
     sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)
@@ -317,13 +400,15 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     niis = []
     for r in series_rows:
         niis += convert(r["zip"], r["prefix"], work / "nii")
-    nm_img, meta, n_rep, motion = average_repeats(niis)
+    nm_img, meta, n_rep, motion = average_repeats(niis, sampling_seed=sampling_seed,
+                                                transforms_dir=work / 'repeat_transforms' if keep_nifti else None)
+    (work / 'repeat_selection.json').write_text(json.dumps(meta['PIERepeatSelection'], indent=2))
     row = {"patno": patno, "n_series": len(series_rows), "n_repeats": n_rep, "repeat_motion_mm_max": motion,
            "shape": "x".join(map(str, nm_img.shape)), "voxel_mm": "x".join(str(round(float(z), 2)) for z in nm_img.header.get_zooms()[:3]),
            "manufacturer": str(meta.get("Manufacturer", "")), "model": str(meta.get("ManufacturerModelName", "")),
            "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "flip_angle": meta.get("FlipAngle", np.nan),
            "mt_flag": str(meta.get("MTState", "")), "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
-    tx_t1_nm, m_rigid, init_used, tx_mni_t1, m_mni, n_sn_t1 = register_slab(nm_img, fastsurfer_dir)
+    tx_t1_nm, m_rigid, init_used, tx_mni_t1, m_mni, n_sn_t1 = register_slab(nm_img, fastsurfer_dir, sampling_seed=sampling_seed)
     mri = Path(fastsurfer_dir) / "mri"
     aseg = nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
     nm = np.asanyarray(nm_img.dataobj).astype(np.float32)
@@ -332,19 +417,28 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     fs_lab = labels_to_dwi(aseg, tgt, [tx_t1_nm])
     pauli_lab = labels_to_dwi(pauli_atlas(), tgt, [tx_mni_t1, tx_t1_nm])
     spacing = [float(z) for z in nm_img.header.get_zooms()[:3]]
-    rois = nm_rois(fs_lab, pauli_lab, spacing[::-1])
+    left = atlas_left_mask(tgt, [tx_mni_t1, tx_t1_nm])
+    rois = nm_rois(fs_lab, pauli_lab, spacing[::-1], left_mask=left)
+    row.update({"fs_image_id": Path(fastsurfer_dir).name, "acquisition_date": series_rows[0]["date"],
+                "processing_version": "2026-09-08-repeat-selection-v3"})
     phys_y = _phys_y(tgt, pauli_lab.shape)
     nm_zyx = np.transpose(nm, (2, 1, 0))
     # slab coverage: fraction of the atlas SN (in T1 space, 1 mm^3 voxels) that falls inside the NM slab
     row["sn_slab_coverage"] = float((rois["sn_l"].sum() + rois["sn_r"].sum()) * np.prod(spacing) / max(n_sn_t1 * 1.0, 1.0))
-    row.update(features(nm_zyx, rois, phys_y, spacing_zyx=tuple(spacing[::-1])))
+    refined = {}
+    row.update(features(nm_zyx, rois, phys_y, spacing_zyx=tuple(spacing[::-1]), mask_out=refined))
     if keep_nifti:
         sitk.WriteTransform(tx_t1_nm, str(work / "slab_to_t1.tfm"))     # T1 point -> slab point; reused by nm_template
         nib.save(nm_img, work / "nm_mean.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(pauli_lab, (2, 1, 0)).astype(np.int16), nm_img.affine), work / "pauli_nm.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(fs_lab, (2, 1, 0)).astype(np.int16), nm_img.affine), work / "aseg_nm.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(rois["ref"], (2, 1, 0)).astype(np.int16), nm_img.affine), work / "ref_nm.nii.gz")
-    shutil.rmtree(work / "nii", ignore_errors=True)
+        nib.save(nib.Nifti1Image(np.transpose(left, (2, 1, 0)).astype(np.uint8), nm_img.affine), work / "left_nm.nii.gz")
+        if refined:
+            labels = sum(i * refined.get(f"sn_{s}", np.zeros_like(pauli_lab, bool)) for i, s in ((1, "l"), (2, "r")))
+            nib.save(nib.Nifti1Image(np.transpose(labels, (2, 1, 0)).astype(np.uint8), nm_img.affine), work / "sn_refined_nm.nii.gz")
+    if not keep_raw:
+        shutil.rmtree(work / "nii", ignore_errors=True)
     return row
 
 
@@ -376,13 +470,22 @@ def main(argv=None):
         d = pd.read_csv(out_csv)
         d["error"] = d["error"].fillna("")
         only = {int(x) for x in Path(a.patnos).read_text().split()} if a.patnos else None
-        jobs = [(str(work), r) for r in d.to_dict("records") if only is None or int(r["patno"]) in only]
+        fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+        # Legacy rows did not record their T1 ID. Reuse a cached registration only when that lineage is
+        # unambiguous; the new earliest-series rule cannot identify which same-date alternative the old code used.
+        legacy_sessions = pd.read_csv(a.sessions, dtype={"image_id": str})
+        alternatives = legacy_sessions.groupby("patno")["image_id"].nunique()
+        fs = {p: directory for p, directory in fs.items() if alternatives.get(p, 0) == 1}
+        jobs = [(str(work), r, str(Path(a.fastsurfer_dir) / str(r["fs_image_id"])) if pd.notna(r.get("fs_image_id")) else fs.get(int(r["patno"])))
+                for r in d.to_dict("records") if only is None or int(r["patno"]) in only]
         with ProcessPoolExecutor(max_workers=a.workers) as ex:
             rows = list(ex.map(_refeature_job, jobs, chunksize=2))
         bak = out_csv.with_suffix(".pre_refeature.csv")
         if not bak.exists():
             out_csv.rename(bak)
-        pd.DataFrame(rows).to_csv(out_csv, index=False)
+        updated = pd.DataFrame(rows)
+        untouched = d[~d["patno"].isin(updated["patno"])] if len(updated) else d
+        pd.concat([untouched, updated], ignore_index=True).to_csv(out_csv, index=False)
         print(f"refeatured {sum('nm_sn_shift_mm_l' in r for r in rows)}/{len(rows)} subjects ->", out_csv)
         return
     idx = load_index(work / "nm_index.csv", a.zips, flag_nm)
