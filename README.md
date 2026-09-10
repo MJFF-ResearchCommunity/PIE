@@ -182,6 +182,22 @@ features (`pie/imaging/dwi.py`). See [**Imaging layer**](documentation/imaging.m
 setup with `bash scripts/setup_imaging.sh`, run with `python -m pie.imaging.run ...`, and pass
 the resulting table to the pipeline with `--imaging-features`.
 
+## Interactive Brain Explorer
+
+Explore participant-specific anatomy in 3D, inspect linked slices and regions,
+switch modalities, and navigate actual acquisition dates with the local
+**Brain Explorer**. It reads the existing MRI/DTI/SPECT outputs and supports
+CT, PET and fMRI NIfTI imports, 4D frames, and explicitly registered overlays.
+
+```bash
+venv_imaging/bin/python -m pip install -r pie/imaging/viewer/requirements.txt
+bash scripts/run_brain_viewer.sh
+```
+
+Open **http://127.0.0.1:8765**. See [Brain Explorer](documentation/brain_viewer.md)
+for installation, geometry and fusion rules, persistent import manifests, and
+the evidence-backed PPMI sample download plan.
+
 ## Deeper Dive: Understanding the Modules
 While the main pipeline is the recommended entry point, PIE is composed of modular components. You can learn more about each one in the detailed documentation:
 - [**Data Loaders**](documentation/data_loader.md)

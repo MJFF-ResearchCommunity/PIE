@@ -1,3 +1,57 @@
+# Local AI-agent configuration, instructions, memory, and session artifacts.
+# Keep these local even when they live inside a package or documentation folder.
+.agent/
+.agents/
+.codex/
+.claude/
+.cursor/
+.windsurf/
+.gemini/
+.opencode/
+.continue/
+.roo/
+.kilocode/
+.clinerules
+.clinerules/
+.aider*
+.cursorrules
+.cursorignore
+.windsurfrules
+.mcp.json
+.vscode/mcp.json
+.github/agents/
+.github/prompts/
+.github/instructions/
+.github/skills/
+.github/copilot-instructions.md
+AGENTS.md
+AGENTS.*.md
+CLAUDE.md
+CLAUDE.*.md
+GEMINI.md
+GEMINI.*.md
+
+# Local design briefs and internal notes (not public project documentation).
+.impeccable.md
+.impeccable/
+[Dd][Ee][Ss][Ii][Gg][Nn]*.md
+*.design.md
+design-notes/
+design_notes/
+[Nn][Oo][Tt][Ee][Ss].md
+*.notes.md
+*.local.md
+.notes/
+.local/
+notes/
+internal-notes/
+internal_notes/
+/documentation/internal/
+/docs/internal/
+/documentation/viewer_next_downloads.md
+# Put other private working documents in .local/ or notes/; arbitrary Markdown
+# filenames are not automatically private. README, user guides, and notices stay tracked.
+
 # Ignore the entire PPMI and data folder and all their contents:
 PPMI/
 data/
@@ -194,5 +248,6 @@ nilearn_data/
 *.dcm
 # Profiling dumps (cProfile etc.)
 *.prof
+.playwright-cli/
 PPMI
 PPMI_2025-03/
