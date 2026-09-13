@@ -22,12 +22,21 @@ import numpy as np
 from .convert import DCM2NIIX
 
 
+class DICOMConversionError(RuntimeError):
+    """Converter execution failed; log remains available for acquisition review."""
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+# Capture the implementation that this process actually loaded, even if a
+# developer edits the source file while a long conversion is still running.
+_CONVERSION_CODE_SHA256 = sha256(__file__)
 
 
 def write_json(path, value):
@@ -42,10 +51,10 @@ def write_json(path, value):
     temporary.replace(path)
 
 
-def command(args, log, *, env=None, timeout=3600):
+def command(args, log, *, env=None, timeout=3600, cwd=None):
     with Path(log).open("w") as stream:
         result = subprocess.run(list(map(str, args)), stdout=stream,
-                                stderr=subprocess.STDOUT, env=env, timeout=timeout)
+                                stderr=subprocess.STDOUT, env=env, timeout=timeout, cwd=cwd)
     if result.returncode:
         raise RuntimeError(f"Command failed ({result.returncode}); see {log}")
 
@@ -64,7 +73,9 @@ def classify_run(shape, tr, *, min_volumes=100, min_seconds=300):
 
 def inspect_nifti(nifti, sidecar):
     img = nib.load(nifti)
-    meta = json.loads(Path(sidecar).read_text())
+    # dcm2niix can emit raw control characters inside string fields (e.g. comments);
+    # strict=False accepts them instead of failing the whole conversion.
+    meta = json.loads(Path(sidecar).read_text(), strict=False)
     tr = meta.get("RepetitionTime")
     if tr is not None:
         tr = float(tr)
@@ -92,12 +103,20 @@ def inspect_nifti(nifti, sidecar):
             "series_description": meta.get("SeriesDescription")}
 
 
-def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX):
+def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX, archive_cache=None,
+                           scratch_root=None, extra_args=()):
     """CRC-check selected DICOM members, convert, and retain ALL output images.
 
     Temporary raw copies live under output_root; the archive is never modified.
     Existing completed outputs require matching source metadata and output hashes.
     Incomplete directories are not reused or silently overwritten.
+    Optional ``ZipArchiveCache`` reuses a bounded index, not extracted data.
+    Converter failures retain a diagnostic log outside temporary scratch.
+    ``extra_args`` passes additional converter switches (recorded in the
+    saved command), e.g. ``("-m", "y")`` to merge split temporal volumes.
+    ``scratch_root`` optionally places temporary raw DICOMs on a different
+    configured filesystem. Output staging stays on output_root for atomic
+    publication. A missing/full scratch location is an error, never a fallback.
     """
     patno, image_id = str(record["PATNO"]), record["image_id"]
     if not re.fullmatch(r"\d+", patno) or not re.fullmatch(r"I\d+", image_id):
@@ -113,6 +132,9 @@ def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX):
     identity = {"archive": str(archive), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
                 "series_prefix": prefix, "PATNO": patno, "image_id": image_id}
     root = Path(output_root).resolve(strict=True)
+    scratch = root if scratch_root is None else Path(scratch_root).resolve(strict=True)
+    if not scratch.is_dir():
+        raise ValueError('Configured conversion scratch must be a directory')
     target = root / patno / image_id
     completion = target / "conversion.json"
     if completion.exists():
@@ -127,7 +149,9 @@ def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX):
     if target.exists():
         raise FileExistsError(f"Incomplete output must be reviewed: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(archive) as z:
+    from .archives import ZipArchiveCache
+    from contextlib import nullcontext
+    with (ZipArchiveCache() if archive_cache is None else nullcontext(archive_cache)) as cache, cache.open(archive) as z:
         members = [i for i in z.infolist() if i.filename.startswith(prefix)
                    and i.filename.lower().endswith(".dcm") and not i.is_dir()]
         if not members or any(i.file_size == 0 for i in members):
@@ -139,10 +163,12 @@ def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX):
         required = sum(i.file_size for i in members) * 4 + 2 * 1024**3
         if shutil.disk_usage(root).free < required:
             raise OSError("Insufficient working space for selected series")
-        with tempfile.TemporaryDirectory(prefix="fmri-convert-", dir=root) as temporary:
+        if shutil.disk_usage(scratch).free < sum(i.file_size for i in members) + 1024**3:
+            raise OSError('Insufficient configured DICOM scratch space')
+        with tempfile.TemporaryDirectory(prefix="fmri-convert-", dir=root) as temporary, \
+                tempfile.TemporaryDirectory(prefix="fmri-dicom-", dir=scratch) as raw_temporary:
             temp = Path(temporary)
-            raw, out = temp / "dicom", temp / "converted"
-            raw.mkdir()
+            raw, out = Path(raw_temporary), temp / "converted"
             out.mkdir()
             source_digest = hashlib.sha256()
             for index, member in enumerate(members):
@@ -155,21 +181,48 @@ def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX):
             header = pydicom.dcmread(raw / "00000000.dcm", stop_before_pixels=True,
                                     specific_tags=["StudyInstanceUID", "SeriesInstanceUID"])
             # Ignore per-user defaults and use internal single-process compression.
-            cmd = [dcm2niix, "-g", "i", "-z", "i", "-b", "y", "-ba", "y", "-f", image_id + "_%s",
-                   "-o", out, raw]
+            cmd = [dcm2niix, "-g", "i", "-z", "i", "-b", "y", "-ba", "y", *map(str, extra_args),
+                   "-f", image_id + "_%s", "-o", out, raw]
             env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
-            command(cmd, out / "dcm2niix.log", env=env)
+
+            def retain_failure(error):
+                failure = root / "conversion_failures" / patno / image_id
+                failure.mkdir(parents=True, exist_ok=True)
+                log = failure / (temp.name + ".log")
+                if (out / "dcm2niix.log").exists():
+                    shutil.copyfile(out / "dcm2niix.log", log)
+                # Retain converter products for technical diagnosis, never publish
+                # them as completed/scientifically usable acquisition outputs.
+                diagnostics = failure / temp.name
+                out.rename(diagnostics)
+                write_json(failure / (temp.name + ".json"), {
+                    "source": identity, "command": list(map(str, cmd)),
+                    "error": str(error), "log": str(log),
+                    "unvalidated_outputs": str(diagnostics),
+                    "selected_members_crc_checked": True,
+                    "source_member_index_sha256": source_digest.hexdigest(),
+                    "converter_sha256": sha256(dcm2niix)})
+                raise DICOMConversionError(f"DICOM conversion failed; retained diagnostic: {log}") from error
+
+            try:
+                command(cmd, out / "dcm2niix.log", env=env)
+            except (RuntimeError, subprocess.TimeoutExpired) as error:
+                retain_failure(error)
             images = sorted(out.glob("*.nii.gz"))
             if not images:
-                raise ValueError("Converter produced no NIfTI")
+                retain_failure(ValueError("Converter produced no NIfTI"))
             outputs = []
             for nii in images:
                 js = nii.with_suffix("").with_suffix(".json")
                 if not js.exists():
-                    raise ValueError("Converter output lacks required metadata sidecar")
+                    retain_failure(ValueError(f"Converter output lacks required metadata sidecar: {nii.name}"))
+                try:
+                    inspection = inspect_nifti(nii, js)
+                except (ValueError, nib.filebasedimages.ImageFileError) as error:
+                    retain_failure(error)
                 outputs.append({"nifti": nii.name, "sidecar": js.name,
                                 "nifti_sha256": sha256(nii), "sidecar_sha256": sha256(js),
-                                **inspect_nifti(nii, js)})
+                                **inspection})
             now = archive.stat()
             if (now.st_size, now.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
                 raise ValueError("Archive changed during conversion")
@@ -179,7 +232,7 @@ def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX):
                       "study_uid": str(header.get("StudyInstanceUID", "")),
                       "series_uid": str(header.get("SeriesInstanceUID", "")),
                       "converter_sha256": sha256(dcm2niix),
-                      "code_sha256": sha256(__file__), "command": list(map(str, cmd)),
+                      "code_sha256": _CONVERSION_CODE_SHA256, "command": list(map(str, cmd)),
                       "outputs": outputs}
             write_json(out / "conversion.json", result)
             out.rename(target)
@@ -197,8 +250,11 @@ def alignment_pilot(t1, motion_dir, output, *, fsl_dir):
     env = dict(os.environ, FSLDIR=str(fsl_dir), FSLOUTPUTTYPE="NIFTI_GZ",
                OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
     fsl = Path(fsl_dir) / "bin"
-    command([fsl / "bet", t1, output / "t1_brain", "-R", "-f", "0.5", "-m"],
-            output / "bet_t1.log", env=env)
+    # BET's shell wrapper expands filenames unquoted internally. Keep its
+    # arguments relative and space-free; the working directory stays external.
+    shutil.copyfile(t1, output / "t1_input.nii.gz")
+    command([fsl / "bet", "t1_input.nii.gz", "t1_brain", "-R", "-f", "0.5", "-m"],
+            output / "bet_t1.log", env=env, cwd=output)
     command([fsl / "flirt", "-in", motion_dir / "mean_brain.nii.gz", "-ref",
              output / "t1_brain.nii.gz", "-out", output / "bold_in_t1.nii.gz",
              "-omat", output / "bold_to_t1.mat", "-dof", "6", "-cost", "normmi"],
@@ -262,14 +318,169 @@ def framewise_displacement(parameters, radius_mm=50):
     return np.r_[0.0, radius_mm * delta[:, :3].sum(axis=1) + delta[:, 3:].sum(axis=1)]
 
 
-def motion_pilot(nifti, sidecar, output, *, fsl_dir, discard_seconds=10):
+def render_pilot_review(motion_dir, alignment_dir, output, *, title=""):
+    """Multi-slice anatomy/BOLD and motion review, without assigning a QC pass."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    motion_dir, alignment_dir, output = map(Path, (motion_dir, alignment_dir, output))
+    output.mkdir(parents=True, exist_ok=True)
+
+    def load(path):
+        img = nib.as_closest_canonical(nib.load(path))
+        return np.asarray(img.dataobj), img.header.get_zooms()[:3]
+
+    mean, mean_zoom = load(motion_dir / "mean.nii.gz")
+    native_mask, _ = load(motion_dir / "mean_brain_mask.nii.gz")
+    t1, zoom = load(alignment_dir / "t1_input.nii.gz")
+    t1mask, _ = load(alignment_dir / "t1_brain_mask.nii.gz")
+    bold, _ = load(alignment_dir / "bold_in_t1.nii.gz")
+    boldmask, _ = load(alignment_dir / "bold_mask_in_t1.nii.gz")
+
+    def views(data, mask, spacing):
+        pts = np.argwhere(mask > 0)
+        low, high = pts.min(axis=0), pts.max(axis=0)
+        centre = np.round((low + high) / 2).astype(int)
+        axes = [(2, int(low[2] + f * (high[2] - low[2]))) for f in (.2, .45, .7)]
+        axes += [(1, centre[1]), (0, centre[0])]
+        result = []
+        for axis, index in axes:
+            remaining = [i for i in range(3) if i != axis]
+            result.append((np.take(data, index, axis=axis).T,
+                           spacing[remaining[1]] / spacing[remaining[0]], axis, index))
+        return result
+
+    fig, axs = plt.subplots(4, 5, figsize=(17, 12))
+    rows = [(mean, native_mask, mean_zoom), (t1, t1mask, zoom),
+            (t1, t1mask, zoom), (bold, t1mask, zoom)]
+    labels = ["Native mean / brain mask", "T1 / T1 mask", "T1 / BOLD mask", "Aligned BOLD / T1 mask"]
+    contours = [native_mask, t1mask, boldmask, t1mask]
+    for row, (data, mask, spacing) in enumerate(rows):
+        positive = data[data > 0]
+        vmax = np.percentile(positive, 99) if positive.size else 1
+        for col, (sl, aspect, axis, index) in enumerate(views(data, mask, spacing)):
+            ax = axs[row, col]
+            ax.imshow(sl, cmap="gray", origin="lower", vmin=0, vmax=vmax, aspect=aspect)
+            contour = np.take(contours[row], index, axis=axis).T
+            if contour.any() and not contour.all():
+                ax.contour(contour, levels=[.5], colors="cyan" if row == 2 else "lime", linewidths=.6)
+            ax.set_title(f"{labels[row]} | {'xyz'[axis]}={index}", fontsize=8)
+            ax.axis("off")
+    fig.suptitle(title + " — uncorrected rigid/motion pilot; no QC pass implied", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(output / "spatial_review.png", dpi=110)
+    plt.close(fig)
+
+    qc = json.loads((motion_dir / "qc.json").read_text())
+    values = np.loadtxt(motion_dir / "motion_qc.tsv", skiprows=1)
+    time = np.arange(len(values)) * qc["tr_seconds"]
+    fig, axs = plt.subplots(2, 1, figsize=(12, 5), sharex=True)
+    axs[0].plot(time[1:], values[1:, 0], linewidth=.8)
+    axs[0].axhline(.3, color="red", linestyle="--", linewidth=.8)
+    axs[0].set_ylabel("FD (mm)")
+    axs[1].plot(time[1:], values[1:, 1], linewidth=.8)
+    axs[1].set_ylabel("Raw DVARS")
+    axs[1].set_xlabel("Seconds after initial-volume discard")
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(output / "motion_review.png", dpi=110)
+    plt.close(fig)
+    return {"spatial_review": str(output / "spatial_review.png"),
+            "motion_review": str(output / "motion_review.png"), "visual_qc_pass_assigned": False}
+
+
+def verify_pilot_metrics(motion_dir, alignment_dir):
+    """Independently recompute saved diagnostics; no preprocessing rerun."""
+    motion_dir, alignment_dir = Path(motion_dir), Path(alignment_dir)
+    qc = json.loads((motion_dir / "qc.json").read_text())
+    alignment = json.loads((alignment_dir / "alignment.json").read_text())
+    params = np.loadtxt(motion_dir / "motion.par")
+    delta = np.abs(np.diff(params, axis=0))
+    fd = np.r_[0, 50 * delta[:, :3].sum(axis=1) + delta[:, 3:].sum(axis=1)]
+    tab = np.loadtxt(motion_dir / "motion_qc.tsv", skiprows=1)
+    np.testing.assert_allclose(fd, tab[:, 0], rtol=1e-12)
+    array = np.asarray(nib.load(motion_dir / "motion.nii.gz").dataobj, dtype=np.float32)
+    mask = np.asarray(nib.load(motion_dir / "mean_brain_mask.nii.gz").dataobj) > 0
+    samples = array[mask].astype(np.float64)
+    dvars = np.sqrt(np.square(np.diff(samples, axis=1)).mean(axis=0))
+    np.testing.assert_allclose(dvars, tab[1:, 1], rtol=1e-12)
+    sd = samples.std(axis=1, ddof=1)
+    variable = sd > np.finfo(float).eps
+    tsnr = np.median(samples.mean(axis=1)[variable] / sd[variable])
+    for value, key in [(fd[1:].mean(), "mean_fd_mm_excluding_first"),
+                       ((fd[1:] > .3).mean(), "fraction_fd_gt_0p3"),
+                       ((fd <= .3).sum() * qc["tr_seconds"], "seconds_fd_le_0p3"),
+                       (tsnr, "median_native_motion_corrected_tsnr")]:
+        np.testing.assert_allclose(value, qc[key], rtol=1e-12)
+    t1mask = np.asarray(nib.load(alignment_dir / "t1_brain_mask.nii.gz").dataobj) > 0
+    boldmask = np.asarray(nib.load(alignment_dir / "bold_mask_in_t1.nii.gz").dataobj) > 0
+    np.testing.assert_allclose(2 * (t1mask & boldmask).sum() / (t1mask.sum() + boldmask.sum()),
+                               alignment["mask_dice"])
+    matrix = np.loadtxt(alignment_dir / "bold_to_t1.mat")
+    # FLIRT's float precision and text serialization do not support 1e-8 checks.
+    np.testing.assert_allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-6)
+    longest = streak = 0
+    good = fd[1:] <= .3
+    for flag in good:
+        streak = streak + 1 if flag else 0
+        longest = max(longest, streak)
+    return {"fd_dvars_tsnr_alignment_recomputed": True,
+            "low_fd_seconds_excluding_first": float(good.sum() * qc["tr_seconds"]),
+            "longest_consecutive_low_fd_seconds_excluding_first": longest * qc["tr_seconds"],
+            "high_fd_frames_excluding_first": int((~good).sum()),
+            "rigid_rotation_check_atol": 1e-6,
+            "motion_sha256": sha256(motion_dir / "motion.nii.gz")}
+
+
+def validate_motion_resume(nifti, output, discard):
+    """Verify legacy completed MCFLIRT products before resuming later QC.
+
+    Compare the actual trimmed voxels with the source, and require the complete
+    finite motion image, parameters and per-volume transforms. This is an
+    explicit technical recovery check, not a new motion estimate.
+    """
+    output = Path(output)
+    source = nib.load(nifti)
+    trimmed = nib.load(output / "trimmed.nii.gz")
+    moved = nib.load(output / "motion.nii.gz")
+    expected_shape = source.shape[:3] + (source.shape[3] - discard,)
+    for img in (trimmed, moved):
+        if img.shape != expected_shape or not np.allclose(img.affine, source.affine):
+            raise ValueError("Resume image geometry differs from source")
+        if not np.isfinite(np.asarray(img.dataobj)).all():
+            raise ValueError("Nonfinite resume image")
+    # Reproduce the saved representation: a copied integer NIfTI header can
+    # quantize float32 data on write. Comparing to unsaved floats would falsely
+    # reject the original output. Decode both with the same writer/header.
+    with tempfile.TemporaryDirectory(prefix="resume-verify-", dir=output) as temporary:
+        expected = Path(temporary) / "expected.nii.gz"
+        nib.save(nib.Nifti1Image(np.asarray(source.dataobj, dtype=np.float32)[..., discard:],
+                               source.affine, source.header), expected)
+        if not np.array_equal(np.asarray(trimmed.dataobj), np.asarray(nib.load(expected).dataobj)):
+            raise ValueError("Resume trimmed data differ from source")
+    params = np.loadtxt(output / "motion.par")
+    if params.shape != (expected_shape[-1], 6) or not np.isfinite(params).all():
+        raise ValueError("Incomplete resume motion parameters")
+    matrices = sorted((output / "motion.mat").glob("MAT_*"))
+    if len(matrices) != expected_shape[-1]:
+        raise ValueError("Incomplete resume motion transforms")
+    for matrix in matrices:
+        value = np.loadtxt(matrix)
+        if value.shape != (4, 4) or not np.isfinite(value).all():
+            raise ValueError("Invalid resume motion transform")
+    return {"trimmed_matches_source": True, "motion_sha256": sha256(output / "motion.nii.gz"),
+            "parameters_sha256": sha256(output / "motion.par"), "transform_count": len(matrices)}
+
+
+def motion_pilot(nifti, sidecar, output, *, fsl_dir, discard_seconds=10, resume=False):
     """Bounded native-space motion/QC pilot, NOT fully preprocessed BOLD.
 
     No slice timing, susceptibility correction, nuisance regression, filtering,
     atlas connectivity, or label access. Raw/native tSNR is a technical diagnostic.
     """
     output = Path(output)
-    if output.exists():
+    if output.exists() and not resume:
         raise FileExistsError(f"Will not overwrite pilot: {output}")
     info = inspect_nifti(nifti, sidecar)
     if info["run_class"] != "rest_candidate":
@@ -282,23 +493,33 @@ def motion_pilot(nifti, sidecar, output, *, fsl_dir, discard_seconds=10):
         raise ValueError("Nonfinite image intensities")
     if data.shape[-1] - discard < 100:
         raise ValueError("Too few volumes after initial-volume removal")
-    output.mkdir(parents=True)
+    if resume and (output / "qc.json").exists():
+        raise FileExistsError("Completed motion QC must not be overwritten")
+    recovery = validate_motion_resume(nifti, output, discard) if resume else None
+    output.mkdir(parents=True, exist_ok=resume)
     trimmed = output / "trimmed.nii.gz"
-    nib.save(nib.Nifti1Image(data[..., discard:], img.affine, img.header), trimmed)
+    if not resume:
+        nib.save(nib.Nifti1Image(data[..., discard:], img.affine, img.header), trimmed)
     del data
     env = dict(os.environ, FSLDIR=str(fsl_dir), FSLOUTPUTTYPE="NIFTI_GZ",
                OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
     prefix = output / "motion"
-    command([Path(fsl_dir) / "bin/mcflirt", "-in", trimmed, "-out", prefix,
-             "-plots", "-mats", "-rmsrel", "-rmsabs"], output / "mcflirt.log", env=env)
+    if not resume:
+        command([Path(fsl_dir) / "bin/mcflirt", "-in", trimmed, "-out", prefix,
+                 "-plots", "-mats", "-rmsrel", "-rmsabs"], output / "mcflirt.log", env=env)
     moved = nib.load(output / "motion.nii.gz")
     array = np.asarray(moved.dataobj, dtype=np.float32)
     if not np.isfinite(array).all():
         raise ValueError("Nonfinite motion-corrected image")
     mean = array.mean(axis=-1)
     nib.save(nib.Nifti1Image(mean, moved.affine), output / "mean.nii.gz")
-    command([Path(fsl_dir) / "bin/bet", output / "mean.nii.gz", output / "mean_brain",
-             "-f", "0.3", "-m"], output / "bet.log", env=env)
+    if resume and (output / "bet.log").exists():
+        backup = output / "bet.before_resume.log"
+        if backup.exists():
+            raise FileExistsError("Previous recovery log already exists; review before retrying")
+        (output / "bet.log").rename(backup)
+    command([Path(fsl_dir) / "bin/bet", "mean.nii.gz", "mean_brain",
+             "-f", "0.3", "-m"], output / "bet.log", env=env, cwd=output)
     mask = np.asarray(nib.load(output / "mean_brain_mask.nii.gz").dataobj) > 0
     if mask.sum() < 1000:
         raise ValueError("Implausibly small pilot brain mask")
@@ -316,6 +537,7 @@ def motion_pilot(nifti, sidecar, output, *, fsl_dir, discard_seconds=10):
     np.savetxt(output / "motion_qc.tsv", np.c_[fd, dvars], delimiter="\t",
                header="framewise_displacement_mm\tdvars_raw", comments="")
     result = {"scope": "technical_motion_pilot_not_analysis_ready",
+              "resumed_existing_motion": recovery,
               "source_sha256": sha256(nifti), "code_sha256": sha256(__file__),
               "discarded_initial_volumes": discard, "discard_rule_seconds": discard_seconds,
               "tr_seconds": tr, "remaining_volumes": len(fd), "brain_mask_voxels": int(mask.sum()),

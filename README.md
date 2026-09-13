@@ -198,6 +198,26 @@ Open **http://127.0.0.1:8765**. See [Brain Explorer](documentation/brain_viewer.
 for installation, geometry and fusion rules, persistent import manifests, and
 the evidence-backed PPMI sample download plan.
 
+## Running an Experiment (`pie.experiment`)
+
+Measurements are only half of a study. `pie.experiment` carries the part that decides whether a
+result survives review: cohort rules that refuse to guess (carrier status, per-module sex
+decoding, visit concurrency), nested model selection whose preprocessing never sees the
+partition it will be judged on, and manifests that tie a result to the code and inputs that
+produced it.
+
+```python
+from pie.experiment import cohort, prediction, provenance
+
+frame["sex_male"] = cohort.decode_sex(demographics)       # PPMI codes SEX per data module
+predictions, audit = prediction.nested_fold(frame, train_rows, test_rows,
+                                            families={"t1": t1_columns}, batch_cols=["scanner_batch"],
+                                            icv="MaskVol", adjust_baseline=False, seed=20260909)
+provenance.write_manifest(out_dir, inputs=[cohort_csv], code=Path(__file__).parent, seed=20260909)
+```
+
+See [**Experiment layer**](documentation/experiment.md).
+
 ## Deeper Dive: Understanding the Modules
 While the main pipeline is the recommended entry point, PIE is composed of modular components. You can learn more about each one in the detailed documentation:
 - [**Data Loaders**](documentation/data_loader.md)
@@ -207,6 +227,7 @@ While the main pipeline is the recommended entry point, PIE is composed of modul
 - [**Feature Selector**](documentation/feature_selector.md)
 - [**Classifier & Reporting**](documentation/classifier.md)
 - [**Imaging layer**](documentation/imaging.md)
+- [**Experiment layer**](documentation/experiment.md)
 
 ## Contributing
 Contributions are welcome! Please follow these steps:

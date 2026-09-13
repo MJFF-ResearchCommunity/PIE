@@ -22,6 +22,14 @@ bash scripts/run_brain_viewer.sh
 
 Open **http://127.0.0.1:8765**. Stop with Ctrl+C. The server binds to loopback;
 this is a single-user local viewer, without a multiuser authentication layer.
+Pass `--cache-dir /path/to/viewer-cache` to choose where newly prepared viewer
+images are written. For a dedicated capacity-limited filesystem, additionally
+pass `--require-cache-mount`: startup and API requests fail if that directory is
+not mounted, instead of falling back to its parent disk. Provision the volume's
+capacity outside PIE; these flags neither mount nor format storage and do not
+impose a quota on an ordinary directory. A full volume reports a preparation
+error, not unlimited growth. There is no automatic eviction of existing files.
+Source images, experiment scratch and scientific derivatives are not relocated.
 For a fresh environment: `python3 -m venv venv_imaging`, then the dependency command
 above. A GPU is not needed by the API; browser rendering requires WebGL2. Use a
 current Chrome/Chromium or Firefox with hardware acceleration enabled.
@@ -35,11 +43,21 @@ inventory is **1,806 participants / 3,053 scans**. Use **Compare visits** in the
 top navigation or the shortcut beside the acquisition timeline for two-pane MRI
 inspection; participant 116869 supplies the existing two-visit MRI example.
 
-- **Inside the brain:** load cached, participant-specific DKT/aseg boundary meshes;
-  independently fade left/right hemisphere shells and cerebellum/brainstem, select
-  deep nuclei, or focus on the striatum. These are native-voxel segmentation
-  boundaries, not validated pial surfaces or cortical-thickness estimates. MRI
-  volume mode remains available. Meshes are hidden in measured slice review.
+- **Inside the brain:** choose **Show MRI + structures** to combine measured MRI
+  with cached, participant-specific DKT/aseg boundary meshes. MRI visibility in
+  3D and selected-structure opacity are independent; switch **Show MRI in 3D**
+  off for structures alone. Optional hemisphere/cerebellum/brainstem shells are
+  initially hidden. **Turn off structures**, available in the panel and on the
+  canvas (including fullscreen), restores the previous image/atlas display.
+  **Review boundaries on MRI slices** opens linked Four-view with outlines of
+  the selected deep structures. Selection and outline opacity follow the same
+  controls as the 3D structures; hiding MRI in 3D does not hide it in slices.
+  Meshes are hidden in slice review; outlines use a disposable display copy of
+  the original label grid with unselected labels hidden, not resampled meshes.
+  The full atlas is retained for voxel inspection; source files are unchanged. In 3D,
+  occluded boundaries are visible through MRI as a see-through composite, not
+  a cortical projection. These are estimated native-voxel segmentation
+  boundaries, not validated pial surfaces or cortical-thickness estimates.
 - **Four-view:** explicit 2×2 layout, named panel-enlargement buttons, linked
   crosshairs, double-click to enlarge/return and all three single-plane controls.
   Integer label intent is now preserved in prepared atlases, fixing scalar
@@ -231,7 +249,7 @@ create artifacts and recommends checking the anatomical images.
 The index reads `Imaging/derived/sessions.csv` and finished FastSurfer MRI products,
 `Imaging/derived/dwi` for retained diffusion maps, and reconstructed images listed
 in `Imaging/derived/datscan_v5/datscan_sbr.csv`. It does not recursively ingest
-every intermediate or failed research run on the external disk.
+every intermediate or failed research run in the configured data directories.
 
 The implementation inventory contained **1,804 participants and 3,047 scans**:
 1,853 MRI, 957 diffusion and 237 reconstructed SPECT. Local CT/PET/fMRI images were
@@ -339,7 +357,7 @@ inspected as volumes/slices rather than projecting their signal onto cortex.
 
 ```bash
 venv_imaging/bin/python -m pie.imaging.viewer sample-plan \
-  --ppmi-dir '/media/cameron/Seagate Portable Drive/PPMI/study_data'
+  --ppmi-dir '/path/to/PPMI/study_data'
 ```
 
 Open `Imaging/derived/viewer_sample_plan/DOWNLOAD_PLAN.md`, or the **Sample plan**

@@ -53,6 +53,7 @@ parallel on the CPU.
 | `features.py` | Builds the wide IDP table: every regional volume (`vol_*`, mm^3), global measures (`MaskVol`, `BrainSegVol`, ...), bilateral sums and left/right asymmetry indices (`sum_*`, `asym_*`), ventricle total, plus scanner metadata and `protocol_phase` (which zip the scan came from). |
 | `labels.py` | Session-aligned outcomes: `dat_labels` (closest DaTscan: SBR values, PPMI visual read, and SBR-based deficit = lowest putamen SBR < 65 % of the age/sex expectation fitted on visually-negative controls), `saa_labels` (CSF SAA status at the MRI visit, else baseline), `covariates` (sex, birth month, cohort, LRRK2/GBA/SNCA/APOE, and the GP2 / META5-without-LRRK2-GBA polygenic scores when the `Polygenic_Risk_Scores` table is present). `saa_labels` also returns `SAA_Type` (Type1/Type2 seeding kinetics). |
 | `run.py` | The CLI above. |
+| `fmriprep.py` | Configurable native/Apptainer fMRIPrep backend with input/output/work/cache paths, version checking, execution provenance and resumable work; [usage](fmriprep.md). |
 | `datscan.py` | DaTscan SPECT: raw projections -> FBP reconstruction -> T1-guided SBR quantification (see below). |
 | `dwi.py` | Diffusion MRI: dcm2niix -> motion correction -> tensor + free-water fits -> nigral/subcortical ROI features (see below). |
 | `fba.py` | Nigrostriatal fixel measures with MRtrix3 (`--fba` of the DWI runner): multi-tissue CSD, `mtnormalise`, iFOD2 tractography from the atlas SN to the FastSurfer striatum, AFD along the tract, seed success, FA/MD along the streamlines (see below). |
@@ -410,10 +411,10 @@ driver, rather than accumulate more independent scheduling scripts. Historical
 script snapshots stay available for reproducibility; they are not alternative
 recommended production entry points.
 
-For this project, large derived images belong under
-`/media/cameron/Seagate Portable Drive/PPMI/Imaging/derived/`. Local source code,
-small result tables and provenance can remain in the study directory. The current
-storage amendment checksum-verifies external copies before replacing local image
-folders with links; active image writers are excluded until their files close.
-The earlier NTFS3 write crash remains an infrastructure warning, not a scan exclusion
-or evidence that the drive has been repaired. Do not delete original acquisitions.
+Storage locations and capacity policies are caller-configured; PIE does not
+require an external disk or a particular filesystem driver. Use storage that
+supports the selected tools and has sufficient space for their working files.
+Keep machine-specific mount, backup and recovery procedures in the deployment
+or study runner. Verify copied data before retiring a working copy, and do not
+move active writers' files. An infrastructure failure is not a scientific scan
+exclusion or proof of successful recovery. Preserve original acquisitions.

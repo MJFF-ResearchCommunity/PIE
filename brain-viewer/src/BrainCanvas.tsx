@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Niivue, cmapper } from "@niivue/niivue";
+import type { NVImage } from "@niivue/niivue";
 import { nearbyAtlasLabel } from "./model";
 import { probeLightingTarget } from "./renderSafety";
-import { structureOpacity } from "./structureDisplay";
+import {
+  anatomicalLabelLut,
+  anatomyDisplayOpacity,
+  structureAtlasState,
+  structureOpacity,
+  selectedLabelBuffer,
+} from "./structureDisplay";
 import { captureView } from "./captureView";
 import { voxelTimeSeries } from "./fmriDisplay";
 import {
@@ -122,6 +129,8 @@ export default function BrainCanvas({
   const renderReady = useRef(false);
   const lossReported = useRef(false);
   const transferKey = useRef("");
+  const atlasPaletteKey = useRef("");
+  const sourceAtlas = useRef<NVImage | null>(null);
   const signalPivot = useRef<number[] | null>(null);
   const transferName = `pie-spect-${prepared.scan.id}`;
 
@@ -170,14 +179,22 @@ export default function BrainCanvas({
       return;
     }
     const s = settings.current;
-    nv.opts.atlasOutline = s.atlasOutline ? 1 : 0;
+    const atlasState = structureAtlasState(s, structures);
+    nv.opts.atlasOutline = atlasState.outlines
+      ? s.structures && structures
+        ? s.structureOpacity
+        : 1
+      : 0;
+    // Occluded meshes remain visible through MRI as an explicitly labeled
+    // see-through composite, not a projection of signal onto the cortex.
+    nv.opts.meshXRay = s.structures && structures && s.mode === "3d" ? 0.5 : 0;
     // Keep native/full-signal slice views for alignment review. In the 3D
     // preview only, clip emission to the MRI foreground so extracranial uptake
     // cannot obscure the anatomical reference. This does not alter voxel data.
     nv.backgroundMasksOverlays = clipEmissionToAnatomy(
       !!prepared.context,
       s.mode,
-      s.anatomyOpacity,
+      anatomyDisplayOpacity(s, s.anatomyOpacity, structures),
     )
       ? 1
       : 0;
@@ -226,18 +243,37 @@ export default function BrainCanvas({
     }
     descriptors.current.forEach((v, i) => {
       if (v.role === "anatomy" && nv.volumes[i])
-        nv.volumes[i].opacity =
-          s.structures && structures && s.mode === "3d" ? 0 : s.anatomyOpacity;
+        nv.volumes[i].opacity = anatomyDisplayOpacity(
+          s,
+          s.anatomyOpacity,
+          structures,
+        );
       if (
         v.role === "primary" &&
         prepared.scan.modality === "MRI" &&
-        s.structures &&
-        structures &&
-        s.mode === "3d"
+        nv.volumes[i]
       )
-        nv.volumes[i].opacity = 0;
-      if (v.role === "atlas" && nv.volumes[i])
-        nv.volumes[i].opacity = s.atlas ? s.atlasOpacity : 0;
+        nv.volumes[i].opacity = anatomyDisplayOpacity(s, s.opacity, structures);
+      if (v.role === "atlas" && nv.volumes[i]) {
+        nv.volumes[i].opacity = atlasState.opacity;
+        const key = JSON.stringify(atlasState.ids);
+        if (atlasPaletteKey.current !== key) {
+          const source = sourceAtlas.current;
+          if (source?.img)
+            nv.volumes[i].img =
+              atlasState.ids === null
+                ? source.img
+                : selectedLabelBuffer(source.img, atlasState.ids);
+          nv.volumes[i].setColormapLabel(
+            anatomicalLabelLut(
+              prepared.regions,
+              atlasState.ids,
+              atlasState.ids !== null,
+            ),
+          );
+          atlasPaletteKey.current = key;
+        }
+      }
       if (v.role === "overlay" && nv.volumes[i])
         nv.volumes[i].opacity = s.overlayOpacity;
     });
@@ -248,7 +284,6 @@ export default function BrainCanvas({
         if (nv.meshes[offset + i])
           nv.meshes[offset + i].opacity = structureOpacity(m.key, s);
       });
-      if (s.structures && s.mode === "3d") nv.backgroundMasksOverlays = 0;
     }
     const planes = [
       [0, 0],
@@ -346,10 +381,13 @@ export default function BrainCanvas({
       const primaryIndex = descriptors.current.findIndex(
         (v) => v.role === "primary",
       );
+      const atlas = sourceAtlas.current ?? nv.volumes[atlasIndex];
+      const voxel = atlas?.mm2vox(mm);
       let label =
-        atlasIndex >= 0 ? Math.round(loc.values[atlasIndex]?.value ?? 0) : 0;
+        atlas && voxel
+          ? Math.round(atlas.getValue(voxel[0], voxel[1], voxel[2]))
+          : 0;
       let regionDistance: number | undefined;
-      const atlas = nv.volumes[atlasIndex];
       if (!label && atlas && settings.current.mode === "3d") {
         // NiiVue's mm2vox/getValue address its RAS-reordered buffer, not the
         // source header's voxel axes. Use the matching RAS matrix and dimensions.
@@ -501,18 +539,13 @@ export default function BrainCanvas({
         if (disposed) return;
         const atlasIndex = volumes.findIndex((v) => v.role === "atlas");
         if (atlasIndex >= 0) {
-          const regions = prepared.regions;
           // Explicit label intent selects NiiVue's integer-label/outline shader.
           // Legacy cached atlases lacked it and were treated as scalar maps.
           nv.volumes[atlasIndex].hdr!.intent_code = 1002;
-          nv.volumes[atlasIndex].setColormapLabel({
-            I: [0, ...regions.map((r) => r.id)],
-            R: [0, ...regions.map((r) => r.color[0])],
-            G: [0, ...regions.map((r) => r.color[1])],
-            B: [0, ...regions.map((r) => r.color[2])],
-            A: [0, ...regions.map(() => 255)],
-            labels: ["Background", ...regions.map((r) => r.name)],
-          });
+          // Keep a full, independent atlas for picking. The rendered copy can
+          // hide labels without changing anatomical inspection or source files.
+          sourceAtlas.current = nv.volumes[atlasIndex].clone();
+          atlasPaletteKey.current = "";
         }
         nv.setRenderAzimuthElevation(120, 18);
         nv.setScale(1.6);
@@ -606,6 +639,7 @@ export default function BrainCanvas({
       nv.cleanup();
       delete cmapper.cluts[transferName];
       transferKey.current = "";
+      sourceAtlas.current = null;
       // NiiVue's pending image/font loads are not cancellable. Stop their draw
       // callbacks immediately, but release GL only after startup has settled.
       // Otherwise a late load attempts a gradient pass on a destroyed context.

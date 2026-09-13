@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { NVImage } from "@niivue/niivue";
+import pieLogo from "../../assets/icon.png";
 import {
   Activity,
   ArrowDownToLine,
@@ -38,6 +39,7 @@ import ComparisonWorkspace from "./ComparisonWorkspace";
 import FmriWorkbench, { FmriTransport } from "./FmriWorkbench";
 import { INITIAL_SURFACE_LIGHTING } from "./renderSafety";
 import { INITIAL_SPECT_CUTOFF } from "./spectDisplay";
+import { structureViewLabel } from "./structureDisplay";
 import type { ViewerApi } from "./BrainCanvas";
 import { MODALITIES } from "./types";
 import type {
@@ -81,6 +83,10 @@ const defaults: Display = {
   atlasOutline: false,
   hideSignal: false,
   structures: false,
+  structureMri: true,
+  structureMriOpacity: 0.35,
+  structureOpacity: 0.7,
+  structureOutlines: true,
   leftOpacity: 0.18,
   rightOpacity: 0.18,
   contextOpacity: 0.18,
@@ -519,11 +525,13 @@ export default function App() {
           }}
           aria-label="PIE Brain Explorer home"
         >
-          <span className="brand-mark">
-            <span />
-            <span />
-            <span />
-          </span>
+          <img
+            className="brand-logo"
+            src={pieLogo}
+            alt=""
+            width={40}
+            height={40}
+          />
           <span>
             PIE
             <span className="brand-divider" />{" "}
@@ -579,14 +587,14 @@ export default function App() {
       <div className="workspace-heading">
         <div className="workspace-title">
           <span className="eyebrow">PARKINSON’S INSIGHT ENGINE</span>
-          <h1>
+          <h1 className="sr-only">
             {section === "samples"
-              ? "Build your imaging collection."
+              ? "Sample plan"
               : section === "compare"
-                ? "Two visits. One frame of reference."
+                ? "Compare visits"
                 : section === "acquisitions"
-                  ? "Every acquisition, in context."
-                  : "A closer look at the brain."}
+                  ? "Acquisitions"
+                  : "Brain Explorer"}
           </h1>
         </div>
         <div className="workspace-tools">
@@ -955,20 +963,25 @@ export default function App() {
                           : "IMAGING WORKSPACE"}
                       </span>
                       <span className="scan-subtitle">
-                        {display.structures &&
-                        structures &&
-                        display.mode === "3d"
-                          ? "Participant segmentation boundaries · not a pial-surface measurement"
-                          : prepared?.context
+                        {structureViewLabel(display, structures) ??
+                          (prepared?.context
                             ? "MRI anatomy + internal SPECT · see-through composite"
                             : isBold
                               ? `${prepared?.extra?.find((e) => e.key === display.metric)?.name ?? `Raw BOLD · frame ${display.frame + 1}/${prepared?.geometry?.frames}`} · native EPI · not an activation map`
                               : scan?.modality === "MRI"
                                 ? "Measured anatomy · 3D volume"
-                                : scan?.description}
+                                : scan?.description)}
                       </span>
                     </div>
                     <div className="canvas-actions">
+                      {display.structures && structures && (
+                        <button
+                          className="canvas-button structures-off"
+                          onClick={() => update({ structures: false })}
+                        >
+                          <X size={14} /> Turn off structures
+                        </button>
+                      )}
                       <button
                         className="canvas-button"
                         disabled={!prepared || busy}
@@ -1003,11 +1016,13 @@ export default function App() {
                   </div>
                   {(fullscreenError ||
                     scan?.modality === "SPECT" ||
-                    (display.structures && display.mode === "3d")) && (
+                    (display.structures && structures)) && (
                     <div className="canvas-notice" role="status">
                       {fullscreenError ||
                         (scan?.modality !== "SPECT"
-                          ? "SEGMENTATION BOUNDARIES · colors are anatomical labels, not measured activity"
+                          ? display.mode === "3d"
+                            ? "ESTIMATED ANATOMY · colors identify structures, not activity · boundaries are visible through MRI"
+                            : "ESTIMATED BOUNDARIES · selected labels on measured MRI · inspect alignment in all three planes"
                           : display.hideSignal
                             ? "SPECT HIDDEN · showing anatomical reference · alignment not reviewed"
                             : prepared?.context
@@ -1385,6 +1400,11 @@ export default function App() {
                         value={Math.round(display.anatomyOpacity * 100)}
                         text={`${Math.round(display.anatomyOpacity * 100)}%`}
                         onChange={(n) => update({ anatomyOpacity: n / 100 })}
+                        disabled={
+                          display.structures &&
+                          !!structures &&
+                          display.mode === "3d"
+                        }
                       />
                       <p className="empty-note">
                         Gray folds and labels come from MRI. Colored uptake
@@ -1428,33 +1448,50 @@ export default function App() {
                     value={Math.round(display.opacity * 100)}
                     text={`${Math.round(display.opacity * 100)}%`}
                     onChange={(n) => update({ opacity: n / 100 })}
-                    disabled={!prepared}
+                    disabled={
+                      !prepared ||
+                      (scan?.modality === "MRI" &&
+                        display.structures &&
+                        !!structures &&
+                        display.mode === "3d")
+                    }
                   />
-                  <label className="toggle-row">
-                    <span>
-                      <strong>Region atlas</strong>
-                      <small>
-                        {prepared?.regions.length
-                          ? `${prepared.regions.length} anatomical labels`
-                          : "No registered segmentation"}
-                      </small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      aria-label="Show anatomical region atlas"
-                      checked={display.atlas}
-                      disabled={!prepared?.regions.length}
-                      onChange={(e) => update({ atlas: e.target.checked })}
-                    />
-                  </label>
-                  {display.atlas && (
-                    <Range
-                      label="Atlas opacity"
-                      value={Math.round(display.atlasOpacity * 100)}
-                      text={`${Math.round(display.atlasOpacity * 100)}%`}
-                      onChange={(n) => update({ atlasOpacity: n / 100 })}
-                    />
+                  {display.structures && structures ? (
+                    <p className="empty-note">
+                      Selected structure outlines are controlled in Inside the
+                      brain. Turn off structures to return to the full region
+                      atlas controls. MRI visibility in 3D is also controlled
+                      above.
+                    </p>
+                  ) : (
+                    <>
+                      <label className="toggle-row">
+                        <span>
+                          <strong>Region atlas</strong>
+                          <small>
+                            {prepared?.regions.length
+                              ? `${prepared.regions.length} anatomical labels`
+                              : "No registered segmentation"}
+                          </small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          aria-label="Show anatomical region atlas"
+                          checked={display.atlas}
+                          disabled={!prepared?.regions.length}
+                          onChange={(e) => update({ atlas: e.target.checked })}
+                        />
+                      </label>
+                      {display.atlas && (
+                        <Range
+                          label="Atlas opacity"
+                          value={Math.round(display.atlasOpacity * 100)}
+                          text={`${Math.round(display.atlasOpacity * 100)}%`}
+                          onChange={(n) => update({ atlasOpacity: n / 100 })}
+                        />
+                      )}
+                    </>
                   )}
                   <details className="fusion-details">
                     <summary>
@@ -1694,19 +1731,24 @@ export default function App() {
                       onChange={(e) => update({ crosshair: e.target.checked })}
                     />
                   </label>
-                  <label className="toggle-row">
-                    <span>Segmentation outlines</span>
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      aria-label="Segmentation outlines"
-                      checked={display.atlasOutline}
-                      disabled={!prepared?.regions.length}
-                      onChange={(e) =>
-                        update({ atlasOutline: e.target.checked, atlas: true })
-                      }
-                    />
-                  </label>
+                  {!(display.structures && structures) && (
+                    <label className="toggle-row">
+                      <span>Segmentation outlines</span>
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        aria-label="Segmentation outlines"
+                        checked={display.atlasOutline}
+                        disabled={!prepared?.regions.length}
+                        onChange={(e) =>
+                          update({
+                            atlasOutline: e.target.checked,
+                            atlas: true,
+                          })
+                        }
+                      />
+                    </label>
+                  )}
                   <Range
                     label="Cutaway depth"
                     value={display.clip}

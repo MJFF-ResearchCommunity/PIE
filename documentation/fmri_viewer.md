@@ -80,17 +80,18 @@ To reproduce these examples (idempotent for matching sources):
 
 ```bash
 venv_imaging/bin/python scripts/prepare_viewer_fmri.py \
-  --archives '/media/cameron/Seagate Portable Drive/PPMI/Imaging/First_Study_fMRI_1.zip' \
-    '/media/cameron/Seagate Portable Drive/PPMI/Imaging/First_Study_fMRI_1_dataset.zip' \
-  --collection '/media/cameron/Seagate Portable Drive/PPMI/Imaging/First_Study_fMRI_1_9_09_2026.csv' \
+  --archives '/path/to/PPMI/Imaging/First_Study_fMRI_1.zip' \
+    '/path/to/PPMI/Imaging/First_Study_fMRI_1_dataset.zip' \
+  --collection '/path/to/PPMI/Imaging/First_Study_fMRI_1_9_09_2026.csv' \
   --images I1491269 I1491270 I10253746 I10253745 \
   --output Imaging/derived/viewer_collection
 ```
 
-Restart the service after changing its manifest. The service now indexes
+Replace the example paths with your own; no external drive is required.
+Restart the service after changing its manifest. The example service indexes
 **1,806 participants / 3,053 scans**. Only examples, not every archive series,
-are converted/indexed. The root filesystem had approximately 17 GB free before
-this work, so bulk conversion of both archives was intentionally avoided.
+are converted/indexed. Choose an ingestion scope and output/cache locations
+appropriate to your available storage before attempting bulk conversion.
 
 ## Scientific limits and next work
 

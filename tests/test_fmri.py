@@ -6,7 +6,54 @@ import numpy as np
 import pytest
 
 from pie.imaging.fmri import (classify_run, convert_archive_series,
-                             framewise_displacement, inspect_nifti, phase_encoding_pair)
+                             framewise_displacement, inspect_nifti, phase_encoding_pair,
+                             validate_motion_resume, command)
+
+
+def test_command_with_spaced_working_directory(tmp_path):
+    import sys
+    work = tmp_path / "work with spaces"
+    work.mkdir()
+    command([sys.executable, "-c", "from pathlib import Path; assert Path.cwd().name == 'work with spaces'"],
+            work / "command.log", cwd=work)
+
+
+def test_resume_verifies_source_and_complete_transforms(tmp_path):
+    data = np.arange(2 * 3 * 4 * 5, dtype=np.float32).reshape(2, 3, 4, 5)
+    source = tmp_path / "source.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), source)
+    for name in ("trimmed", "motion"):
+        nib.save(nib.Nifti1Image(data[..., 1:], np.eye(4)), tmp_path / (name + ".nii.gz"))
+    np.savetxt(tmp_path / "motion.par", np.zeros((4, 6)))
+    matrices = tmp_path / "motion.mat"
+    matrices.mkdir()
+    for i in range(4):
+        np.savetxt(matrices / f"MAT_{i:04d}", np.eye(4))
+    assert validate_motion_resume(source, tmp_path, 1)["transform_count"] == 4
+    (matrices / "MAT_0003").unlink()
+    with pytest.raises(ValueError, match="Incomplete resume motion transforms"):
+        validate_motion_resume(source, tmp_path, 1)
+    np.savetxt(matrices / "MAT_0003", np.eye(4))
+    data[0, 0, 0, 2] += 1
+    nib.save(nib.Nifti1Image(data, np.eye(4)), source)
+    with pytest.raises(ValueError, match="trimmed data differ"):
+        validate_motion_resume(source, tmp_path, 1)
+
+
+def test_resume_accepts_original_integer_header_quantization(tmp_path):
+    data = np.arange(120, dtype=np.int16).reshape(2, 3, 4, 5)
+    source = tmp_path / "source.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), source)
+    img = nib.load(source)
+    for name in ("trimmed", "motion"):
+        nib.save(nib.Nifti1Image(np.asarray(img.dataobj, dtype=np.float32)[..., 1:],
+                                img.affine, img.header), tmp_path / (name + ".nii.gz"))
+    assert not np.array_equal(np.asarray(nib.load(tmp_path / "trimmed.nii.gz").dataobj), data[..., 1:])
+    np.savetxt(tmp_path / "motion.par", np.zeros((4, 6)))
+    (tmp_path / "motion.mat").mkdir()
+    for i in range(4):
+        np.savetxt(tmp_path / "motion.mat" / f"MAT_{i:04d}", np.eye(4))
+    assert validate_motion_resume(source, tmp_path, 1)["trimmed_matches_source"]
 
 
 @pytest.mark.parametrize("shape,tr,expected", [
@@ -117,6 +164,48 @@ def test_conversion_preserves_all_outputs_and_checks_resume(tmp_path, monkeypatc
     assert fmri.sha256(archive_path) == before
     assert not list(tmp_path.glob("fmri-convert-*"))
     assert convert_archive_series(row, tmp_path, dcm2niix=str(executable)) == result
+    from pie.imaging.archives import ZipArchiveCache
+    other_root = tmp_path / 'cached'
+    other_root.mkdir()
+    scratch_root = tmp_path / 'configured scratch filesystem'
+    scratch_root.mkdir()
+    with ZipArchiveCache() as cache:
+        cached = convert_archive_series(row, other_root, dcm2niix=str(executable), archive_cache=cache,
+                                        scratch_root=scratch_root)
+        assert cached['outputs'] == result['outputs']
+        assert cached['source_member_index_sha256'] == result['source_member_index_sha256']
+        assert Path(cached['command'][-1]).parent == scratch_root
+        assert Path(cached['command'][cached['command'].index('-o')+1]).parent.parent == other_root
+        assert not list(scratch_root.iterdir())
+    with pytest.raises(FileNotFoundError):
+        convert_archive_series(row, other_root, dcm2niix=str(executable), scratch_root=tmp_path / 'absent')
+    def failing_command(args, log, **kwargs):
+        Path(log).write_text('synthetic converter diagnostic')
+        raise RuntimeError('conversion failed')
+    monkeypatch.setattr(fmri, 'command', failing_command)
+    failed_root = tmp_path / 'failed'
+    failed_root.mkdir()
+    with pytest.raises(RuntimeError, match='retained diagnostic'):
+        convert_archive_series(row, failed_root, dcm2niix=str(executable))
+    assert not (failed_root / '123/I123').exists()
+    logs = list((failed_root / 'conversion_failures/123/I123').glob('*.log'))
+    assert len(logs) == 1 and logs[0].read_text() == 'synthetic converter diagnostic'
+    assert not list(failed_root.glob('fmri-convert-*'))
+    def missing_sidecar(args, log, **kwargs):
+        fake_command(args, log, **kwargs)
+        (Path(args[args.index('-o')+1]) / 'I123_reference.json').unlink()
+    monkeypatch.setattr(fmri, 'command', missing_sidecar)
+    invalid_root = tmp_path / 'invalid_metadata'
+    invalid_root.mkdir()
+    with pytest.raises(fmri.DICOMConversionError, match='retained diagnostic'):
+        convert_archive_series(row, invalid_root, dcm2niix=str(executable), scratch_root=scratch_root)
+    assert not (invalid_root / '123/I123').exists()
+    evidence = list((invalid_root / 'conversion_failures/123/I123').glob('*.json'))
+    assert len(evidence) == 1
+    saved_failure = json.loads(evidence[0].read_text())
+    assert 'required metadata sidecar' in saved_failure['error']
+    assert len(list(Path(saved_failure['unvalidated_outputs']).glob('*.nii.gz'))) == 2
+    assert not list(scratch_root.iterdir())
     (tmp_path / "123/I123/I123_reference.json").write_text("{}")
     with pytest.raises(ValueError, match="checksum"):
         convert_archive_series(row, tmp_path, dcm2niix=str(executable))
