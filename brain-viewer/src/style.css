@@ -28,6 +28,17 @@
 body {
   margin: 0;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 button,
 input,
 select {
@@ -128,28 +139,12 @@ strong {
   display: flex;
   align-items: center;
 }
-.brand-mark {
-  width: 30px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  transform: rotate(-12deg);
-}
-.brand-mark span {
+.brand-logo {
   display: block;
-  width: 7px;
-  border-radius: 5px;
-  background: var(--green);
-}
-.brand-mark span:nth-child(1) {
-  height: 20px;
-}
-.brand-mark span:nth-child(2) {
-  height: 32px;
-}
-.brand-mark span:nth-child(3) {
-  height: 25px;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  object-fit: contain;
 }
 .brand-divider {
   width: 1px;
@@ -262,7 +257,7 @@ strong {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 27px 32px 24px;
+  padding: 16px 32px;
 }
 .eyebrow {
   font-size: 9px;
@@ -271,12 +266,6 @@ strong {
   color: var(--muted);
   display: block;
   line-height: 1.6;
-}
-.workspace-title h1 {
-  font-size: clamp(23px, 2vw, 31px);
-  letter-spacing: -1.1px;
-  font-weight: 500;
-  margin-top: 4px;
 }
 .workspace-tools {
   display: flex;
@@ -1901,9 +1890,6 @@ td details pre {
   .app-header .brand-product {
     font-size: 12px;
   }
-  .workspace-title h1 {
-    font-size: 25px;
-  }
   .scientific-note {
     display: block;
   }
@@ -1963,11 +1949,9 @@ td details pre {
   .brand {
     font-size: 19px;
   }
-  .brand-mark {
-    width: 26px;
-    height: 26px;
-    transform: scale(0.85) rotate(-12deg);
-    transform-origin: left center;
+  .brand-logo {
+    width: 32px;
+    height: 32px;
   }
   .brand-product {
     font-size: 12px;
@@ -1989,13 +1973,8 @@ td details pre {
     font-size: 11px;
   }
   .workspace-heading {
-    padding: 22px 16px 20px;
+    padding: 14px 16px;
     gap: 10px;
-  }
-  .workspace-title h1 {
-    font-size: 22px;
-    letter-spacing: -0.8px;
-    max-width: 240px;
   }
   .workspace-title .eyebrow {
     font-size: 7px;
@@ -2452,6 +2431,49 @@ td details,
 .anatomy-explorer .button {
   width: 100%;
   margin: 8px 0;
+}
+.anatomy-explorer .structure-master {
+  min-height: 40px;
+  font-weight: 600;
+}
+.structure-master.enabled {
+  color: var(--green);
+  border-color: var(--green);
+  background: var(--tint);
+}
+.structure-status {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.structure-shells {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+}
+.canvas-topline > div:first-child {
+  min-width: 0;
+}
+.canvas-actions {
+  flex-shrink: 0;
+}
+.canvas-button.structures-off {
+  width: auto;
+  gap: 5px;
+  padding: 0 9px;
+  color: #e2e6dc;
+  border-color: #65745d;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.canvas-frame:fullscreen .canvas-button.structures-off {
+  width: auto;
+}
+@media (max-width: 700px) {
+  .canvas-button.structures-off {
+    font-size: 10px;
+    padding: 0 6px;
+  }
 }
 .anatomy-explorer small {
   display: block;

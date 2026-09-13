@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -11,7 +11,10 @@ from .catalog import Catalog
 from .images import ImageStore
 
 
-def create_app(repo: Path | None = None, ppmi: Path | None = None, manifest: Path | None = None, cache: Path | None = None):
+def create_app(repo: Path | None = None, ppmi: Path | None = None, manifest: Path | None = None,
+               cache: Path | None = None, require_cache_mount: bool = False):
+    if require_cache_mount and (cache is None or not cache.is_mount()):
+        raise ValueError("Required viewer cache filesystem is not mounted; no fallback")
     repo = (repo or Path(__file__).resolve().parents[3]).resolve()
     local_collection = repo / "Imaging/derived/viewer_collection/manifest.json"
     catalog = Catalog(repo, ppmi, manifest or (local_collection if local_collection.is_file() else None))
@@ -23,6 +26,9 @@ def create_app(repo: Path | None = None, ppmi: Path | None = None, manifest: Pat
 
     @app.middleware("http")
     async def local_headers(request, call_next):
+        if require_cache_mount and request.url.path.startswith("/api/") and not cache.is_mount():
+            return JSONResponse(status_code=503, content={
+                "detail": "Viewer cache filesystem is not mounted; restore it before retrying. No fallback."})
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"

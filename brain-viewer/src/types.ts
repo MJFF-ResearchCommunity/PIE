@@ -147,6 +147,10 @@ export interface Display {
   atlasOutline: boolean;
   hideSignal: boolean;
   structures: boolean;
+  structureMri: boolean;
+  structureMriOpacity: number;
+  structureOpacity: number;
+  structureOutlines: boolean;
   leftOpacity: number;
   rightOpacity: number;
   contextOpacity: number;
