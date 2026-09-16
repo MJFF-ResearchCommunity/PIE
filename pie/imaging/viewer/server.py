@@ -1,6 +1,8 @@
 """Local-only scan API and production frontend hosting."""
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -10,15 +12,24 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .catalog import Catalog
 from .images import ImageStore
 
+log = logging.getLogger(__name__)
+
 
 def create_app(repo: Path | None = None, ppmi: Path | None = None, manifest: Path | None = None,
-               cache: Path | None = None, require_cache_mount: bool = False):
-    if require_cache_mount and (cache is None or not cache.is_mount()):
+               cache: Path | None = None, require_cache_mount: bool = False, sample_plan: Path | None = None):
+    if require_cache_mount and cache is None:
+        raise ValueError("--require-cache-mount needs --cache-dir naming the mounted volume; "
+                         "the default cache location is never assumed")
+    if require_cache_mount and not cache.is_mount():
         raise ValueError("Required viewer cache filesystem is not mounted; no fallback")
     repo = (repo or Path(__file__).resolve().parents[3]).resolve()
     local_collection = repo / "Imaging/derived/viewer_collection/manifest.json"
     catalog = Catalog(repo, ppmi, manifest or (local_collection if local_collection.is_file() else None))
+    for message in catalog.warnings:
+        log.warning("Viewer index: %s", message)
     store = ImageStore(cache or repo / "Imaging/derived/viewer_cache")
+    plan_dir = sample_plan or repo / "Imaging/derived/viewer_sample_plan"
+    guide = repo / "documentation/viewer_next_downloads.md"
     app = FastAPI(title="PIE Brain Explorer", version="0.1.0", docs_url="/api/docs", redoc_url=None)
     # Block DNS-rebinding access to a service that holds local research images.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
@@ -42,10 +53,9 @@ def create_app(repo: Path | None = None, ppmi: Path | None = None, manifest: Pat
 
     @app.get("/api/download-guide")
     def download_guide():
-        path = repo / "documentation/viewer_next_downloads.md"
-        if not path.is_file():
+        if not guide.is_file():
             raise HTTPException(404, "Download checklist not installed")
-        return FileResponse(path, media_type="text/markdown", filename="PIE-next-downloads.md")
+        return FileResponse(guide, media_type="text/markdown", filename="PIE-next-downloads.md")
 
     @app.get("/api/catalog")
     def list_catalog():
@@ -81,12 +91,12 @@ def create_app(repo: Path | None = None, ppmi: Path | None = None, manifest: Pat
             raise HTTPException(422, f"Cannot prepare anatomy preview: {e}") from e
 
     @app.get("/api/sample-plan")
-    def sample_plan():
-        path = repo / "Imaging/derived/viewer_sample_plan/plan.json"
+    def read_sample_plan():
+        path = plan_dir / "plan.json"
         if not path.is_file():
-            return {"available": False, "message": "Run python -m pie.imaging.viewer sample-plan to build the local download plan."}
-        import json
-        return {"available": True, **json.loads(path.read_text())}
+            return {"available": False, "download_guide": guide.is_file(),
+                    "message": f"No sample plan at {path}. Run python -m pie.imaging.viewer sample-plan to build it."}
+        return {"available": True, "download_guide": guide.is_file(), **json.loads(path.read_text())}
 
     @app.get("/api/scans/{scan_id}/structures")
     def structures(scan_id: str):

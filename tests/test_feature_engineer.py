@@ -19,6 +19,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PIE.test_feature_engineer")
 
+import pytest
+from pie.feature_engineer import ENDGAME_PREPROCESS_AVAILABLE
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _frame(n=120, seed=0):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({"a": rng.normal(size=n), "b": rng.normal(size=n), "c": rng.normal(size=n),
+                         "y": rng.integers(0, 2, n)})
+
+
+def test_impute_leaves_all_nan_columns():
+    """Bug 11: an all-NaN column made simple imputation fail with a column-count mismatch."""
+    df = _frame().assign(EMPTY=np.nan)
+    df.loc[::7, "a"] = np.nan
+    out = FeatureEngineer(df).impute(method="simple_median").get_dataframe()
+    assert out["a"].notna().all() and out["EMPTY"].isna().all()
+
+
+def test_target_is_protected_from_encoding_and_scaling():
+    """Bug 8: a target other than COHORT was one-hot encoded (text) or standardised (numeric)."""
+    df = pd.DataFrame({"SEX": ["M", "F"] * 10, "RBD": [0, 1] * 10, "AGE": np.arange(20.0), "LABEL": ["x", "y"] * 10})
+    out = (FeatureEngineer(df, protected_columns=["LABEL", "RBD"])
+           .one_hot_encode().scale_numeric_features().get_dataframe())
+    assert list(out["LABEL"]) == list(df["LABEL"]) and list(out["RBD"]) == list(df["RBD"])
+    assert "SEX_M" in out.columns and abs(out["AGE"].mean()) < 1e-9
+
+
+@pytest.mark.skipif(not ENDGAME_PREPROCESS_AVAILABLE, reason="endgame not installed")
+def test_create_interactions_default_method():
+    """Bug 11: the default method='auto' needed group_cols and raised TypeError."""
+    out = FeatureEngineer(_frame().drop(columns="y")).create_interactions(columns=["a", "b"]).get_dataframe()
+    assert "a*b" in out.columns
+
+
+@pytest.mark.skipif(not ENDGAME_PREPROCESS_AVAILABLE, reason="endgame not installed")
+def test_detect_noise_default_method():
+    """Bug 11: detect_noise called fit_predict, which endgame's noise filters do not have."""
+    mask = FeatureEngineer(_frame()).detect_noise("y")
+    assert mask.dtype == bool and len(mask) == 120
+
+
+@pytest.mark.ppmi
+@pytest.mark.skipif(not (PROJECT_ROOT / "output" / "final_reduced_consolidated_data.csv").exists(),
+                    reason="needs output/final_reduced_consolidated_data.csv from a PPMI run")
 def test_feature_engineering_pipeline(
     input_csv_path: str = "output/final_reduced_consolidated_data.csv",
     output_csv_path: str = "output/final_engineered_dataset.csv",

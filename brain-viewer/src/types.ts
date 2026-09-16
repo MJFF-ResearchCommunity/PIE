@@ -31,6 +31,8 @@ export interface Subject {
   id: string;
   group: string;
   cohort: string;
+  /** Data source named in the label ("PPMI" for discovered PIE outputs); absent for unnamed imports. */
+  collection?: string;
   sex?: string;
   age_at_scan?: string;
   scans: Scan[];
@@ -43,6 +45,18 @@ export interface Catalog {
   warnings: string[];
   scan_count: number;
   source: string;
+}
+/** One modality to request for a participant, from the local sample plan. */
+export interface BundleRequest {
+  modality: string;
+  dates: string[];
+  evidence: string[];
+}
+export interface BundleEntry {
+  subject: string;
+  cohort: string;
+  local_modalities: string[];
+  requests: BundleRequest[];
 }
 export interface Region {
   id: number;

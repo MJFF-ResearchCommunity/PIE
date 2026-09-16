@@ -1,90 +1,44 @@
-+++++EXAMPLE BASH SCRIPT FOR FIRST +++++
-
-## This script:
-## 1. Loops through all subject directories.
-## 2. Finds the T1-W image in each directory.
-## 3. Runs FIRST for each subject.
-## 4. Saves the outputs in structured format.
-
-
-##  NIfTI Images are expected to be organized as follows:
-
-/path/to/dataset/
-├── sub-01/
-│   └── anat/sub-01_T1w.nii.gz
-├── sub-02/
-│   └── anat/sub-02_T1w.nii.gz
-└── sub-30/
-    └── anat/sub-30_T1w.nii.gz
-
-
-EXAMPLE SCRIPT:
-
-#!/bin/bash
-
-# Path to the dataset containing subjects' directories
-DATASET_DIR="/path/to/dataset"
-# Output directory to store FIRST segmentation results
-OUTPUT_DIR="/path/to/first_outputs"
-# Create output directory if it doesn't exist
-mkdir -p "$OUTPUT_DIR"
-
-# CSV file to save volumes for all subjects
-VOLUME_CSV="${OUTPUT_DIR}/first_volumes.csv"
-
-# Initialize CSV file with header
-echo "Subject,Structure,Volume_mm3" > "$VOLUME_CSV"
-
-# Loop through each subject folder
-for SUBJECT_DIR in "$DATASET_DIR"/sub-*/; do
-    # Extract subject ID (e.g., sub-01)
-    SUBJECT_ID=$(basename "$SUBJECT_DIR")
-    
-    # Define input T1-weighted image path
-    T1_IMAGE="$SUBJECT_DIR/anat/${SUBJECT_ID}_T1w.nii.gz"
-    
-    # Check if T1 image exists
-    if [[ -f "$T1_IMAGE" ]]; then
-        echo "Running FIRST for $SUBJECT_ID ..."
-        
-        # Define output prefix for the subject
-        SUBJECT_OUTPUT="${OUTPUT_DIR}/${SUBJECT_ID}"
-        mkdir -p "$SUBJECT_OUTPUT"
-        OUTPUT_PREFIX="${SUBJECT_OUTPUT}/${SUBJECT_ID}_first"
-        
-        # Run FIRST segmentation
-        run_first_all -i "$T1_IMAGE" -o "$OUTPUT_PREFIX"
-        
-        echo "Finished FIRST for $SUBJECT_ID."
-        
-        # Extract volumes for all segmented structures
-        echo "Extracting volumes for $SUBJECT_ID ..."
-        
-        # Loop through all segmented structures
-        for STRUCTURE in ${OUTPUT_PREFIX}-*firstseg.nii.gz; do
-            # Get structure name
-            STRUCTURE_NAME=$(basename "$STRUCTURE" | sed 's/.*-//; s/_firstseg.nii.gz//')
-            
-            # Calculate volume in mm^3
-            VOLUME=$(fslstats "$STRUCTURE" -V | awk '{print $2}')
-            
-            # Append volume to CSV file
-            echo "${SUBJECT_ID},${STRUCTURE_NAME},${VOLUME}" >> "$VOLUME_CSV"
-        done
-        
-        echo "Volumes extracted for $SUBJECT_ID. Results saved in $VOLUME_CSV"
-    else
-        echo "T1 image not found for $SUBJECT_ID. Skipping..."
-    fi
+#!/usr/bin/env bash
+# FSL FIRST subcortical volumes for every sub-*/anat/sub-*_T1w.nii.gz under a dataset directory.
+# Not used by pie.imaging (which segments with FastSurfer); an FSL alternative for BIDS-like T1 folders.
+#
+#   bash misc/run_first.sh <dataset_dir> <output_dir>
+#
+# Writes <output_dir>/<subject>/<subject>_first* (run_first_all outputs) and <output_dir>/first_volumes.csv
+# (Subject,Structure,Label,Volume_mm3). Volumes come from run_first_all's combined segmentation
+# <prefix>_all_<method>_firstseg.nii.gz, one label at a time (fslstats -l label-0.5 -u label+0.5 -V), as in the
+# FIRST user guide. Needs FSL on PATH (run_first_all, fslstats).
+set -euo pipefail
+DATASET_DIR=${1:?usage: run_first.sh <dataset_dir> <output_dir>}
+OUTPUT_DIR=${2:?usage: run_first.sh <dataset_dir> <output_dir>}
+for tool in run_first_all fslstats; do
+    command -v "$tool" >/dev/null || { echo "$tool not found: set up FSL first" >&2; exit 1; }
 done
 
-echo "FIRST processing completed for all subjects."
+# The 15 structures run_first_all segments and their labels in the combined segmentation
+STRUCTURES=(L_Thal L_Caud L_Puta L_Pall BrStem L_Hipp L_Amyg L_Accu R_Thal R_Caud R_Puta R_Pall R_Hipp R_Amyg R_Accu)
+LABELS=(10 11 12 13 16 17 18 26 49 50 51 52 53 54 58)
 
-
-## HOW TO RUN:
- ## 1. Make script executable:
-chmod +x run_first.sh
-
- ## 2. In Terminal: run the following command:
-       ./run_first.sh
-
+mkdir -p "$OUTPUT_DIR"
+CSV="$OUTPUT_DIR/first_volumes.csv"
+echo "Subject,Structure,Label,Volume_mm3" > "$CSV"
+shopt -s nullglob
+for SUBJECT_DIR in "$DATASET_DIR"/sub-*/; do
+    SUBJECT_ID=$(basename "$SUBJECT_DIR")
+    T1="${SUBJECT_DIR}anat/${SUBJECT_ID}_T1w.nii.gz"
+    if [[ ! -f "$T1" ]]; then echo "no T1 for $SUBJECT_ID, skipped" >&2; continue; fi
+    mkdir -p "$OUTPUT_DIR/$SUBJECT_ID"
+    PREFIX="$OUTPUT_DIR/$SUBJECT_ID/${SUBJECT_ID}_first"
+    echo "FIRST: $SUBJECT_ID"
+    if ! run_first_all -i "$T1" -o "$PREFIX"; then echo "run_first_all failed for $SUBJECT_ID" >&2; continue; fi
+    SEGS=("$PREFIX"_all_*_firstseg.nii.gz)
+    if (( ${#SEGS[@]} != 1 )); then
+        echo "expected one ${PREFIX}_all_*_firstseg.nii.gz for $SUBJECT_ID, found ${#SEGS[@]}" >&2; continue
+    fi
+    for i in "${!STRUCTURES[@]}"; do
+        L=${LABELS[$i]}
+        VOLUME=$(fslstats "${SEGS[0]}" -l "$((L - 1)).5" -u "$L.5" -V | awk '{print $2}')
+        echo "$SUBJECT_ID,${STRUCTURES[$i]},$L,$VOLUME" >> "$CSV"
+    done
+done
+echo "volumes -> $CSV"

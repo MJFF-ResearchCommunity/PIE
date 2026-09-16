@@ -93,8 +93,17 @@ def nuisance_design(confounds, metadata, tr, config=ConnectivityConfig()):
     return design, keep, audit
 
 
+def _network_names(networks):
+    """Names become "A__B" feature keys: nonstrings would fail late or collide (1 vs "1")."""
+    networks = list(networks)
+    if not all(isinstance(name, str) and name for name in networks):
+        raise ValueError('Network names must be nonempty strings')
+    return networks
+
+
 def residual_connectivity(series, design, networks):
     """OLS residualization and Fisher-z edges/network means (self-edges excluded)."""
+    networks = _network_names(networks)
     series = np.asarray(series, float)
     if series.ndim != 2 or len(networks) != series.shape[1] or len(series) != len(design):
         raise ValueError('Series/design/network dimensions differ')
@@ -130,6 +139,7 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
     Optional BOLDImageCache shares one immutable 4D read across QC variants;
     it does not alter the scientific calculation or input/output checksums.
     """
+    _network_names(label_networks.values())
     paths = [Path(p).resolve(strict=True) for p in (bold, brain_mask, confounds_tsv, confounds_json, atlas)]
     from . import fmri_data
     identity = dict(inputs={str(p): sha256(p) for p in paths}, config=asdict(config), tr=tr,
@@ -145,7 +155,6 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
             if sha256(out / name) != digest:
                 raise ValueError('Existing connectivity output checksum mismatch')
         return saved
-    out.mkdir(parents=True, exist_ok=True)
     img, mask, atlas_img = (nib.load(p) for p in (bold, brain_mask, atlas))
     if any(image.header.get_xyzt_units()[0] != 'mm' for image in (img, mask, atlas_img)):
         raise ValueError('Explicit millimeter spatial units are required')
@@ -189,10 +198,13 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
         series = np.column_stack([values[voxel_labels == label].mean(axis=0, dtype=np.float64) for label in labels])
         residual, edges, features = residual_connectivity(series[keep], design,
                                                          [label_networks[i] for i in labels])
+        result['network_features'] = features
+    # Created only after every check, so a rejected call leaves nothing behind.
+    out.mkdir(parents=True, exist_ok=True)
+    if not reasons:
         np.savez_compressed(out / 'connectivity.npz', parcel_timeseries=series,
                             retained_indices=np.flatnonzero(keep), residual_timeseries=residual,
                             edges=edges, labels=np.array(labels))
-        result['network_features'] = features
         result['outputs']['connectivity.npz'] = sha256(out / 'connectivity.npz')
     write_json(completion, result)
     return result

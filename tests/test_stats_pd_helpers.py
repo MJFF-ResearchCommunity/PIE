@@ -39,6 +39,35 @@ def test_hoehn_yahr_summary():
     assert r["median_stage"] == pytest.approx(3.0)
 
 
+def test_comt_inhibitor_adds_a_fraction_of_the_levodopa_led():
+    # Tomlinson 2010 / Jost 2023: entacapone LED = 0.33 x levodopa LED, whatever its own dose.
+    r = compute_ledd({"levodopa_ir": 300, "entacapone": 600})
+    assert r["total_ledd_mg"] == pytest.approx(399.0)
+    assert r["per_drug"]["entacapone"]["ledd_mg"] == pytest.approx(99.0)
+
+
+def test_comt_boost_applies_to_the_levodopa_led_after_cr_conversion():
+    r = compute_ledd({"levodopa_ir": 300, "levodopa_cr": 200, "tolcapone": 300})
+    assert r["total_ledd_mg"] == pytest.approx(450 + 0.5 * 450)
+
+
+def test_opicapone_follows_jost_2023():
+    # Jost et al. 2023, Table 3: opicapone 50 mg qd + levodopa 150 mg qid = 900 mg LED.
+    assert compute_ledd({"levodopa_ir": 600, "opicapone": 50})["total_ledd_mg"] == pytest.approx(900.0)
+
+
+def test_safinamide_is_a_flat_equivalent_not_a_per_mg_factor():
+    for dose in (50, 100):
+        assert compute_ledd({"safinamide": dose})["total_ledd_mg"] == pytest.approx(150.0)
+
+
+def test_two_comt_inhibitors_are_refused():
+    with pytest.raises(ValueError, match="COMT"):
+        compute_ledd({"levodopa_ir": 300, "entacapone": 600, "opicapone": 50})
+    with pytest.raises(ValueError, match="COMT"):
+        compute_ledd({"levodopa_entacapone": 300, "tolcapone": 300})
+
+
 def test_hoehn_yahr_summary_empty():
     r = hoehn_yahr_summary(pd.Series([], dtype=float))
     assert r["n"] == 0

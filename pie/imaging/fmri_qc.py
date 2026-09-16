@@ -49,7 +49,11 @@ def spatial_montage(background, overlays, output, *, title='', mask=None):
                 cut = np.take(overlay, index, axis=axis).T
                 if cut.min() < level < cut.max():
                     ax.contour(cut, levels=[level], colors=[color], linewidths=.6)
-            world = nib.affines.apply_affine(img.affine, np.eye(3)[axis] * index)[axis]
+            # An oblique voxel slice has no single world coordinate; report the
+            # world position of the displayed support centre on this slice.
+            centre = (low + high) / 2
+            centre[axis] = index
+            world = nib.affines.apply_affine(img.affine, centre)[axis]
             ax.set_title(f'{"xyz"[axis]} = {world:.0f} mm', color='white', fontsize=9)
             ax.axis('off')
     fig.suptitle(title + ' | RAS coordinates; visual review required', color='white', fontsize=11)

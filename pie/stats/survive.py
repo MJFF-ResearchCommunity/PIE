@@ -84,10 +84,11 @@ def cox_regression(df: pd.DataFrame, time: str, event: str,
             "hr_ci_upper": float(np.exp(cph.confidence_intervals_.loc[cov, "95% upper-bound"])),
         })
 
-    # Schoenfeld PH test per covariate. lifelines' check_assumptions returns a
-    # list of StatisticalResult objects; catch errors because it can be finicky
-    # with perfectly-separable predictors.
+    # Schoenfeld PH test per covariate. lifelines can fail here (e.g. perfectly separating
+    # predictors); the fit is still reported, but the failure is surfaced, never swallowed:
+    # an empty ph_test must not read as "assumption holds".
     ph_rows: List[Dict[str, Any]] = []
+    ph_error: Optional[str] = None
     try:
         from lifelines.statistics import proportional_hazard_test
         ph_res = proportional_hazard_test(cph, clean, time_transform="rank")
@@ -99,8 +100,11 @@ def cox_regression(df: pd.DataFrame, time: str, event: str,
                     "p_value": float(ph_res.summary.loc[cov, "p"]),
                     "violates_ph": bool(ph_res.summary.loc[cov, "p"] < 0.05),
                 })
-    except Exception:
-        pass
+    except Exception as exc:
+        import warnings
+        ph_rows = []
+        ph_error = f"{type(exc).__name__}: {exc}"
+        warnings.warn(f"Proportional-hazards test failed: {ph_error}", RuntimeWarning, stacklevel=2)
 
     return {
         "model": "cox_ph",
@@ -110,4 +114,5 @@ def cox_regression(df: pd.DataFrame, time: str, event: str,
         "concordance": float(cph.concordance_index_),
         "log_likelihood": float(cph.log_likelihood_),
         "ph_test": ph_rows,
+        "ph_test_error": ph_error,
     }

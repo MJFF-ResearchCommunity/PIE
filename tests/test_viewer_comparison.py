@@ -47,3 +47,15 @@ def test_rigid_preview_retains_dates_sources_and_unreviewed_status(tmp_path):
     np.testing.assert_allclose(result["baseline"]["geometry"]["affine"], result["followup"]["geometry"]["affine"])
     assert result == prepare_comparison(store, *scans)
     assert before == [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
+
+
+def test_volumes_too_small_for_rigid_alignment_give_a_clear_error(tmp_path):
+    data = np.random.default_rng(0).uniform(1, 100, (12, 12, 12)).astype(np.float32)
+    paths = [tmp_path / f"{i}.nii.gz" for i in range(2)]
+    for p in paths:
+        image = nib.Nifti1Image(data, np.eye(4)); image.header.set_xyzt_units("mm")
+        nib.save(image, p)
+    scans = [Scan(str(i), "001", "MRI", f"202{i}-01-01", "visit", "MRI", p, str(i)) for i, p in enumerate(paths)]
+    with pytest.raises(ValueError, match="could not run") as error:
+        prepare_comparison(ImageStore(tmp_path / "cache"), *scans)
+    assert "0x" not in str(error.value) and "ITK ERROR" not in str(error.value)

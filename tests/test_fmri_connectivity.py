@@ -124,3 +124,34 @@ def test_extraction_and_coverage_rejection(tmp_path):
     assert not result['numerical_qc_pass']
     assert 'insufficient_parcel_coverage' in result['exclusion_reasons']
     assert not (tmp_path / 'rejected/connectivity.npz').exists()
+
+
+def synthetic_inputs(tmp_path):
+    rng = np.random.default_rng(41)
+    atlas = np.zeros((4, 4, 4), np.int16)
+    atlas[:2], atlas[2:] = 1, 2
+    table, meta = confounds()
+    paths = [tmp_path / name for name in ('bold.nii.gz', 'mask.nii.gz', 'confounds.tsv', 'confounds.json', 'atlas.nii.gz')]
+    for path, array in [(paths[0], rng.normal(100, 10, (*atlas.shape, 240)).astype(np.float32)),
+                        (paths[1], np.ones(atlas.shape, np.uint8)), (paths[4], atlas)]:
+        image = nib.Nifti1Image(array, np.eye(4))
+        image.header.set_xyzt_units('mm', 'sec')
+        nib.save(image, path)
+    table.to_csv(paths[2], sep='\t', index=False)
+    paths[3].write_text(json.dumps(meta))
+    return paths
+
+
+@pytest.mark.parametrize('label_networks, message', [({1: 'network', 3: 'network'}, 'Atlas IDs'),
+                                                     ({1: 1, 2: 2}, 'strings')])
+def test_rejected_inputs_leave_no_output_directory(tmp_path, label_networks, message):
+    paths = synthetic_inputs(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        extract_connectivity(*paths, label_networks, tmp_path / 'result', tr=2.5)
+    assert not (tmp_path / 'result').exists()
+
+
+def test_nonstring_network_names_rejected_clearly():
+    rng = np.random.default_rng(0)
+    with pytest.raises(ValueError, match='strings'):
+        residual_connectivity(rng.normal(size=(50, 4)), np.ones((50, 1)), [0, 0, 1, 1])

@@ -25,12 +25,12 @@ normalised the way the authors' dataset code does:
               expected age `brainage_sfcn`. PPMI ages below 42 fall outside the training range. MNI152NLin6 (FSL)
               vs NLin2009c differ by ~1-2 mm, ignored here.
 
-Weights live under `third_party/weights/<backend>/` (see WEIGHTS.md there); a backend whose weights are missing is
+Weights live under `third_party/weights/<backend>/` (see WEIGHTS.md there; `PIE_WEIGHTS_DIR` overrides the root); a backend whose weights are missing is
 skipped with a message. Licenses: BrainIAC research-only (Mass General Brigham); 3D-Neuro-SimCLR MIT; SFCN MIT
 (LICENSE file present in the UKBiobank_deep_pretrain repo despite earlier reports of none).
 
     from pie.imaging.embed import GRID, to_mni, embed_sfcn, load_net
-    vol = to_mni("Imaging/derived/fastsurfer", "I224562", *GRID["sfcn"])      # (182, 218, 182) RAS, zeros outside brain
+    vol = to_mni("Imaging/derived/fastsurfer", "I000001", *GRID["sfcn"])      # (182, 218, 182) RAS, zeros outside brain
     v = embed_sfcn(vol, load_net("sfcn", "cuda"))                             # 64 features + brain age
 
     python -m pie.imaging.embed --fastsurfer-dir Imaging/derived/fastsurfer --ids-csv dataset.csv --out emb.csv \\
@@ -38,6 +38,7 @@ skipped with a message. Licenses: BrainIAC research-only (Mass General Brigham);
 """
 
 import argparse
+import os
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -48,7 +49,7 @@ import pandas as pd
 
 from .dwi import _brain, mni_cache_path, register_t1_to_mni
 
-WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "third_party" / "weights"
+WEIGHTS_DIR = Path(os.environ.get("PIE_WEIGHTS_DIR") or Path(__file__).resolve().parents[2] / "third_party" / "weights")
 WEIGHTS = {"brainiac": WEIGHTS_DIR / "brainiac" / "BrainIAC.ckpt",
            "simclr": WEIGHTS_DIR / "simclr" / "simclr_3d_brain_foundation.tar",
            "sfcn": WEIGHTS_DIR / "sfcn" / "run_20190719_00_epoch_best_mae.p"}

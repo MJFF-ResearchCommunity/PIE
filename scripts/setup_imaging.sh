@@ -13,6 +13,6 @@ command -v uv >/dev/null || { echo "install uv first: https://docs.astral.sh/uv/
 uv venv venv_imaging --python 3.12
 uv pip install --python venv_imaging/bin/python --torch-backend="$BACKEND" -r third_party/FastSurfer/requirements.txt
 uv pip install --python venv_imaging/bin/python dcm2niix pydicom nibabel pandas numpy neuroCombat scikit-learn \
-    catboost lightgbm xgboost interpret shap matplotlib seaborn optuna polars pyarrow pytest
+    dipy nilearn antspyx catboost lightgbm xgboost interpret shap matplotlib seaborn optuna polars pyarrow pytest
 uv pip install --python venv_imaging/bin/python "endgame-ml[tabular]" || true   # or: uv pip install -e ../endgame
 venv_imaging/bin/python -c "import torch, dcm2niix, pydicom, nibabel; print('imaging venv ready; cuda:', torch.cuda.is_available())"

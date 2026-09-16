@@ -11,7 +11,7 @@ from pie.imaging.viewer import __main__, server
 def test_explicit_cache_requires_mount_before_catalog_read(tmp_path):
     with pytest.raises(ValueError, match="not mounted; no fallback"):
         server.create_app(tmp_path, cache=tmp_path / "cache", require_cache_mount=True)
-    with pytest.raises(ValueError, match="not mounted; no fallback"):
+    with pytest.raises(ValueError, match="needs --cache-dir"):
         server.create_app(tmp_path, require_cache_mount=True)
 
 
@@ -42,5 +42,13 @@ def test_cli_forwards_cache_parameters_without_machine_paths(tmp_path, monkeypat
     monkeypatch.setattr(sys, "argv", ["viewer", "serve", "--cache-dir", str(cache),
                                       "--require-cache-mount"])
     __main__.main()
-    assert captured == dict(cache=cache, require_cache_mount=True, app="test-app",
+    assert captured == dict(cache=cache, require_cache_mount=True, sample_plan=None, app="test-app",
                             host="127.0.0.1", port=8765)
+
+
+def test_cli_reports_configuration_errors_without_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["viewer", "serve", "--require-cache-mount"])
+    with pytest.raises(SystemExit) as exit_info:
+        __main__.main()
+    assert exit_info.value.code == 2
+    assert "needs --cache-dir" in capsys.readouterr().err

@@ -131,7 +131,8 @@ def main(argv=None):
     ap.add_argument("--modality", required=True, choices=["dwi", "nm", "flair", "datscan"])
     ap.add_argument("--out", required=True)
     ap.add_argument("--n", type=int, default=40)
-    ap.add_argument("--worst", help="features column to sort ascending (poorest first), e.g. reg_b0_t1_mi")
+    ap.add_argument("--worst", help="QC column to order worst-first (worst_first: MI, motion and rotation columns largest "
+                    "first, reg_metric weakest correlation first, others smallest first), e.g. reg_b0_t1_mi")
     ap.add_argument("--patnos", help="text file of PATNOs to render")
     ap.add_argument("--sessions", help="sessions.csv (datscan only)")
     ap.add_argument("--fastsurfer-dir", help="FastSurfer root (datscan only)")
@@ -149,16 +150,18 @@ def main(argv=None):
     else:
         feats = feats.sample(frac=1.0, random_state=0)
     fs_by_patno = {}
-    if a.modality == "datscan":
-        sess = pd.read_csv(a.sessions, dtype={"image_id": str})
-        fs_by_patno = {int(r.patno): Path(a.fastsurfer_dir) / r.image_id for r in sess.sort_values("session_date").itertuples()}
+    if a.modality == "datscan":     # the row's recorded T1, else the earliest finished one (the rule datscan.main uses)
+        from .batch import fastsurfer_by_patno
+        fs_by_patno = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
     done = []
     for row in feats.head(a.n).itertuples():
         r = row._asdict()
         png = out / f"{r['patno']}.png"
         try:
             if a.modality == "datscan":
-                render_subject("datscan", str(work / "nifti" / f"{r['image_id']}_datscan.nii.gz"), png, fastsurfer_dir=fs_by_patno.get(int(r["patno"])), row=r)
+                rec = r.get("fs_image_id")
+                fs_dir = Path(a.fastsurfer_dir) / rec if isinstance(rec, str) and rec else fs_by_patno.get(int(r["patno"]))
+                render_subject("datscan", str(work / "nifti" / f"{r['image_id']}_datscan.nii.gz"), png, fastsurfer_dir=fs_dir, row=r)
             else:
                 render_subject(a.modality, work / str(r["patno"]), png)
             done.append(png)

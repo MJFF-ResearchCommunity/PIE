@@ -268,9 +268,9 @@ def cohens_d(a: _ArrayLike, b: _ArrayLike) -> float:
 
 
 def hedges_g(a: _ArrayLike, b: _ArrayLike) -> float:
-    """Hedges' g — small-sample-bias-corrected Cohen's d."""
-    d = cohens_d(a, b)
+    """Hedges' g — small-sample-bias-corrected Cohen's d, on the non-missing values."""
+    x, y = _clean(a, b)
+    d = cohens_d(x, y)
     if math.isnan(d):
         return float("nan")
-    n = len(a) + len(b)
-    return d * (1 - 3 / (4 * n - 9))
+    return d * (1 - 3 / (4 * (len(x) + len(y)) - 9))

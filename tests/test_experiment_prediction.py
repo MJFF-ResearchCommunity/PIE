@@ -88,3 +88,46 @@ def test_the_outcome_column_is_configurable_and_defaults_to_the_study_name(monke
     predictions, _ = pred.nested_fold(d, np.arange(48), np.arange(48, 60), {}, [], None, False, 1,
                                       outcome="converted")
     assert len(predictions["baseline"]) == 12
+
+
+def test_string_participant_ids_are_supported_and_integer_ids_stay_int(monkeypatch):
+    monkeypatch.setattr(pred, "candidate_grid", lambda families: [pred.Candidate("baseline")])
+    d = frame_fixture(60)
+    d["PATNO"] = [f"P{i:03d}" for i in range(60)]
+    _, audit = pred.nested_fold(d, np.arange(48), np.arange(48, 60), {}, [], None, False, 1)
+    assert all(isinstance(p, str) for p in audit["inner_audit"][0]["fit_patnos"])
+    _, audit = pred.nested_fold(frame_fixture(60), np.arange(48), np.arange(48, 60), {}, [], None, False, 1)
+    assert all(type(p) is int for p in audit["inner_audit"][0]["fit_patnos"])
+
+
+def test_a_final_refit_that_fails_falls_back_and_is_recorded(monkeypatch):
+    from dataclasses import asdict
+    from sklearn.exceptions import ConvergenceWarning
+    d = frame_fixture(120)
+    d["image"] = 4 * (2 * d.saa_prodromal - 1) + np.random.default_rng(7).normal(size=len(d))
+    grid = [pred.Candidate("baseline"), pred.Candidate("image"), pred.Candidate("image", strength=1.0)]
+    monkeypatch.setattr(pred, "candidate_grid", lambda families: grid)
+    real, failed = pred.fit_checked, []
+
+    def flaky(candidate, x, y, seed):
+        # Converges in every inner fold, fails once on the full training partition.
+        if candidate.family == "image" and len(y) == 90 and not failed:
+            failed.append(grid.index(candidate))
+            raise ConvergenceWarning("synthetic non-convergence")
+        return real(candidate, x, y, seed)
+    monkeypatch.setattr(pred, "fit_checked", flaky)
+    predictions, audit = pred.nested_fold(d, np.arange(90), np.arange(90, 120), {"image": ["image"]},
+                                          [], None, False, 17)
+    final = [f for f in audit["failures"] if f["stage"] == "final_refit"]
+    assert [f["candidate"] for f in final] == failed
+    assert audit["selections"]["image"]["candidate"] != asdict(grid[failed[0]])
+    assert audit["selections"]["image"]["candidate"]["family"] == "image"
+    assert len(predictions["image"]) == 30
+
+
+def test_connectivity_features_are_not_residualized_for_intracranial_volume():
+    d = frame_fixture()
+    d["fmri_dmn__salience"] = d.image
+    design = pred.ImageDesign(["image", "fmri_dmn__salience"], True, False, ["scanner_batch"], "MaskVol").fit(d)
+    blocks = {tuple(np.flatnonzero(which)): nuisance.cols for which, nuisance, _ in design.regressions}
+    assert "MaskVol" in blocks[(0,)] and "MaskVol" not in blocks[(1,)]

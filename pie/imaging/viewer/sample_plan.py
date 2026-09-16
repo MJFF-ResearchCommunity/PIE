@@ -10,7 +10,7 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .catalog import Catalog, MODALITIES, rows
+from .catalog import Catalog, MODALITIES, latest_table, rows
 
 ARCHIVE_GROUPS = ["Control", "PD", "SWEDD", "Prodromal", "GenCohort PD", "GenCohort Unaff", "GenReg PD", "GenReg Unaff", "AV133", "Volunteer", "Phantom"]
 
@@ -19,9 +19,19 @@ def build_plan(repo: Path, ppmi: Path, output: Path):
     catalog = Catalog(repo, ppmi)
     public = catalog.public()
     by_subject = {s["id"]: s for s in public["subjects"]}
-    status = {r["PATNO"]: r for r in rows(ppmi / "_Subject_Characteristics/Participant_Status_08Sep2026.csv")}
+    status = catalog.statuses
     imaging = ppmi / "Imaging"
     candidates = defaultdict(dict)
+    warnings = list(catalog.warnings)
+    if not status:
+        warnings.append(f"No Participant_Status_<date>.csv in {ppmi / '_Subject_Characteristics'}; every candidate's cohort is Unknown.")
+
+    def table(stem):
+        """Newest dated release of a PPMI table; a missing table is reported, not fatal."""
+        path = latest_table(imaging, stem)
+        if not path:
+            warnings.append(f"No {stem}_<date>.csv in {imaging}; its evidence is not used.")
+        return (path.name if path else stem), rows(path)
 
     def add(modality, subject, date, visit, source, evidence, tracer=""):
         cohort = status.get(subject, {}).get("COHORT_DEFINITION", "Unknown")
@@ -33,38 +43,39 @@ def build_plan(repo: Path, ppmi: Path, output: Path):
             if val:
                 entry[key].add(val)
 
-    for name in ("MRI_Acquisition_Metadata_18Mar2025.csv",):
-        for r in rows(imaging / name):
-            for modality, column in (("MRI", None), ("DTI", "MRI_SEQ_DTI"), ("fMRI", "MRI_SEQ_RS")):
-                if column and r.get(column, "").lower() != "yes":
-                    continue
-                if not r.get("MRI_SCAN_DATE"):
-                    continue
-                add(modality, r["PATNO"], r["MRI_SCAN_DATE"], r.get("EVENT_ID"), name, f"{column}=Yes" if column else "MRI_SCAN_DATE recorded; review image QC")
-    name = "DaTScan_Acquisition_Metadata_18Mar2025.csv"
-    for r in rows(imaging / name):
+    name, table_rows = table("MRI_Acquisition_Metadata")
+    for r in table_rows:
+        for modality, column in (("MRI", None), ("DTI", "MRI_SEQ_DTI"), ("fMRI", "MRI_SEQ_RS")):
+            if column and r.get(column, "").lower() != "yes":
+                continue
+            if not r.get("MRI_SCAN_DATE"):
+                continue
+            add(modality, r["PATNO"], r["MRI_SCAN_DATE"], r.get("EVENT_ID"), name, f"{column}=Yes" if column else "MRI_SCAN_DATE recorded; review image QC")
+    name, table_rows = table("DaTScan_Acquisition_Metadata")
+    for r in table_rows:
         if r.get("DATSCAN_IMAGE_ACCEPTABLE", "").lower() == "no":
             continue
         if r.get("DATSCAN_DATE"):
             add("SPECT", r["PATNO"], r["DATSCAN_DATE"], r.get("EVENT_ID"), name,
                 "DaTscan acquisition recorded; request reconstructed image and review QC",
                 r.get("DATSCAN_LIGAND") or "DaTscan (verify ligand in acquisition metadata)")
-    name = "DaTscan_Imaging_18Mar2025.csv"
-    for r in rows(imaging / name):
+    name, table_rows = table("DaTscan_Imaging")
+    for r in table_rows:
         # Annotated PPMI code list: 1 = completed at this visit; 0 = not
         # completed; 2 = a pre-consent scan, not a new acquisition at this visit.
         if r.get("DATSCAN") == "1":
             tracer = "Beta-CIT" if r.get("SCNINJCT") == "2" else {"1": "DaTscan", "2": "TRODAT"}.get(r.get("DATSCANTRC"), "Verify tracer in metadata")
             add("SPECT", r["PATNO"], r.get("INFODT"), r.get("EVENT_ID"), name,
                 "DATSCAN=1 (completed at this visit); assessment month is a search hint; confirm reconstruction and QC", tracer)
-    name = "PET_Acquisition_Metadata_08Sep2026.csv"
-    for r in rows(imaging / name):
+    name, table_rows = table("PET_Acquisition_Metadata")
+    for r in table_rows:
         if r.get("PET_IMAGE_ACCEPTABLE", "").lower() == "no" or r.get("PET_PASS_QC", "").lower() == "no":
             continue
         if r.get("PET_SCAN_DATE"):
             add("PET", r["PATNO"], r["PET_SCAN_DATE"], r.get("EVENT_ID"), name, "PET acquisition recorded; not explicitly QC-rejected", r.get("PET_LIGAND", ""))
-    for name in ("CT_Scan_18Mar2025.csv", "Safety_Head_CT_Scan_08Sep2026.csv"):
-        for r in rows(imaging / name):
+    for stem in ("CT_Scan", "Safety_Head_CT_Scan"):
+        name, table_rows = table(stem)
+        for r in table_rows:
             if r.get("CTSCAN") == "1":
                 add("CT", r["PATNO"], r.get("CTDT"), r.get("EVENT_ID"), name, "CTSCAN=1 (performed); verify IDA image access and series purpose")
     for subject in public["subjects"]:
@@ -73,7 +84,8 @@ def build_plan(repo: Path, ppmi: Path, output: Path):
 
     shortlist = []
     coverage = []
-    cohorts = sorted({v.get("COHORT_DEFINITION", "Unknown") for v in status.values()})
+    # Candidates whose cohort is unknown still count; they are not dropped silently.
+    cohorts = sorted({cohort for _, cohort in candidates} | {v.get("COHORT_DEFINITION", "Unknown") for v in status.values()})
     for cohort in cohorts:
         for modality in MODALITIES:
             options = list(candidates[(modality, cohort)].values())
@@ -89,6 +101,26 @@ def build_plan(repo: Path, ppmi: Path, output: Path):
                                   "local_modalities": by_subject.get(option["subject"], {}).get("modalities", []),
                                   "availability": "Candidate only; confirm in IDA search"})
 
+    # The next bundle to request: shortlisted participants whose candidate modalities
+    # are not local yet, most incomplete first. Same evidence as the shortlist above.
+    by_person = defaultdict(list)
+    for row in shortlist:
+        by_person[row["subject"]].append(row)
+    next_bundle = []
+    for subject, person_rows in by_person.items():
+        local = sorted(by_subject.get(subject, {}).get("modalities", []))
+        missing = sorted({r["modality"] for r in person_rows} - set(local), key=MODALITIES.index)
+        if not missing:
+            continue
+        next_bundle.append({
+            "subject": subject, "cohort": person_rows[0]["cohort"], "local_modalities": local,
+            "requests": [{"modality": modality,
+                          "dates": sorted({d for r in person_rows if r["modality"] == modality for d in r["dates"]})[:4],
+                          "evidence": sorted({e for r in person_rows if r["modality"] == modality for e in r["evidence"]})[:2]}
+                         for modality in missing]})
+    next_bundle.sort(key=lambda b: (-len(b["requests"]), -len(b["local_modalities"]), b["subject"]))
+    next_bundle = next_bundle[:3]
+
     legacy = []
     for group in ARCHIVE_GROUPS:
         matching = [s for s in public["subjects"] if s["group"] == group]
@@ -96,6 +128,7 @@ def build_plan(repo: Path, ppmi: Path, output: Path):
         legacy.append({"archive_group": group, "local_subjects": len(matching), "suggested_subjects": [s["id"] for s in matching[:2]],
                        "note": "Archive label; preserve separately from current cohort" if matching else "Not established by this local inventory; run an unrestricted-date IDA query for this group"})
     plan = {"generated_from": "Local PPMI tables and finished PIE outputs", "coverage": coverage, "shortlist": shortlist, "archive_groups": legacy,
+            "next_bundle": next_bundle, "warnings": warnings,
             "notes": ["Acquisition dates from clinical tables often have month precision. These are search hints, not exact acquisition timestamps.",
                       "CTSCAN=0 means not performed and is excluded.",
                       "Research Group checkboxes reflect archive labels, not necessarily current clinical cohorts.",
@@ -117,8 +150,14 @@ def build_plan(repo: Path, ppmi: Path, output: Path):
     report += [f"| {r['cohort']} | {r['modality']} | {r['local_subjects']} | {r['candidate_subjects']} |" for r in coverage]
     report += ["", "## Suggested participants", "", "| Modality | Cohort | PATNO | Visits / months | Evidence |", "|---|---|---|---|---|"]
     report += [f"| {r['modality']} | {r['cohort']} | {r['subject']} | {', '.join(r['dates'][:6])} | {'; '.join(r['evidence'])} |" for r in shortlist]
+    report += ["", "## Next bundle", ""]
+    report += [f"- {b['subject']} ({b['cohort']}; local: {', '.join(b['local_modalities']) or 'none'}): "
+               + "; ".join(f"{r['modality']} {', '.join(r['dates']) or 'dates not established'}" for r in b["requests"])
+               for b in next_bundle] or ["- No shortlisted participant is missing a modality."]
     report += ["", "## Archive research groups", ""]
     report += [f"- {r['archive_group']}: {', '.join(r['suggested_subjects']) or 'search IDA; no established local sample'}. {r['note']}." for r in legacy]
+    if warnings:
+        report += ["", "## Warnings", ""] + [f"- {w}" for w in warnings]
     report += ["", "## Download priorities", "", "1. Use MRI_subject_ids.txt / DTI_subject_ids.txt / fMRI_subject_ids.txt etc. in Subject ID. Select each modality separately; don't require all modalities on the same participant.",
                "2. Start with two participants per available cohort, T1w 3D anatomy plus matching DTI / resting-state BOLD / reconstructed SPECT or PET, and two genuinely different visits (baseline and 12 or 24 months where available). Screening SPECT can precede baseline MRI; preserve both dates.",
                "3. MRI: T1w MPRAGE/BRAVO/FSPGR, preferably 3D and around 1 mm isotropic; include T2/FLAIR if wanted. DTI: all diffusion directions, bvals/bvecs, phase-encoding/readout sidecars and reverse-phase b0. fMRI: full 4D resting BOLD, TR, fieldmaps/reverse-phase EPI, and anatomical reference.",
@@ -127,5 +166,7 @@ def build_plan(repo: Path, ppmi: Path, output: Path):
                "6. Export the IDA collection CSV and Advanced Download metadata with every collection. Keep actual acquisition date, image ID, participant ID, visit, group, protocol, voxel spacing and image type.",
                "7. For missing cohort/modality cells or Volunteer/Phantom/AV133 archive categories, query IDA without the Subject ID restriction. If no matching data exist, record unavailable rather than substituting a different cohort.", ""]
     (output / "DOWNLOAD_PLAN.md").write_text("\n".join(report))
+    for warning in warnings:
+        print(f"Warning: {warning}")
     print(f"Wrote {len(shortlist)} evidence-backed candidate rows to {output}")
     print("Local modality counts:", dict(Counter(s.modality for s in catalog.scans.values())))

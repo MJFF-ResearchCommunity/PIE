@@ -1,159 +1,132 @@
-# PIE DataPreprocessor Documentation
+# DataPreprocessor (`pie_clean.DataPreprocessor`)
 
-## Overview
+`DataPreprocessor` lives in the companion package **PIE-clean** (`pie_clean/data_preprocessor.py`),
+not in this repository. It is a set of static methods that rewrite values in individual PPMI
+medical-history tables using knowledge of the forms: "2 = uncertain" codes, free-text medication
+indications, dose strings. `DataReducer` drops columns on statistics; `DataPreprocessor` fixes what a
+column *means*.
 
-The `DataPreprocessor` class, located in the `pie_clean` package, is a collection of static methods designed to perform targeted cleaning, standardization, and feature engineering on specific data tables within the PPMI dataset. Unlike the `DataReducer`, which performs general data reduction based on metrics like missingness, the `DataPreprocessor` applies domain-specific knowledge to fix known data inconsistencies and derive more meaningful variables.
+`DataLoader.load(clean_data=True)` (the default, and what the pipeline uses) already runs
+`clean_medical_history`, so PIE code rarely calls these directly.
 
-For instance, it can convert raw blood pressure readings into standardized hypertension stages or map free-text medication indications to a consistent set of codes. These methods are typically applied after data is loaded by the `DataLoader` and before it is merged or fed into analysis pipelines.
+| Method | Input | What it does |
+|---|---|---|
+| `clean(data_dict)` | loader dict | Replaces `data_dict["medical_history"]` with `clean_medical_history(...)`. Raises `KeyError` if that key is absent. No other modality is touched. |
+| `clean_medical_history(med_hist_dict)` | `data_dict["medical_history"]` | Runs the five table cleaners below on whichever tables are present; returns the same dict. |
+| `clean_ledd_meds(df)` | `LEDD_Concomitant_Medication` | Parses dates, drops non-LEDD drugs, fills missing `LEDD`. |
+| `clean_concomitant_meds(df)` | `Concomitant_Medication` | Parses dates, gives every row an indication code. |
+| `clean_vital_signs(df)` | `Vital_Signs` | Adds blood-pressure bands. |
+| `clean_features_of_parkinsonism(df, uncertain=0.5)` | `Features_of_Parkinsonism` | `FEATBRADY`, `FEATPOSINS`, `FEATRIGID`, `FEATTREMOR`: 2 (uncertain) → `uncertain`. All four columns must exist. |
+| `clean_gen_physical_exam(df, uncertain=0.5)` | `General_Physical_Exam` | `ABNORM`: 2 (cannot assess) → `uncertain`. |
+| `event_id_to_months(eid)` | visit code | Months from baseline via `EVENT_TIMES`; `NaN` for unscheduled codes. |
+| `dt_to_datetime(ser)` | Series of `"MM/YYYY"` | `pd.to_datetime(ser, format="%m/%Y")`; other formats raise, missing → `NaT`. |
+| `create_concomitant_meds(df, output_path=None)` | raw `Concomitant_Medication` | Maintenance only: rebuilds the indication-mapping JSON for a new data cut. Writes `output_path`, by default the package's `concomitant_meds_indications.json` (the file `clean_concomitant_meds` reads). |
 
-## Key Features
+Every table cleaner works on a copy and returns it.
 
-- **Domain-Specific Cleaning**: Contains specialized functions for cleaning individual data tables like `Vital_Signs`, `Concomitant_Medication`, and more.
-- **Value Standardization**: Converts ambiguous or inconsistent values (e.g., text entries, "Uncertain" codes) into a standardized format suitable for analysis.
-- **Feature Creation**: Derives new, more informative features from raw data (e.g., creating blood pressure category labels from systolic/diastolic values).
-- **Utility Functions**: Provides helpful converters, like mapping `EVENT_ID` strings to a numerical timeline of months.
-- **Static Methods**: All methods are static, meaning you can use them directly without creating an instance of the `DataPreprocessor` class.
+## Why each cleaner exists
 
-## API Reference
+**Uncertain codes.** PPMI codes several yes/no findings as 0 = no, 1 = yes, 2 = uncertain / cannot
+assess. Left alone, a model reads 2 as "more than yes". `uncertain=0.5` places it between the two;
+pass `uncertain=np.nan` to treat it as missing instead.
 
-All methods are static and can be called directly (e.g., `DataPreprocessor.clean_vital_signs(...)`).
+**Vital signs.** Adds `Sup BP code`/`Sup BP label` from `SYSSUP`/`DIASUP` and `Stnd BP code`/`Stnd BP label`
+from `SYSSTND`/`DIASTND`, using American Heart Association bands. The most severe band is tested
+first and either reading alone is enough to reach a band:
 
-### Main Dispatcher Methods
+| Test (first match wins) | Code | Label |
+|---|---|---|
+| systolic or diastolic missing | `NaN` | `NaN` |
+| systolic ≥ 180 or diastolic ≥ 120 | 4 | Hypertensive crisis |
+| systolic ≥ 140 or diastolic ≥ 90 | 3 | Stage 2 HTN |
+| systolic ≥ 130 or diastolic ≥ 80 | 2 | Stage 1 HTN |
+| systolic ≥ 120 | 1 | Elevated |
+| otherwise | 0 | Normal |
 
-#### `clean(data_dict)`
+**Concomitant medications.** Most rows carry a numeric indication code in `CMINDC`; the rest carry
+only free text in `CMINDC_TEXT`, full of typos and synonyms. Resolution per row:
 
-This is the main entry point that applies all relevant cleaning functions to a full data dictionary loaded by `DataLoader`. It currently dispatches to `clean_medical_history`.
+1. `CMINDC` present → keep it.
+2. Neither code nor text → map by drug name (`ASPIRIN` → 17 Pain, `GINKOBIL` → 22 Supplements,
+   `HUMULIN NPH` → 11 Diabetes), otherwise 25 Other.
+3. Text present → look it up (lower-cased, stripped) in `pie_clean/concomitant_meds_indications.json`;
+   unmatched text stays `NaN` and is logged.
 
-- **Parameters**:
-    - **`data_dict`** `(Dict)`: The dictionary of data returned by `DataLoader.load(merge_output=False)`.
-- **Returns** `(Dict)`: The same dictionary with the relevant DataFrames cleaned in place.
+`CMINDC_TEXT` is then overwritten with the standard label for the code (`"UNKNOWN"` for `NaN`), and
+`CMINDC` becomes `int` when nothing is left unmapped. `STARTDT`/`STOPDT` become datetimes; missing
+dates are kept as `NaT` (no start date: assume before enrolment; no stop date: assume ongoing).
 
-#### `clean_medical_history(med_hist_dict)`
+**LEDD medications.** Anticholinergics (benztropine, biperden, budipin and brand names) are sometimes
+entered on the LEDD form; those rows are removed. Where `LEDD` is missing it is computed from the
+drug name and `LEDDSTRMG × LEDDOSE × LEDDOSFRQ` with standard conversion factors (e.g. ×1 for
+carbidopa/levodopa, ×20 ropinirole, ×100 pramipexole/rasagiline). COMT inhibitors and istradefylline
+depend on the levodopa dose, so they get a string such as `"LD x 0.33"`; the `LEDD` column is
+therefore mixed-type, and unrecognised drugs stay `NaN`.
 
-Orchestrates the cleaning of all tables within the `medical_history` modality.
+**Visit months.** `EVENT_TIMES` maps scheduled visits to months: `SC` −3 (screening can fall up to
+3 months before baseline), `BL` 0, `V01`–`V12` at 3, 6, 9, 12, 18, 24 … 60, then `V13`–`V21` yearly
+to 168; phone visits `R01`–`R20` fall between. Unscheduled codes return `NaN` on purpose: they have
+no fixed time.
 
-- **Parameters**:
-    - **`med_hist_dict`** `(Dict)`: The dictionary for the `medical_history` modality (i.e., `data_dict['medical_history']`).
-- **Returns** `(Dict)`: The medical history dictionary with its DataFrames cleaned.
+## Example
 
----
-
-### Specific Cleaning Functions
-
-#### `clean_vital_signs(vs_df)`
-
-Enriches the Vital Signs data by adding blood pressure categories.
-
-- **Action**: Based on `SYSSUP`/`DIASUP` (supine) and `SYSSTND`/`DIASTND` (standing) columns, it adds four new columns:
-    - `Sup BP code` & `Sup BP label`: Numeric code (0-4) and text label (e.g., "Normal", "Stage 1 HTN") for supine blood pressure.
-    - `Stnd BP code` & `Stnd BP label`: The same for standing blood pressure.
-- **Parameters**:
-    - **`vs_df`** `(pd.DataFrame)`: The Vital Signs DataFrame.
-- **Returns** `(pd.DataFrame)`: The cleaned DataFrame with four new columns.
-
-#### `clean_features_of_parkinsonism(fop_df, uncertain=0.5)`
-
-Standardizes values in the Features of Parkinsonism table.
-
-- **Action**: In columns like `FEATBRADY`, it converts the value `2` (meaning "Uncertain") to a specified numeric value.
-- **Parameters**:
-    - **`fop_df`** `(pd.DataFrame)`: The Features of Parkinsonism DataFrame.
-    - **`uncertain`** `(float, default=0.5)`: The value to replace `2` with.
-- **Returns** `(pd.DataFrame)`: The cleaned DataFrame.
-
-#### `clean_gen_physical_exam(gpe_df, uncertain=0.5)`
-
-Standardizes values in the General Physical Exam table.
-
-- **Action**: In the `ABNORM` column, converts the value `2` (meaning "Cannot assess") to a specified numeric value.
-- **Parameters**:
-    - **`gpe_df`** `(pd.DataFrame)`: The General Physical Exam DataFrame.
-    - **`uncertain`** `(float, default=0.5)`: The value to replace `2` with.
-- **Returns** `(pd.DataFrame)`: The cleaned DataFrame.
-
-#### `clean_concomitant_meds(concom_meds_df)`
-
-Performs a complex and crucial cleaning of the Concomitant Medications table.
-
-- **Action**:
-    1.  Converts `STARTDT` and `STOPDT` columns to proper datetime objects.
-    2.  Uses an internal JSON mapping file (`concomitant_meds_indications.json`) to harmonize the `CMINDC` (medication indication code) column. It maps messy free-text entries from `CMINDC_TEXT` to their corresponding numeric codes, ensuring every medication has a standardized indication code.
-    3.  Uses the newly harmonized codes to fill in a clean `CMINDC_TEXT` column with standardized labels.
-- **Parameters**:
-    - **`concom_meds_df`** `(pd.DataFrame)`: The Concomitant Medication DataFrame.
-- **Returns** `(pd.DataFrame)`: The harmonized and cleaned DataFrame.
-
----
-
-### Utility Functions
-
-#### `event_id_to_months(eid)`
-
-Converts a visit `EVENT_ID` string (e.g., "V04") into the corresponding number of months from baseline.
-
-- **Parameters**:
-    - **`eid`** `(str)`: The event ID string.
-- **Returns** `(int or np.nan)`: The number of months, or `NaN` if the ID is not recognized.
-
-#### `dt_to_datetime(dt_ser)`
-
-Converts a pandas Series of date strings (in "MM/YYYY" format) to a Series of datetime objects.
-
-- **Parameters**:
-    - **`dt_ser`** `(pd.Series)`: The Series containing date strings.
-- **Returns** `(pd.Series)`: The Series with datetime objects.
-
----
-
-## Practical Usage Example
-
-The `DataLoader` automatically applies the relevant pre-processing steps when loading `medical_history`. However, you can also apply them manually.
+Runnable with synthetic tables:
 
 ```python
-from pie_clean import DataLoader, DataPreprocessor
-from pie_clean import MEDICAL_HISTORY
+import numpy as np
+import pandas as pd
+from pie_clean import DataPreprocessor as DP
 
-# Load data without applying the cleaner via DataLoader first
-# (Note: DataLoader's default clean_data=True would normally do this)
-data_dict = DataLoader.load(modalities=[MEDICAL_HISTORY], clean_data=False)
+vs = pd.DataFrame({"SYSSUP": [118, 150], "DIASUP": [76, 95], "SYSSTND": [125, 185], "DIASTND": [79, 100]})
+DP.clean_vital_signs(vs)[["Sup BP label", "Stnd BP label"]]
+#   Sup BP label        Stnd BP label
+# 0       Normal             Elevated
+# 1  Stage 2 HTN  Hypertensive crisis
 
-# Get the raw Vital Signs table
-raw_vitals_df = data_dict[MEDICAL_HISTORY]["Vital_Signs"]
-print("Raw Vital Signs columns:", raw_vitals_df.columns.tolist())
+fop = pd.DataFrame({"FEATBRADY": [0, 1, 2], "FEATPOSINS": [2, 0, 0], "FEATRIGID": [1, 1, 1], "FEATTREMOR": [0, 2, 1]})
+DP.clean_features_of_parkinsonism(fop)["FEATBRADY"].tolist()          # [0.0, 1.0, 0.5]
+DP.clean_gen_physical_exam(pd.DataFrame({"ABNORM": [0, 1, 2]}), uncertain=np.nan)["ABNORM"].tolist()
+                                                                      # [0.0, 1.0, nan]
+[DP.event_id_to_months(e) for e in ["SC", "BL", "V04", "U01"]]        # [-3, 0, 12, nan]
 
-# --- Apply a specific cleaner manually ---
-print("\nCleaning Vital Signs data manually...")
-clean_vitals_df = DataPreprocessor.clean_vital_signs(raw_vitals_df)
-print("Cleaned Vital Signs columns:", clean_vitals_df.columns.tolist())
-print("\nSample of new blood pressure columns:")
-print(clean_vitals_df[['SYSSUP', 'DIASUP', 'Sup BP code', 'Sup BP label']].head())
+cm = pd.DataFrame({"CMTRT": ["DRUG A", "ASPIRIN", "DRUG B"], "CMINDC": [14, np.nan, np.nan],
+                   "CMINDC_TEXT": [np.nan, np.nan, "high blood pressure"],
+                   "STARTDT": ["01/2000", "02/2000", np.nan], "STOPDT": [np.nan] * 3})
+DP.clean_concomitant_meds(cm)[["CMINDC", "CMINDC_TEXT"]]
+#    CMINDC   CMINDC_TEXT
+# 0      14  Hypertension
+# 1      17          Pain    <- no code, no text: mapped from the drug name
+# 2      14  Hypertension    <- free text mapped through the JSON table
 
-# --- Apply all medical history cleaners at once ---
-print("\nApplying all medical history cleaners...")
-clean_med_hist_dict = DataPreprocessor.clean_medical_history(data_dict[MEDICAL_HISTORY])
-
-# Check that the Concomitant Meds table was cleaned
-clean_concom_meds_df = clean_med_hist_dict["Concomitant_Medication"]
-print("\nSample of cleaned Concomitant Meds data:")
-print(f"Original CMINDC nulls: {data_dict[MEDICAL_HISTORY]['Concomitant_Medication']['CMINDC'].isnull().sum()}")
-print(f"Cleaned CMINDC nulls: {clean_concom_meds_df['CMINDC'].isnull().sum()}")
+ledd = pd.DataFrame({"LEDTRT": ["CARBIDOPA/LEVODOPA", "ROPINIROLE", "BENZTROPINE"], "LEDD": [np.nan] * 3,
+                     "LEDDSTRMG": [100, 2, 1], "LEDDOSE": [1, 1, 1], "LEDDOSFRQ": [3, 3, 1],
+                     "LEDDOSSTR": ["", "", ""], "STARTDT": ["01/2000"] * 3, "STOPDT": [np.nan] * 3})
+DP.clean_ledd_meds(ledd)[["LEDTRT", "LEDD"]]
+#                LEDTRT  LEDD
+# 0  CARBIDOPA/LEVODOPA   300    <- 100 mg x 1 x 3/day
+# 1          ROPINIROLE   120    <- 2 mg x 1 x 3/day x 20; the benztropine row is dropped
 ```
 
----
+On a real download, load without cleaning and apply the cleaners yourself:
 
-## How to Run the Tests
+```python
+from pie_clean import DataLoader, DataPreprocessor, MEDICAL_HISTORY
 
-The test script `tests/test_pie_clean.py` contains unit tests for the `DataPreprocessor` to ensure it is imported by PIE and behaves as expected.
+raw = DataLoader.load("./PPMI", modalities=[MEDICAL_HISTORY], clean_data=False)
+vitals = DataPreprocessor.clean_vital_signs(raw[MEDICAL_HISTORY]["Vital_Signs"])
+cleaned = DataPreprocessor.clean(raw)          # all medical-history cleaners at once
+```
 
-### Prerequisites
+## Tests
 
-1.  **Pytest**: You must have `pytest` installed (`pip install pytest`).
-2.  **PPMI Data**: The tests require access to the PPMI dataset, as they load data using `DataLoader`. Ensure the data is in a `./PPMI` directory at the project root, or modify the test fixture if needed.
+`tests/test_pie_clean.py::test_data_preprocessor` loads everything from `./PPMI` with
+`clean_data=False`, runs `DataPreprocessor.clean` and asserts the result is a dict containing every
+modality in `ALL_MODALITIES`. It is marked `ppmi` and skipped without the download.
 
-### Running the Script
-
-The tests are designed to be run with `pytest`. From the root directory of the PIE project, run the following command in your terminal:
+The cleaners' unit tests live in PIE-clean (`tests/test_data_preprocessor.py`, on committed synthetic
+fixtures), including `test_clean_vital_signs_band_order` and `test_create_concomitant_meds`.
 
 ```bash
-pytest tests/test_pie_clean.py
+pytest tests/test_pie_clean.py -m ppmi -q          # in PIE
+pytest tests/test_data_preprocessor.py -q          # in PIE-clean
 ```

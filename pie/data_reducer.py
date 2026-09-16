@@ -447,7 +447,8 @@ class DataReducer:
         return merged_df
 
     def consolidate_cohort_columns(self, dataframe: pd.DataFrame,
-                                   target_cohort_col_name: str = "COHORT") -> pd.DataFrame:
+                                   target_cohort_col_name: str = "COHORT",
+                                   keep_only_valid: bool = True) -> pd.DataFrame:
         """
         Consolidates multiple columns containing "COHORT" in their name into a single
         target COHORT column. For each row, the value for the new COHORT column
@@ -458,6 +459,9 @@ class DataReducer:
         Args:
             dataframe: The input DataFrame (e.g., the output of merge_reduced_data).
             target_cohort_col_name: The name of the final, consolidated COHORT column.
+            keep_only_valid: Drop rows whose cohort is missing or not one of the valid
+                cohorts. Pass False when COHORT is not the prediction target, so rows
+                are not lost for a label that is not being modelled.
 
         Returns:
             The DataFrame with a single consolidated COHORT column, standardized values,
@@ -530,7 +534,10 @@ class DataReducer:
         }
         
         # Apply the mapping (case-insensitive)
-        df_copy[target_cohort_col_name] = df_copy[target_cohort_col_name].astype(str).str.strip()
+        # Strip text but keep missing values missing (astype(str) would turn them into "nan").
+        present = df_copy[target_cohort_col_name].notna()
+        df_copy[target_cohort_col_name] = df_copy[target_cohort_col_name].astype(object)
+        df_copy.loc[present, target_cohort_col_name] = df_copy.loc[present, target_cohort_col_name].astype(str).str.strip()
         
         # Create a case-insensitive mapping
         for original_val, standard_val in cohort_mapping.items():
@@ -544,7 +551,8 @@ class DataReducer:
         logger.info(f"Filtering to keep only valid cohorts: {valid_cohorts}")
         
         # Keep rows where COHORT is in valid_cohorts (case-sensitive after standardization)
-        df_copy = df_copy[df_copy[target_cohort_col_name].isin(valid_cohorts)]
+        if keep_only_valid:
+            df_copy = df_copy[df_copy[target_cohort_col_name].isin(valid_cohorts)]
         
         final_row_count = len(df_copy)
         rows_dropped = initial_row_count - final_row_count

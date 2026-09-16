@@ -125,3 +125,8 @@ def test_fisher_exact_2x2():
 def test_mcnemar_paired_binary():
     r = mcnemar(b=3, c=15)
     assert r["p_value"] < 0.05
+
+
+def test_hedges_g_ignores_missing_values():
+    with_nan = hedges_g([1, 2, 3, np.nan, np.nan, np.nan], [2, 3, 4])
+    assert with_nan == pytest.approx(hedges_g([1, 2, 3], [2, 3, 4]))

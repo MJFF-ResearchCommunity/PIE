@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import zipfile
 
 import nibabel as nib
@@ -209,3 +210,142 @@ def test_conversion_preserves_all_outputs_and_checks_resume(tmp_path, monkeypatc
     (tmp_path / "123/I123/I123_reference.json").write_text("{}")
     with pytest.raises(ValueError, match="checksum"):
         convert_archive_series(row, tmp_path, dcm2niix=str(executable))
+
+
+def _synthetic_dicom_series(tmp_path):
+    """One-member ZIP in IDA layout with fake identifiers; returns (record, DICOM bytes)."""
+    import io
+    import pydicom
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
+    meta = FileMetaDataset()
+    meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    meta.MediaStorageSOPClassUID = MRImageStorage
+    meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds = FileDataset(None, {}, file_meta=meta, preamble=b"\0" * 128)
+    ds.StudyInstanceUID, ds.SeriesInstanceUID = generate_uid(), generate_uid()
+    buffer = io.BytesIO()
+    pydicom.dcmwrite(buffer, ds, enforce_file_format=True)
+    archive = tmp_path / "raw.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("PPMI/1/series/I1/first.dcm", buffer.getvalue())
+    return ({"PATNO": "1", "image_id": "I1", "archive": str(archive),
+             "series_prefix": "PPMI/1/series/I1/", "dicom_entries": 1}, len(buffer.getvalue()))
+
+
+def _fake_converter(args, log, **kwargs):
+    out = Path(args[args.index("-o") + 1])
+    img = nib.Nifti1Image(np.zeros((2, 2, 2, 240), np.float32), np.eye(4))
+    img.header.set_xyzt_units("mm", "sec")
+    img.header.set_zooms((1, 1, 1, 2.5))
+    nib.save(img, out / "I1_rest.nii.gz")
+    (out / "I1_rest.json").write_text(json.dumps({"RepetitionTime": 2.5}))
+    Path(log).write_text("synthetic converter")
+
+
+def test_free_space_is_checked_per_filesystem(tmp_path, monkeypatch):
+    import shutil
+    import pie.imaging.fmri as fmri
+    record, dicom = _synthetic_dicom_series(tmp_path)
+    converter = tmp_path / "converter"
+    converter.write_text("mock converter identity")
+    monkeypatch.setattr(fmri, "command", _fake_converter)
+    free, real = {}, shutil.disk_usage
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: real(p)._replace(free=free[Path(p).resolve()]))
+    gib = 1024**3
+
+    def attempt(name, output_free, scratch_free):
+        output, scratch = tmp_path / name / "output", tmp_path / name / "scratch"
+        output.mkdir(parents=True)
+        scratch.mkdir()
+        free.update({output.resolve(): output_free, scratch.resolve(): scratch_free})
+        return convert_archive_series(record, output, dcm2niix=str(converter), scratch_root=scratch)
+
+    # Separate filesystems: raw copies (1x + 1 GiB) on scratch, staging (3x + 1 GiB) on output.
+    monkeypatch.setattr(fmri, "_device", lambda path: Path(path))
+    assert attempt("separate", 3 * dicom + gib, dicom + gib)["outputs"]
+    with pytest.raises(OSError, match="Insufficient free space"):
+        attempt("small scratch", 3 * dicom + gib, dicom + gib - 1)
+    # One filesystem: both needs come out of the same free space.
+    monkeypatch.setattr(fmri, "_device", lambda path: "one filesystem")
+    with pytest.raises(OSError, match="Insufficient free space"):
+        attempt("shared short", 4 * dicom + 2 * gib - 1, 4 * dicom + 2 * gib - 1)
+    assert attempt("shared", 4 * dicom + 2 * gib, 4 * dicom + 2 * gib)["outputs"]
+
+
+def _pilot(tmp_path, monkeypatch):
+    """motion_pilot with FSL replaced by deterministic stand-ins and a known FD pattern."""
+    import pie.imaging.fmri as fmri
+    img = nib.Nifti1Image(np.random.default_rng(7).normal(100, 5, (12, 12, 10, 110)).astype(np.float32), np.eye(4))
+    img.header.set_xyzt_units("mm", "sec")
+    img.header.set_zooms((1, 1, 1, 3))
+    nifti, sidecar = tmp_path / "bold.nii.gz", tmp_path / "bold.json"
+    nib.save(img, nifti)
+    sidecar.write_text(json.dumps({"RepetitionTime": 3}))
+
+    def fake_fsl(args, log, *, cwd=None, **kwargs):
+        tool = Path(args[0]).name
+        if tool == "mcflirt":
+            prefix = str(args[args.index("-out") + 1])
+            moved = nib.load(args[args.index("-in") + 1])
+            nib.save(moved, prefix + ".nii.gz")
+            k = np.arange(moved.shape[3])
+            params = np.zeros((k.size, 6))
+            params[:, 0] = np.cumsum(np.where(k % 5 == 0, .0015, 0))   # rotation (rad): radius-dependent FD
+            params[:, 3] = np.cumsum(np.where(k % 10 == 0, .5, .1))    # translation (mm)
+            np.savetxt(prefix + ".par", params)
+        else:  # bet: whole-volume mask
+            mean = nib.load(Path(cwd) / args[1])
+            nib.save(nib.Nifti1Image(np.ones(mean.shape, np.uint8), mean.affine),
+                     Path(cwd) / (args[2] + "_mask.nii.gz"))
+        Path(log).write_text("synthetic " + tool)
+
+    monkeypatch.setattr(fmri, "command", fake_fsl)
+    motion, align = tmp_path / "motion", tmp_path / "alignment"
+    qc = fmri.motion_pilot(nifti, sidecar, motion, fsl_dir=tmp_path / "fsl")
+    align.mkdir()
+    for name in ("t1_input", "t1_brain_mask", "bold_in_t1", "bold_mask_in_t1"):
+        nib.save(nib.Nifti1Image(np.ones((12, 12, 10), np.float32), np.eye(4)), align / (name + ".nii.gz"))
+    np.savetxt(align / "bold_to_t1.mat", np.eye(4))
+    (align / "alignment.json").write_text(json.dumps({"mask_dice": 1.0}))
+    return qc, motion, align
+
+
+def test_low_fd_seconds_exclude_first_frame_and_legacy_records_still_verify(tmp_path, monkeypatch):
+    import pie.imaging.fmri as fmri
+    qc, motion, align = _pilot(tmp_path, monkeypatch)
+    fd = np.loadtxt(motion / "motion_qc.tsv", skiprows=1)[:, 0]
+    assert fd[0] == 0 and "seconds_fd_le_0p3" not in qc
+    assert qc["seconds_fd_le_0p3_excluding_first"] == (fd[1:] <= .3).sum() * 3
+    verified = fmri.verify_pilot_metrics(motion, align)
+    assert verified["low_fd_seconds_excluding_first"] == qc["seconds_fd_le_0p3_excluding_first"]
+    # Records written before the rename counted frame 0 and lack the recorded FD parameters.
+    legacy = {k: v for k, v in qc.items()
+              if k not in ("seconds_fd_le_0p3_excluding_first", "fd_radius_mm", "fd_threshold_mm")}
+    legacy["seconds_fd_le_0p3"] = float((fd <= .3).sum() * 3)
+    (motion / "qc.json").write_text(json.dumps(legacy))
+    fmri.verify_pilot_metrics(motion, align)
+    legacy["seconds_fd_le_0p3"] -= 3
+    (motion / "qc.json").write_text(json.dumps(legacy))
+    with pytest.raises(AssertionError):
+        fmri.verify_pilot_metrics(motion, align)
+
+
+def test_fd_constants_are_shared_by_pilot_review_and_verification(tmp_path, monkeypatch):
+    import matplotlib.axes
+    import pie.imaging.fmri as fmri
+    monkeypatch.setattr(fmri, "FD_THRESHOLD_MM", .2)
+    monkeypatch.setattr(fmri, "FD_RADIUS_MM", 80)
+    qc, motion, align = _pilot(tmp_path, monkeypatch)
+    fd = np.loadtxt(motion / "motion_qc.tsv", skiprows=1)[:, 0]
+    assert (qc["fd_threshold_mm"], qc["fd_radius_mm"]) == (.2, 80)
+    np.testing.assert_allclose(fd[5], 80 * .0015 + .1)
+    assert qc["fraction_fd_gt_0p3"] == (fd[1:] > .2).mean() != (fd[1:] > .3).mean()
+    # Verification follows the values the record was written with, not today's constants.
+    monkeypatch.setattr(fmri, "FD_THRESHOLD_MM", .3)
+    monkeypatch.setattr(fmri, "FD_RADIUS_MM", 50)
+    fmri.verify_pilot_metrics(motion, align)
+    lines = []
+    monkeypatch.setattr(matplotlib.axes.Axes, "axhline", lambda self, y=0, *a, **kw: lines.append(y))
+    fmri.render_pilot_review(motion, align, tmp_path / "review")
+    assert lines == [.2]

@@ -37,7 +37,15 @@ def prepare_comparison(store, baseline, followup):
             registration.SetSmoothingSigmasPerLevel([2, 1, 0])
             registration.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
             registration.SetInitialTransform(initial, inPlace=False)
-            transform = registration.Execute(fixed, moving)
+            try:
+                transform = registration.Execute(fixed, moving)
+            except RuntimeError as e:
+                # ITK reports a C++ stack; keep only its final reason for the user.
+                reason = str(e).strip().splitlines()[-1].rsplit("): ", 1)[-1]
+                raise ValueError(
+                    f"Automatic rigid alignment could not run ({reason}). This usually means the volumes are "
+                    "too small, or share too little signal, for mutual-information sampling at the coarsest "
+                    "(4x shrunk) level. Native side-by-side viewing is unaffected.") from e
             resampled = sitk.Resample(moving, fixed, transform, sitk.sitkLinear, 0., sitk.sitkFloat32)
             temporary = folder / "followup.tmp.nii.gz"
             sitk.WriteImage(resampled, str(temporary))

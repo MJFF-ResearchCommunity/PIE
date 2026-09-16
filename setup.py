@@ -19,10 +19,16 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/MJFF-ResearchCommunity/PIE",
     packages=setuptools.find_packages(),
+    package_data={
+        "pie.imaging": [
+            "data/atlases/CIT168_v1_MNI152NLin2009cAsym_det25.json",
+            "data/atlases/CIT168_v1_MNI152NLin2009cAsym_det25.nii.gz",
+        ],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires='>=3.8',
+    python_requires='>=3.10',  # endgame-ml requires 3.10+
 )

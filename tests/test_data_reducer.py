@@ -153,6 +153,21 @@ def get_dict_summary(data_dict: dict) -> dict:
     }
     return summary
 
+def test_consolidate_keep_only_valid_false_keeps_rows():
+    """Bug 8: stage 1 dropped rows without a valid COHORT even when COHORT was not the target."""
+    df =pd.DataFrame({"PATNO": ["1", "2", "3"], "EVENT_ID": ["BL"] * 3,
+                       "subject_characteristics_COHORT": ["PD", "Other", np.nan]})
+    reducer = DataReducer({})
+    kept = reducer.consolidate_cohort_columns(df, keep_only_valid=False)
+    assert kept["COHORT"].iloc[0] == "Parkinson's Disease" and kept["COHORT"].iloc[1] == "Other"
+    assert pd.isna(kept["COHORT"].iloc[2])  # missing stays missing, not the string "nan"
+    assert len(reducer.consolidate_cohort_columns(df)) == 1
+
+
+import pytest
+
+@pytest.mark.ppmi
+@pytest.mark.skipif(not (Path(__file__).resolve().parent.parent / "PPMI").exists(), reason="PPMI data not found")
 def test_data_reduction_workflow(
         output_html_path: str = "output/data_reduction_report.html",
         final_reduced_consolidated_csv_path: str = "output/final_reduced_consolidated_data.csv"

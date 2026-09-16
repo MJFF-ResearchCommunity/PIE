@@ -41,6 +41,7 @@ requires_engineered_data = pytest.mark.skipif(
     reason=f"Engineered data not found at {INPUT_CSV_PATH}. Run the full pipeline test first."
 )
 
+@pytest.mark.ppmi
 @requires_engineered_data
 def test_feature_selector_class_with_real_data():
     """
@@ -107,6 +108,9 @@ def test_feature_selector_class_with_real_data():
     logger.info(f"Top 5 selected features: {selector.selected_feature_names_[:5]}")
     logger.info("--- FeatureSelector test passed successfully! ---")
 
+@pytest.mark.ppmi
+@pytest.mark.skipif(not (PROJECT_ROOT / "output" / "final_engineered_dataset.csv").exists(),
+                    reason="needs output/final_engineered_dataset.csv from a PPMI run")
 def test_feature_selection_workflow(
     input_csv_path: str = "output/final_engineered_dataset.csv",
     output_train_csv_path: str = "output/selected_train_data.csv",

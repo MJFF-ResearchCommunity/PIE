@@ -62,3 +62,26 @@ def test_missingness_report(df):
     assert "per_column" in r
     assert r["per_column"]["missing_col"]["n_missing"] == 30
     assert "little_mcar" in r
+
+
+def _mcar_rejection_rate(mechanism, reps, n=200, seed=0):
+    rng = np.random.default_rng(seed)
+    cov = [[1, .5, .3], [.5, 1, .4], [.3, .4, 1]]
+    rejections = 0
+    for _ in range(reps):
+        x = pd.DataFrame(rng.multivariate_normal([0, 0, 0], cov, n), columns=["a", "b", "c"])
+        if mechanism == "mcar":      # unequal rates across columns, independent of the values
+            x.loc[rng.random(n) < .05, "a"] = np.nan
+            x.loc[rng.random(n) < .30, "b"] = np.nan
+        else:                        # MAR: b is missing whenever a is high
+            x.loc[x["a"] > .5, "b"] = np.nan
+        rejections += missingness_report(x)["little_mcar"]["p_value"] < .05
+    return rejections / reps
+
+
+def test_little_mcar_is_calibrated_under_mcar_with_unequal_column_rates():
+    assert .01 <= _mcar_rejection_rate("mcar", 200) <= .10
+
+
+def test_little_mcar_detects_missingness_that_depends_on_observed_data():
+    assert _mcar_rejection_rate("mar", 20) == 1.0

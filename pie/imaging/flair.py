@@ -133,7 +133,8 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     row = {"patno": patno, "n_series": len(series_rows), "series_desc": chosen["desc"], "flair_3d": bool(chosen["flair_3d"]),
            "shape": "x".join(map(str, img.shape)), "voxel_mm": "x".join(str(round(float(z), 2)) for z in img.header.get_zooms()[:3]),
            "slice_mm": float(max(img.header.get_zooms()[:3])), "manufacturer": str(meta.get("Manufacturer", "")),
-           "model": str(meta.get("ManufacturerModelName", "")), "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "ti_s": meta.get("InversionTime", np.nan)}
+           "model": str(meta.get("ManufacturerModelName", "")), "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "ti_s": meta.get("InversionTime", np.nan),
+           "acquisition_date": chosen["date"], "fs_image_id": Path(fastsurfer_dir).name}
     mri = Path(fastsurfer_dir) / "mri"
     t1, t1_mask, aseg_img = nib.load(mri / "orig.mgz"), nib.load(mri / "mask.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
     fl = n4(_sitk_native(np.asanyarray(img.dataobj).astype(np.float32), img.affine))

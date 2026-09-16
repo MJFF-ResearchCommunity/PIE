@@ -1,66 +1,23 @@
-+++++EXAMPLE BASH SCRIPT FOR SIENAX +++++
+#!/usr/bin/env bash
+# FSL SIENAX (cross-sectional brain, grey- and white-matter volumes, normalised for head size) for every
+# sub-*/anat/sub-*_T1w.nii.gz under a dataset directory. Not used by pie.imaging.
+#
+#   bash misc/run_sienax.sh <dataset_dir> <output_dir> [BET options, default "-f 0.2 -g 0.02"]
+#
+# Writes <output_dir>/<subject>/, where report.sienax holds the volumes. Needs FSL on PATH (sienax).
+set -euo pipefail
+DATASET_DIR=${1:?usage: run_sienax.sh <dataset_dir> <output_dir> [BET options]}
+OUTPUT_DIR=${2:?usage: run_sienax.sh <dataset_dir> <output_dir> [BET options]}
+BET_OPTS=${3:-"-f 0.2 -g 0.02"}
+command -v sienax >/dev/null || { echo "sienax not found: set up FSL first" >&2; exit 1; }
 
-## This script:
-## 1. Loops through all subject directories.
-## 2. Finds the T1-W image in each directory.
-## 3. Runs FIRST for each subject.
-## 4. Saves the outputs in structured format.
-
-
-##  NIfTI Images are expected to be organized as follows:
-
-/path/to/dataset/
-├── sub-01/
-│   └── anat/sub-01_T1w.nii.gz
-├── sub-02/
-│   └── anat/sub-02_T1w.nii.gz
-└── sub-30/
-    └── anat/sub-30_T1w.nii.gz
-
-
-EXAMPLE SCRIPT:
-
-#!/bin/bash
-
-# Path to the dataset containing subjects' directories
-DATASET_DIR="/path/to/dataset"
-# Output directory to store SIENAX results
-OUTPUT_DIR="/path/to/sienax_outputs"
-# Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
-
-# Loop through each subject folder
+shopt -s nullglob
 for SUBJECT_DIR in "$DATASET_DIR"/sub-*/; do
-    # Extract subject ID (e.g., sub-01)
     SUBJECT_ID=$(basename "$SUBJECT_DIR")
-    
-    # Define input T1-weighted image path
-    T1_IMAGE="$SUBJECT_DIR/anat/${SUBJECT_ID}_T1w.nii.gz"
-    
-    # Check if T1 image exists
-    if [[ -f "$T1_IMAGE" ]]; then
-        echo "Running SIENAX for $SUBJECT_ID ..."
-        
-        # Define output directory for the subject
-        SUBJECT_OUTPUT="${OUTPUT_DIR}/${SUBJECT_ID}"
-        mkdir -p "$SUBJECT_OUTPUT"
-        
-        # Run SIENAX
-        sienax "$T1_IMAGE" -o "$SUBJECT_OUTPUT" -B "-f 0.2 -g 0.02"
-        
-        echo "Finished SIENAX for $SUBJECT_ID. Results saved in $SUBJECT_OUTPUT"
-    else
-        echo "T1 image not found for $SUBJECT_ID. Skipping..."
-    fi
+    T1="${SUBJECT_DIR}anat/${SUBJECT_ID}_T1w.nii.gz"
+    if [[ ! -f "$T1" ]]; then echo "no T1 for $SUBJECT_ID, skipped" >&2; continue; fi
+    echo "SIENAX: $SUBJECT_ID"
+    sienax "$T1" -o "$OUTPUT_DIR/$SUBJECT_ID" -B "$BET_OPTS" || echo "sienax failed for $SUBJECT_ID" >&2
 done
-
-echo "SIENAX processing completed for all subjects."
-
-
-## HOW TO RUN:
- ## 1. Make script executable:
-chmod +x run_sienax.sh
-
- ## 2. In Terminal: run the following command:
-       ./run_sienax.sh
-
+echo "reports -> $OUTPUT_DIR/<subject>/report.sienax"

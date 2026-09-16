@@ -1,4 +1,10 @@
-import type { Scan, Subject, Modality, Region } from "./types";
+import type {
+  BundleRequest,
+  Scan,
+  Subject,
+  Modality,
+  Region,
+} from "./types";
 
 export function canOverlay(base: Scan, overlay: Scan): boolean {
   return (
@@ -33,6 +39,64 @@ export function nearestScan(
         Number(b.modality === "fMRI" && !!b.metadata?.short_reference) ||
       a.id.localeCompare(b.id),
   )[0];
+}
+
+/** "<collection> <id>", or the bare ID when the catalog names no collection. */
+export function subjectLabel(subject: Pick<Subject, "id" | "collection">) {
+  return subject.collection ? `${subject.collection} ${subject.id}` : subject.id;
+}
+
+/** One shortcut per participant with a prepared fMRI example, labelled with that
+ * participant's own cohort. The full run is preferred over a short reference. */
+export function exampleShortcuts(subjects: Subject[]) {
+  return subjects.flatMap((p) => {
+    const examples = p.scans.filter(
+      (s) => s.modality === "fMRI" && !!s.metadata.example,
+    );
+    const run = examples.find((s) => !s.metadata.short_reference) ?? examples[0];
+    return run
+      ? [
+          {
+            subjectId: p.id,
+            scanId: run.id,
+            label: `${subjectLabel(p)} · ${p.cohort}`,
+          },
+        ]
+      : [];
+  });
+}
+
+/** One request line from the local plan. Dates come from the tables, never invented. */
+export function bundleLine(request: BundleRequest) {
+  return `${request.modality} · ${request.dates.length ? request.dates.join(", ") : "dates not established in the local tables"}`;
+}
+
+/** The first catalogue participant with two or more dated MRIs, in catalogue order,
+ * so the Compare visits hint names a participant this index actually has. */
+export function comparisonExample(subjects: Subject[]): Subject | undefined {
+  return subjects.find(
+    (s) =>
+      new Set(
+        s.scans
+          .filter((scan) => scan.modality === "MRI" && scan.date)
+          .map((scan) => scan.date),
+      ).size >= 2,
+  );
+}
+
+/** A data-derived value at display precision (4 significant figures), as a plain number. */
+export function roundSignificant(value: number, digits = 4) {
+  return Number.isFinite(value) && value !== 0
+    ? Number(value.toPrecision(digits))
+    : value;
+}
+
+/** Initial window from data percentiles, rounded for display. Rendering uses the
+ * same values; rounding never collapses or inverts a narrow window. */
+export function initialWindow(min: number, max: number): [number, number] {
+  const lo = roundSignificant(min),
+    hi = roundSignificant(max);
+  return hi > lo ? [lo, hi] : [min, max];
 }
 
 export function dateLabel(date: string | null, short = false) {

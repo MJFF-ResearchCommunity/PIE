@@ -48,6 +48,26 @@ def test_manifest_survives_a_reader_that_rejects_nan(tmp_path):
     json.loads((out / "manifest.json").read_text(), parse_constant=lambda c: pytest.fail(c))
 
 
+def test_outputs_are_keyed_by_path_relative_to_out_dir(tmp_path):
+    out = tmp_path / "run"
+    (out / "figures").mkdir(parents=True)
+    (out / "figures" / "roc.csv").write_text("fpr,tpr\n0,0\n")
+    shared = tmp_path / "shared.csv"
+    shared.write_text("x\n1\n")
+    record = prov.write_manifest(out, include_environment=False)
+    assert set(record["outputs_sha256"]) == {"figures/roc.csv"}
+    prov.write_manifest(out, outputs=[out / "figures" / "roc.csv", shared], include_environment=False,
+                        name="explicit.json")
+    assert prov.verify_manifest(out, name="explicit.json") == []
+    (out / "figures" / "roc.csv").write_text("fpr,tpr\n0,1\n")
+    assert prov.verify_manifest(out, name="explicit.json") == [str(out / "figures" / "roc.csv")]
+
+
+def test_a_missing_input_is_an_error_not_a_silent_omission(tmp_path):
+    with pytest.raises(FileNotFoundError, match="nope.csv"):
+        prov.write_manifest(tmp_path / "run", inputs=[tmp_path / "nope.csv"], include_environment=False)
+
+
 def test_environment_omits_packages_that_are_not_installed():
     env = prov.environment(packages=("numpy", "not_a_real_package_xyz"))
     assert "numpy" in env["packages"] and "not_a_real_package_xyz" not in env["packages"]

@@ -8,7 +8,8 @@ by site ("AX T2 GRE MT", "2D GRE-MT", "AXIAL 2D GRE-MT", "2D GRE-MT_ACPC", "NM-G
 1. `convert`      dcm2niix per series; compatible magnitude acquisitions from one reconstruction class are aligned
                   to the first and averaged. Paired NORM/non-NORM reconstructions are not independent repeats.
 2. `register`     mean NM slab -> conformed T1 (rigid, mutual information, header-initialised: same session);
-                  T1 -> MNI affine (shared with `pie.imaging.dwi`) brings the CIT168 atlas (Pauli 2017) SNc/SNr/RN/VTA/STN
+                  T1 -> MNI affine (shared with `pie.imaging.dwi`) brings the bundled CIT168 atlas (Pauli et al. 2018,
+                  MNI2009c projection, `pie.imaging.atlases`) SNc/SNr/RN/VTA/STN
                   onto the NM grid together with the FastSurfer brainstem / ventral DC labels.
 3. `features`     substantia nigra (SNc + SNr, left/right, anterior/posterior halves): mean signal, contrast ratio
                   CNR = (SN - ref) / ref against the surrounding-midbrain ring (atlas SN dilated 3 mm minus nuclei,
@@ -48,6 +49,7 @@ NM_PATTERN = r"GRE.?MT|MT.?GRE|GRE ?- ?MT|NM\s*-|Neuromelanin|NM_MT|NM MT"
 EXCLUDE = r"MTC-NO|B0|Map|TRACEW|ADC|_FA"
 DILATE_MM = 3.0
 REFINE_MM = 2.0        # max in-plane translation when refining the atlas SN position on the slab
+PROCESSING_VERSION = "2026-09-15-mni-atlas-nonoverlap-reference-v4"   # complete runs; --refeature appends "-refeatured"
 
 
 # ------------------------------------------------------------------------------------------ index / convert
@@ -185,8 +187,9 @@ def register_nm_to_t1(nm_img, t1_img, target_center=None, sampling_seed=0):
 
 def nm_rois(fs_lab, pauli_lab, spacing_mm, left_mask=None):
     """Masks on the NM grid: SN (SNc+SNr) left/right, nuclei union, search region (SN dilated DILATE_MM) and the
-    reference ring (SN dilated DILATE_MM minus dilated nuclei, inside brainstem / ventral DC / peduncle WM). The search region
-    for the threshold measures is the dilated SN restricted to brainstem / ventral DC labels minus the other nuclei."""
+    reference ring (SN dilated DILATE_MM minus dilated nuclei, inside brainstem / ventral DC / peduncle WM). The per-side
+    search region (which bounds the same-side anterior reference) is the dilated SN restricted to brainstem / ventral DC
+    labels minus the other nuclei."""
     code = {n: i + 1 for i, n in enumerate(PAULI)}
     sn = np.isin(pauli_lab, [code["SNc"], code["SNr"]])
     nuclei = np.isin(pauli_lab, [code["SNc"], code["SNr"], code["RN"], code["VTA"], code["STH"], code["PBP"]])
@@ -227,8 +230,9 @@ def _shift_mask(mask, shift):
 
 def _refine(sn, sm, stem, spacing_zyx, max_mm=REFINE_MM):
     """Translation (voxels, z/y/x) of the atlas SN that maximises its mean on the smoothed slab, within ``max_mm``
-    in-plane and one slice, keeping >= 95 % of the ROI inside brainstem labels (the cistern lateral to the peduncle
-    is bright). The objective is an average over ~10^3 voxels, so noise barely biases the maximum."""
+    along each in-plane axis and one slice, keeping >= 95 % of the ROI inside brainstem labels.
+    Euclidean displacement can exceed max_mm. Selecting and measuring on the
+    same image can bias contrast; assess localization on independent repeats."""
     ny, nx = [int(round(max_mm / s)) for s in spacing_zyx[1:]]
     zz, yy, xx = np.nonzero(sn)
     box = tuple(slice(max(0, a.min() - p), a.max() + p + 1) for a, p in zip((zz, yy, xx), (2, ny + 1, nx + 1)))
@@ -257,29 +261,39 @@ def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, 
     out = {}
     sigma = [0.0] + [smooth_fwhm_mm / 2.3548 / s for s in spacing_zyx[1:]]
     sm = ndimage.gaussian_filter(nm, sigma=sigma) if smooth_fwhm_mm else nm
-    ring_vals = nm[rois["ref"]]
+    # Localize both sides before defining their shared reference. Otherwise a
+    # translated SN can enter the original ring and normalize against itself.
+    stem = rois.get("stem", np.ones_like(rois["ref"]))
+    shifts, refined = {}, {}
+    for side in ("l", "r"):
+        original = rois[f"sn_{side}"]
+        shifts[side] = _refine(original, sm, stem, spacing_zyx) if original.any() else (0, 0, 0)
+        refined[side] = _shift_mask(original, shifts[side])
+    reference = rois["ref"] & ~(refined['l'] | refined['r'])
+    if mask_out is not None:
+        mask_out['ref'] = reference
+    ring_vals = nm[reference]
     ring_vals = ring_vals[np.isfinite(ring_vals) & (ring_vals > 0)]
     if len(ring_vals) < 20:
         return {"nm_error": "reference region empty"}
     out.update({"nm_ring_mean": float(ring_vals.mean()), "nm_ring_sd": float(ring_vals.std()), "n_ring": int(len(ring_vals))})
-    stem = rois.get("stem", np.ones_like(rois["ref"]))
     for side in ("l", "r"):
         sn0, search = rois[f"sn_{side}"], rois[f"search_{side}"]
         out[f"n_sn_{side}"] = int(sn0.sum())
         if not sn0.any():
             continue
         y_sn = np.median(phys_y[sn0])
-        crus = rois["ref"] & search & (phys_y < y_sn - 1.5)          # anterior (LPS: smaller y) to the SN, same side
+        crus = reference & search & (phys_y < y_sn - 1.5)          # anterior (LPS: smaller y) to the SN, same side
         cv = nm[crus]
         cv = cv[cv > 0]
         if len(cv) < 20:
-            crus = rois["ref"] & search
+            crus = reference & search
             cv = nm[crus]
             cv = cv[cv > 0]
         ref_mean, ref_sd = float(cv.mean()), float(cv.std())
         out[f"nm_ref_{side}_mean"], out[f"nm_ref_{side}_sd"], out[f"n_ref_{side}"] = ref_mean, ref_sd, int(len(cv))
-        shift = _refine(sn0, sm, stem, spacing_zyx)
-        sn = _shift_mask(sn0, shift)
+        shift = shifts[side]
+        sn = refined[side]
         if mask_out is not None:
             mask_out[f"sn_{side}"] = sn
         out[f"nm_sn_shift_mm_{side}"] = float(np.sqrt(sum((d * s) ** 2 for d, s in zip(shift, spacing_zyx))))
@@ -319,27 +333,58 @@ def atlas_left_mask(tgt, chain):
     return labels_to_dwi(left, tgt, chain).astype(bool)
 
 
-def refeature_subject(work_dir, patno, fastsurfer_dir=None):
+def _atlas_sn_in_t1(t1_img, tx_mni_t1):
+    """The T1 as a SimpleITK image and the (z, y, x) indices of the atlas SN (SNc + SNr) mapped onto it."""
+    t1_sitk = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(t1_img.dataobj).astype(np.float32), t1_img.affine))
+    return t1_sitk, np.argwhere(np.isin(labels_to_dwi(pauli_atlas(), t1_sitk, [tx_mni_t1]), [7, 9]))
+
+
+def _slab_coverage(rois, spacing, n_sn_t1):
+    """Atlas SN volume on the slab / atlas SN volume in 1 mm T1 space (a resampled-volume ratio, not bounded by 1)."""
+    return float((rois["sn_l"].sum() + rois["sn_r"].sum()) * np.prod(spacing) / max(n_sn_t1 * 1.0, 1.0))
+
+
+def refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None):
     """Feature columns of a finished subject again, from the saved slab and label maps (``--keep-nifti`` outputs),
-    without registering: the way to apply a changed ``features`` to a whole run."""
+    without registering: the way to apply a changed ``features`` to a whole run.
+
+    The saved atlas map is reused only when ``atlas_sha256`` (the row's provenance) is the bundled atlas. Otherwise
+    (legacy rows mapped the native-space CIT168 file) the atlas and hemisphere maps are regenerated from the saved
+    slab -> T1 transform and the cached T1 -> MNI affine, rewritten, and ``sn_slab_coverage`` plus the atlas
+    provenance are returned too; without those transforms the subject is refused rather than measured on a stale atlas."""
+    import SimpleITK as sitk
+
+    from .atlases import cit168_provenance
+
     d = Path(work_dir) / str(patno)
     img = nib.load(d / "nm_mean.nii.gz")
     nm = np.asanyarray(img.dataobj).astype(np.float32)
-    pauli = np.transpose(np.asanyarray(nib.load(d / "pauli_nm.nii.gz").dataobj), (2, 1, 0))
     fs = np.transpose(np.asanyarray(nib.load(d / "aseg_nm.nii.gz").dataobj), (2, 1, 0))
     spacing = [float(z) for z in img.header.get_zooms()[:3]]
     tgt = _sitk_native(nm, img.affine)
-    # The saved hemisphere map permits refeaturing without new registration or guessing voxel handedness.
+    cache, slab = (mni_cache_path(fastsurfer_dir) if fastsurfer_dir else None), d / "slab_to_t1.tfm"
+    chain = [sitk.ReadTransform(str(cache)), sitk.ReadTransform(str(slab))] if cache and cache.exists() and slab.exists() else None
+    provenance, out = cit168_provenance(), {}
     hemi_path = d / "left_nm.nii.gz"
-    left = np.transpose(np.asanyarray(nib.load(hemi_path).dataobj), (2, 1, 0)).astype(bool) if hemi_path.exists() else None
-    if left is None and fastsurfer_dir is not None:
-        import SimpleITK as sitk
-        cache = mni_cache_path(fastsurfer_dir)
-        slab = d / "slab_to_t1.tfm"
-        if cache.exists() and slab.exists():
-            left = atlas_left_mask(tgt, [sitk.ReadTransform(str(cache)), sitk.ReadTransform(str(slab))])
+    if atlas_sha256 == provenance["atlas_sha256"]:
+        pauli = np.transpose(np.asanyarray(nib.load(d / "pauli_nm.nii.gz").dataobj), (2, 1, 0))
+        # The saved hemisphere map permits refeaturing without new registration or guessing voxel handedness.
+        left = (np.transpose(np.asanyarray(nib.load(hemi_path).dataobj), (2, 1, 0)).astype(bool) if hemi_path.exists()
+                else atlas_left_mask(tgt, chain) if chain else None)
+    elif chain is None:
+        raise ValueError("saved atlas map is not the bundled CIT168 atlas and slab_to_t1.tfm or the cached T1->MNI "
+                         "affine is missing to regenerate it; re-run nm for this subject")
+    else:
+        pauli, left = labels_to_dwi(pauli_atlas(), tgt, chain), atlas_left_mask(tgt, chain)
+        for name, arr, dtype in (("pauli_nm", pauli, np.int16), ("left_nm", left, np.uint8)):
+            nib.save(nib.Nifti1Image(np.transpose(arr, (2, 1, 0)).astype(dtype), img.affine), d / f"{name}.nii.gz")
+        n_sn_t1 = len(_atlas_sn_in_t1(nib.load(Path(fastsurfer_dir) / "mri" / "orig.mgz"), chain[0])[1])
+        out.update(provenance)
     rois = nm_rois(fs, pauli, spacing[::-1], left_mask=left)
-    return features(np.transpose(nm, (2, 1, 0)), rois, _phys_y(tgt, pauli.shape), spacing_zyx=tuple(spacing[::-1]))
+    if out:
+        out["sn_slab_coverage"] = _slab_coverage(rois, spacing, n_sn_t1)
+    out.update(features(np.transpose(nm, (2, 1, 0)), rois, _phys_y(tgt, pauli.shape), spacing_zyx=tuple(spacing[::-1])))
+    return out
 
 
 def _refeature_job(args):
@@ -348,8 +393,8 @@ def _refeature_job(args):
     if row.get("error") or not (Path(work_dir) / str(row["patno"]) / "nm_mean.nii.gz").exists():
         return keep
     try:
-        out = refeature_subject(work_dir, row["patno"], fs_dir[0] if fs_dir else None)
-        keep["processing_version"] = "2026-09-08-hemisphere-v2"
+        out = refeature_subject(work_dir, row["patno"], fs_dir[0] if fs_dir else None, atlas_sha256=row.get("atlas_sha256"))
+        keep["processing_version"] = PROCESSING_VERSION + "-refeatured"   # current features, original registration
         return {**keep, **out, "error": out.pop("nm_error", "")} if "nm_error" not in out else {**keep, "error": out["nm_error"]}
     except Exception as e:
         return {**keep, "error": f"refeature: {type(e).__name__}: {str(e)[:150]}"}
@@ -365,9 +410,7 @@ def register_slab(nm_img, fastsurfer_dir, sampling_seed=0):
     spacing_guess = [float(z) for z in nm_img.header.get_zooms()[:3]]
     tx_mni_t1, m_mni = register_t1_to_mni(t1, t1_mask, cache_path=mni_cache_path(fastsurfer_dir))
     # atlas SN centroid in T1 (LPS) space: the protocol centres the slab on the midbrain, so start the slab there
-    t1_sitk = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(t1.dataobj).astype(np.float32), t1.affine))
-    pauli_t1 = labels_to_dwi(pauli_atlas(), t1_sitk, [tx_mni_t1])
-    sn_idx = np.argwhere(np.isin(pauli_t1, [7, 9]))
+    t1_sitk, sn_idx = _atlas_sn_in_t1(t1, tx_mni_t1)
     target = None
     if len(sn_idx):
         zc, yc, xc = sn_idx.mean(axis=0)
@@ -420,11 +463,13 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     left = atlas_left_mask(tgt, [tx_mni_t1, tx_t1_nm])
     rois = nm_rois(fs_lab, pauli_lab, spacing[::-1], left_mask=left)
     row.update({"fs_image_id": Path(fastsurfer_dir).name, "acquisition_date": series_rows[0]["date"],
-                "processing_version": "2026-09-08-repeat-selection-v3"})
+                "processing_version": PROCESSING_VERSION})
+    from .atlases import cit168_provenance
+    row.update(cit168_provenance())
     phys_y = _phys_y(tgt, pauli_lab.shape)
     nm_zyx = np.transpose(nm, (2, 1, 0))
     # slab coverage: fraction of the atlas SN (in T1 space, 1 mm^3 voxels) that falls inside the NM slab
-    row["sn_slab_coverage"] = float((rois["sn_l"].sum() + rois["sn_r"].sum()) * np.prod(spacing) / max(n_sn_t1 * 1.0, 1.0))
+    row["sn_slab_coverage"] = _slab_coverage(rois, spacing, n_sn_t1)
     refined = {}
     row.update(features(nm_zyx, rois, phys_y, spacing_zyx=tuple(spacing[::-1]), mask_out=refined))
     if keep_nifti:
@@ -432,7 +477,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
         nib.save(nm_img, work / "nm_mean.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(pauli_lab, (2, 1, 0)).astype(np.int16), nm_img.affine), work / "pauli_nm.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(fs_lab, (2, 1, 0)).astype(np.int16), nm_img.affine), work / "aseg_nm.nii.gz")
-        nib.save(nib.Nifti1Image(np.transpose(rois["ref"], (2, 1, 0)).astype(np.int16), nm_img.affine), work / "ref_nm.nii.gz")
+        nib.save(nib.Nifti1Image(np.transpose(refined.get('ref', rois["ref"]), (2, 1, 0)).astype(np.int16), nm_img.affine), work / "ref_nm.nii.gz")
         nib.save(nib.Nifti1Image(np.transpose(left, (2, 1, 0)).astype(np.uint8), nm_img.affine), work / "left_nm.nii.gz")
         if refined:
             labels = sum(i * refined.get(f"sn_{s}", np.zeros_like(pauli_lab, bool)) for i, s in ((1, "l"), (2, "r")))

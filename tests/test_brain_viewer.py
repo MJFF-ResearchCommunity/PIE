@@ -6,7 +6,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
-from pie.imaging.viewer.catalog import Catalog, Scan, iso_date
+from pie.imaging.viewer.catalog import Catalog, Scan, iso_date, latest_table
 from pie.imaging.viewer.images import ImageStore, regions_from_atlas, write_volume
 from pie.imaging.viewer.server import create_app
 
@@ -170,3 +170,83 @@ def test_projection_manifest_is_rejected(volume, tmp_path):
     scans = [{"id": "raw", "subject": "001", "modality": "SPECT", "path": str(path), "kind": "projections"}]
     with pytest.raises(ValueError, match="reconstructed first"):
         Catalog(tmp_path, manifest=manifest(tmp_path, scans))
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"colour": "red"}, "scan mri: unknown field.*colour"),
+    ({"path": None}, "scan mri: missing required field.*path"),
+    ({"extra": [{"name": "MD", "key": "md"}]}, "each extra entry needs"),
+])
+def test_manifest_errors_name_the_scan_and_field(volume, tmp_path, change, message):
+    path, _, _ = volume
+    scan = {k: v for k, v in {"id": "mri", "subject": "1", "modality": "MRI", "path": str(path), **change}.items() if v is not None}
+    with pytest.raises(ValueError, match=message):
+        Catalog(tmp_path, manifest=manifest(tmp_path, [scan]))
+
+
+def test_missing_explicit_manifest_is_an_error_not_an_empty_index(tmp_path):
+    with pytest.raises(ValueError, match="manifest not found"):
+        Catalog(tmp_path, manifest=tmp_path / "absent.json")
+
+
+def test_newest_dated_ppmi_table_is_used_and_gaps_are_reported(tmp_path):
+    status = tmp_path / "PPMI/_Subject_Characteristics"
+    status.mkdir(parents=True)
+    for name, cohort in [("Participant_Status_01Jan2000.csv", "Older"), ("Participant_Status_01Feb2001.csv", "Newer"),
+                         ("Participant_Status_notes.csv", "Not a release")]:
+        (status / name).write_text(f"PATNO,COHORT_DEFINITION\n1,{cohort}\n")
+    assert latest_table(status, "Participant_Status").name == "Participant_Status_01Feb2001.csv"
+    assert latest_table(tmp_path / "missing", "Participant_Status") is None
+    derived = tmp_path / "Imaging/derived"
+    (derived / "fastsurfer/A/mri").mkdir(parents=True)
+    (derived / "fastsurfer/A/mri/orig.mgz").write_bytes(b"")
+    (derived / "sessions.csv").write_text("patno,image_id,series_desc\n1,A,T1\n2,B,T1\n")
+    catalog = Catalog(tmp_path)
+    assert catalog.subjects["1"]["cohort"] == "Newer"
+    warnings = " ".join(catalog.warnings)
+    assert "Skipped 1 sessions.csv row" in warnings
+    assert "dwi_index.csv" in warnings and "datscan_sbr.csv" in warnings
+    assert "No PIE imaging outputs" not in warnings
+
+
+def test_tractography_gets_a_fingerprint_for_review_notes(tmp_path):
+    tracts = tmp_path / "tracts.tck"
+    tracts.write_bytes(b"mrtrix tracks\nEND\n")
+    scan = Scan("tracts", "1", "DTI", None, "visit", "Streamlines", tracts, "native", kind="tracts")
+    prepared = ImageStore(tmp_path / "cache").prepare(scan)
+    assert prepared["fingerprint"] and prepared["extra"] == []
+    assert prepared["meshes"][0]["url"].endswith("/tracts.tck")
+
+
+def test_open_data_manifest_serves_without_ppmi_or_imaging(tmp_path):
+    """Non-PPMI demo: T1 + FastSurfer DKT labels + BOLD from a manifest alone."""
+    from fastapi.testclient import TestClient
+    data = tmp_path / "open"
+    data.mkdir()
+    rng = np.random.default_rng(0)
+    labels = np.zeros((20, 20, 20), np.int16)
+    labels[4:9, 4:9, 4:9] = 11
+    labels[11:16, 11:16, 11:16] = 50
+    for name, array in [("T1w.nii.gz", rng.uniform(10, 100, (20, 20, 20)).astype(np.float32)),
+                        ("aparc.DKTatlas+aseg.deep.nii.gz", labels),
+                        ("bold.nii.gz", rng.uniform(50, 100, (8, 8, 6, 5)).astype(np.float32))]:
+        image = nib.Nifti1Image(array, np.eye(4))
+        image.header.set_xyzt_units("mm", "sec")
+        if array.ndim == 4:
+            image.header.set_zooms((1, 1, 1, 2.0))
+        nib.save(image, data / name)
+    (data / "manifest.json").write_text(json.dumps({"version": 1, "subjects": [{"id": "sub-01", "collection": "Open dataset"}], "scans": [
+        {"id": "sub-01-t1", "subject": "sub-01", "modality": "MRI", "date": None, "path": "T1w.nii.gz",
+         "atlas": "aparc.DKTatlas+aseg.deep.nii.gz", "atlas_name": "DKT + aseg"},
+        {"id": "sub-01-bold", "subject": "sub-01", "modality": "fMRI", "kind": "timeseries", "path": "bold.nii.gz"}]}))
+    client = TestClient(create_app(tmp_path / "repo", tmp_path / "no-ppmi", data / "manifest.json", cache=tmp_path / "cache"))
+    assert client.get("/api/health").json()["scans"] == 2
+    catalog = client.get("/api/catalog").json()
+    assert any("No PIE imaging outputs" in w for w in catalog["warnings"])
+    assert catalog["subjects"][0]["collection"] == "Open dataset"
+    t1 = client.get("/api/scans/sub-01-t1").json()
+    assert {r["name"] for r in t1["regions"]} == {"Left-Caudate", "Right-Caudate"}
+    structures = client.get("/api/scans/sub-01-t1/structures")
+    assert structures.status_code == 200
+    assert {"11", "50"} <= {m["key"] for m in structures.json()["meshes"]}
+    assert client.get("/api/scans/sub-01-bold").json()["fmri"]["frames"] == 5
