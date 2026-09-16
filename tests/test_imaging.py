@@ -23,9 +23,9 @@ def test_select_t1_series_prefers_non_repeat_largest_t1():
         _series(1, "MPRAGE_Repeat", "2011-01-01_10_00_00.0", "I2", 176, 120),
         _series(1, "Coronal", "2011-01-01_10_00_00.0", "I3", 1, 1),
         _series(1, "AX_T2_FLAIR", "2011-01-01_10_00_00.0", "I5", 200, 500),
-        _series(2, "3D_T1-weighted", "2021-03-23_09_05_05.0", "I4", 1, 25e6),
-        _series(2, "3D_T1-weighted", "2022-03-23_09_05_05.0", "I6", 1, 25e6),
-        _series(2, "Transverse", "2022-03-23_09_05_05.0", "I7", 1, 60e6),   # 2D axial, bigger file: must lose
+        _series(2, "3D_T1-weighted", "2000-01-01_09_00_00.0", "I4", 1, 25e6),
+        _series(2, "3D_T1-weighted", "2001-01-01_09_00_00.0", "I6", 1, 25e6),
+        _series(2, "Transverse", "2001-01-01_09_00_00.0", "I7", 1, 60e6),   # 2D axial, bigger file: must lose
     ])
     idx["session_date"] = pd.to_datetime(idx["session"].str[:10])
     sel = select_t1_series(idx)
@@ -59,24 +59,24 @@ def test_read_ida_metadata_parses_full_records_and_skips_stubs(tmp_path):
     from pie.imaging.index import read_ida_metadata
     (tmp_path / "stub.xml").write_text('<?xml version="1.0"?><metadata version="1.0"><subject id="1"/><image uid="I1"/></metadata>')
     (tmp_path / "full.xml").write_text(
-        '<?xml version="1.0"?><idaxs><project><subject><subjectIdentifier>3051</subjectIdentifier>'
+        '<?xml version="1.0"?><idaxs><project><subject><subjectIdentifier>1</subjectIdentifier>'      # synthetic record
         '<researchGroup>PD</researchGroup><visit><visitIdentifier>Baseline</visitIdentifier></visit>'
-        '<study><subjectAge>71.2</subjectAge><series><dateAcquired>2010-10-26</dateAcquired></series>'
-        '<imagingProtocol><imageUID>223766</imageUID><description>SAG 3D T1</description><protocolTerm>'
+        '<study><subjectAge>70.0</subjectAge><series><dateAcquired>2000-01-01</dateAcquired></series>'
+        '<imagingProtocol><imageUID>000001</imageUID><description>SAG 3D T1</description><protocolTerm>'
         '<protocol term="Manufacturer">Philips Medical Systems</protocol><protocol term="Field Strength">1.5</protocol>'
         '</protocolTerm></imagingProtocol></study></subject></project></idaxs>')
     df = read_ida_metadata(tmp_path)
     assert len(df) == 1
     row = df.iloc[0]
-    assert row["image_id"] == "I223766" and row["patno"] == 3051 and row["ida_visit"] == "Baseline"
+    assert row["image_id"] == "I000001" and row["patno"] == 1 and row["ida_visit"] == "Baseline"
     assert row["ida_manufacturer"] == "Philips Medical Systems" and row["ida_field"] == "1.5"
 
 
 def test_read_loni_collection_csv(tmp_path):
     from pie.imaging.index import read_loni_collection_csv
     (tmp_path / "c.csv").write_text('"Image Data ID","Subject","Group","Sex","Age","Visit","Modality","Description","Type","Acq Date","Format","Downloaded"\n'
-                                    '"I495208","92834","Prodromal","M","66","BL","MRI","MPRAGE GRAPPA2","Original","3/20/2015","DCM","Yes"\n')
+                                    '"I000002","2","PD","F","70","BL","MRI","MPRAGE","Original","1/1/2000","DCM","Yes"\n')   # synthetic row
     df = read_loni_collection_csv(tmp_path / "c.csv")
     r = df.iloc[0]
-    assert r["image_id"] == "I495208" and r["loni_visit"] == "BL" and r["loni_age"] == 66 and r["loni_group"] == "Prodromal"
-    assert str(r["loni_acq_date"])[:10] == "2015-03-20"
+    assert r["image_id"] == "I000002" and r["loni_visit"] == "BL" and r["loni_age"] == 70 and r["loni_group"] == "PD"
+    assert str(r["loni_acq_date"])[:10] == "2000-01-01"

@@ -4,246 +4,211 @@
 
 # Parkinson's Insight Engine (PIE)
 
-## Overview
-The Parkinson's Insight Engine (PIE) is a comprehensive pipeline designed for researchers working with the Michael J. Fox Foundation's Parkinson's Progression Markers Initiative (PPMI) dataset. PIE automates the entire machine learning workflow, from loading and consolidating raw multi-modal data to training models and generating insightful reports. It provides a reproducible, configurable, and transparent framework to accelerate research.
+PIE is a Python toolkit for research on data from the Michael J. Fox Foundation's
+[Parkinson's Progression Markers Initiative (PPMI)](https://www.ppmi-info.org/). It covers the
+path from the raw PPMI download to a result you can defend.
 
-The primary way to use PIE is through its main pipeline script, which orchestrates all the steps required to go from raw data to a full classification analysis with a single command.
+| Layer | What it does | Docs |
+|---|---|---|
+| **Tabular ML pipeline** | Loads and cleans every PPMI study table, drops low-value columns, merges, engineers and selects features, then compares, tunes and reports classifiers. One command runs it all. | [pipeline](documentation/pipeline.md) |
+| **Statistics** | Classical tests, regression, mixed models, survival analysis, multiple-testing correction, and PD helpers (LEDD, MDS-UPDRS totals, Hoehn & Yahr). Results come back as plain dictionaries. | [stats](documentation/stats.md) |
+| **Experiments** | Cohort rules for PPMI's encoding traps, nested model selection that never sees its test partition, and provenance manifests. | [experiment](documentation/experiment.md) |
+| **Imaging** | LONI DICOM → NIfTI → imaging-derived phenotypes: FastSurfer volumes, diffusion free water, neuromelanin contrast, DaTscan binding ratios and FLAIR lesions. Keyed by `PATNO`/`EVENT_ID`, so they join the tabular data. | [imaging](documentation/imaging.md) |
+| **fMRI** | BIDS export, fMRIPrep, motion QC and connectivity. | [fMRI](documentation/fmriprep.md) |
+| **Brain Explorer** | A local browser viewer for MRI, DTI, SPECT, PET, CT and fMRI, with 3-D anatomy, linked slices and visit comparison. | [viewer](documentation/brain_viewer.md) |
 
-For ease of understanding, there is a companion package called [PIE-clean which handles the data loading, consolidating, and cleaning functionality](https://github.com/MJFF-ResearchCommunity/PIE-clean). It is seamlessly integrated into PIE, so you should use PIE if you want to perform machine learning, and PIE-clean if you only want to examine and explore the data.
+PIE contains no PPMI data. [Apply for access](https://www.ppmi-info.org/access-data-specimens/download-data)
+and download the data yourself. Loading and cleaning the tabular data is done by the companion package
+[PIE-clean](https://github.com/MJFF-ResearchCommunity/PIE-clean), which PIE installs. Use PIE-clean
+on its own if you only want to explore the data.
 
-## Key Features
-- **End-to-End Automation**: A single command runs the full data processing and machine learning pipeline.
-- **Modular Pipeline**: Each step (Data Reduction, Feature Engineering, Feature Selection, Classification) generates its own detailed HTML report and intermediate data files.
-- **Intelligent Data Reduction**: Analyzes and removes low-value features *before* merging, drastically reducing memory usage and feature space complexity.
-- **Robust Feature Engineering**: Applies one-hot encoding, numeric scaling, and other transformations to prepare data for modeling.
-- **Advanced Model Training**: Uses [`endgame-ml`](https://pypi.org/project/endgame-ml/) to compare a suite of models, tune the best performer, and evaluate its performance on a held-out test set.
-- **Leakage Prevention**: Employs a configurable list of features to exclude, preventing data leakage and ensuring more realistic model evaluation.
-- **Comprehensive Reporting**: Generates a main HTML report that links to detailed reports for each stage of the pipeline, providing full transparency.
+<p align="center">
+  <img src="assets/screenshots/brain_viewer_structures.png" width="90%" alt="Brain Explorer: brain-masked T1 MRI with FastSurfer caudate and putamen in 3-D">
+</p>
 
-## The PIE Workflow
-PIE processes data in a sequential, multi-stage workflow. Each stage produces outputs that feed into the next.
+*Brain Explorer on open data: T1 MRI of a person with Parkinson's disease and mild cognitive
+impairment, with FastSurfer's caudate and putamen (OpenNeuro ds005892, CC0). See
+[Quick start 5](#5-explore-brains-in-3-d) to reproduce it.*
 
-```plaintext
-[Raw PPMI Data]
-       |
-       v
-[1. Data Loading (using PIE-clean)]
-   - Loads all raw data modalities into memory.
-   - Preprocesses and cleans the raw data.
-   - (This step is integrated into the start of the Data Reduction stage).
-       |
-       v
-[2. Data Reduction]
-   - Analyzes loaded data tables.
-   - Drops low-value columns (e.g., high missingness, zero variance).
-   - Merges and consolidates all tables into a single CSV.
-   - (Report: data_reduction_report.html)
-       |
-       v
-[3. Feature Engineering]
-   - Applies one-hot encoding, scaling, etc. to create model-ready features.
-   - (Report: feature_engineering_report.html)
-       |
-       v
-[4. Feature Selection]
-   - Splits data into training and testing sets.
-   - Selects the most relevant features from the training data.
-   - (Report: feature_selection_report.html)
-       |
-       v
-[5. Classification]
-   - Compares multiple ML models on the final feature set.
-   - Tunes and evaluates the best model.
-   - (Report: classification_report.html)
-       |
-       v
-[Final Pipeline Report]
-- (pipeline_report.html)
-```
+## Installation
 
-## Getting Started
+PIE needs Python 3.10 or newer. The imaging layer pins FastSurfer's scientific stack, so it
+lives in a second environment.
 
-### Prerequisites
-- Python 3.8 or later.
-- Required dependencies can be installed from `requirements.txt`:
-  ```bash
-  pip install -r requirements.txt
-  ```
-
-### Installation
-Clone the repository and install the PIE package. For development, use the editable "`-e`" flag.
 ```bash
 git clone https://github.com/MJFF-ResearchCommunity/PIE.git
 cd PIE
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt     # includes PIE-clean
 pip install -e .
 ```
 
-### Data Setup
-1.  **Download PPMI Data**: You must [apply for access to the PPMI data](https://www.ppmi-info.org/access-data-specimens/download-data).
-2.  **Organize Data**: Create a directory named `PPMI` at the root of the cloned PIE repository. Download the individual study data folders from LONI and place them inside the `PPMI` directory. The structure should look like this:
-    ```plaintext
-    PIE/
-    ├── PPMI/
-    │   ├── _Subject_Characteristics/
-    │   ├── Biospecimen/
-    │   ├── Motor___MDS-UPDRS/
-    │   ├── Non-motor_Assessments/   
-    │   ├── Medical_History/
-    │   └── ... (other data folders)
-    ├── pie/
-    └── ... (other project files)
-    ```
-
-## How to Use PIE: The Main Pipeline
-
-The most effective way to use PIE is by running the main pipeline script from your terminal. This script executes the entire workflow and provides configurable parameters.
-
-### A Standard End-to-End Run
-This example demonstrates a typical use case: predicting the `COHORT` of a subject.
-
-**1. Configure Leakage Features**
-Before running, it is **critical** to configure the data leakage prevention. Open `config/leakage_features.txt`. This file should contain a list of column names (one per line) that should be removed from the data because they would "leak" information about the target variable.
-
-For example, if you are predicting `COHORT`, you should exclude features like `subject_characteristics_APPRDX` (the clinician's diagnosis), as this is nearly identical to the target. The default file provides a starting point, but you **must review and customize it for your specific research question.**
-
-**2. Execute the Pipeline**
-Run the following command from the root `PIE/` directory:
-```bash
-python pie/pipeline.py \
-    --data-dir ./PPMI \
-    --output-dir ./output/my_first_run \
-    --target-column COHORT \
-    --leakage-features-path config/leakage_features.txt \
-    --fs-method fdr \
-    --fs-param 0.05 \
-    --n-models 5 \
-    --tune \
-    --budget 60.0
-```
-
-### Understanding the Command-Line Arguments
-- `--data-dir`: Path to your raw PPMI data.
-- `--output-dir`: Where all results, reports, and data files will be saved.
-- `--target-column`: The variable you want your models to predict.
-- `--leakage-features-path`: Path to your leakage prevention file.
-- `--fs-method`: The feature selection algorithm to use (`fdr` or `k_best`).
-- `--fs-param`: The parameter for the feature selection method (e.g., `0.05` for FDR's alpha).
-- `--n-models`: The number of models to compare.
-- `--tune`: A flag to enable hyperparameter tuning for the best model.
-- `--budget`: A time limit in minutes for the model comparison step.
-
-### Pipeline Output
-After the run completes, the specified output directory (`./output/my_first_run`) will contain:
-- **Intermediate Data**: The CSV file output from each major step.
-- **HTML Reports**: A separate, detailed HTML report for each step.
-- **`pipeline_report.html`**: A top-level summary report that links to all the individual step reports. The script will attempt to open this file in your browser automatically upon completion.
-
-### Example Visualizations
-The PIE pipeline generates detailed HTML reports at each stage. Here is a preview of some of the visualizations from the final classification report.
-
-> **Note:** The screenshots below were captured from an earlier PyCaret-based
-> run. PIE's classification engine has since moved to
-> [`endgame-ml`](https://pypi.org/project/endgame-ml/), which produces
-> analogous visualizations with minor stylistic differences.
-
-
-<p align="center">
-  <img src="assets/screenshots/1.png" width="30%" alt="Plot 1">&nbsp;
-  <img src="assets/screenshots/2.png" width="30%" alt="Plot 2">&nbsp;
-  <img src="assets/screenshots/3.png" width="30%" alt="Plot 3">
-  <br><br>
-  <img src="assets/screenshots/4.png" width="30%" alt="Plot 4">&nbsp;
-  <img src="assets/screenshots/5.png" width="30%" alt="Plot 5">&nbsp;
-  <img src="assets/screenshots/6.png" width="30%" alt="Plot 6">
-</p>
-
-You can see an example of a full classification report in the image below. Click the image to view it in full size.
-
-<p align="center">
-  <a href="assets/screenshots/classification_report.png" target="_blank">
-    <img src="assets/screenshots/classification_report.png" alt="Full Classification Report" width="90%">
-  </a>
-</p>
-
-## Running Tests
-To verify your setup and ensure all components are working correctly, you can run the integration test. This test executes a complete, expedited run of the pipeline.
+Optional extras:
 
 ```bash
-pytest tests/test_pipeline.py
+bash scripts/setup_imaging.sh        # imaging venv (venv_imaging) with FastSurfer; pass "cpu" without a GPU
+venv_imaging/bin/python -m pip install -r pie/imaging/viewer/requirements.txt   # Brain Explorer backend
+npm --prefix brain-viewer ci         # Brain Explorer frontend (Node.js 18+)
 ```
-This test will create its own output in `output/test_pipeline_run` and check that all expected files are generated and that data leakage prevention is working.
 
-## Imaging Data (raw MRI from LONI)
-PIE can now ingest the raw PPMI MRI downloads (zipped DICOM) and turn them into imaging-derived
-phenotypes (regional brain volumes from FastSurfer) keyed by `PATNO`/`EVENT_ID`, plus
-session-aligned DaTscan and CSF SAA labels, can reconstruct raw DaTscan SPECT projections into
-striatal binding ratios (`pie/imaging/datscan.py`), and turns diffusion MRI into nigral free-water and tensor
-features (`pie/imaging/dwi.py`). See [**Imaging layer**](documentation/imaging.md);
-setup with `bash scripts/setup_imaging.sh`, run with `python -m pie.imaging.run ...`, and pass
-the resulting table to the pipeline with `--imaging-features`.
+[Environments](documentation/README.md#environments) explains which layer runs where.
 
-## Interactive Brain Explorer
+## PPMI data layout
 
-Explore participant-specific anatomy in 3D, inspect linked slices and regions,
-switch modalities, and navigate actual acquisition dates with the local
-**Brain Explorer**. It reads the existing MRI/DTI/SPECT outputs and supports
-CT, PET and fMRI NIfTI imports, 4D frames, and explicitly registered overlays.
+Download the study data and, if you need them, the image collections from LONI. Place them at the
+repository root. Both folders are gitignored.
+
+```plaintext
+PIE/
+├── PPMI/                                   # study-data download
+│   ├── _Subject_Characteristics/
+│   ├── Biospecimen/
+│   ├── Medical_History/
+│   ├── Motor___MDS-UPDRS/
+│   ├── Non-motor_Assessments/
+│   └── ...
+└── Imaging/                                # optional: LONI image collections
+    ├── MRI_First_Study.zip
+    ├── MRI_First_Study_dataset.zip
+    ├── MRI_First_Study_9_07_2026.csv       # the collection's search-result CSV
+    └── MRI_First_Study_IDA_Metadata.zip
+```
+
+## Quick start
+
+### 1. Run the tabular pipeline
 
 ```bash
-venv_imaging/bin/python -m pip install -r pie/imaging/viewer/requirements.txt
-bash scripts/run_brain_viewer.sh
+python pie/pipeline.py --data-dir ./PPMI --output-dir output/pd_vs_hc --target-column COHORT \
+    --fs-method fdr --fs-param 0.05 --n-models 3 --tune --budget 60
 ```
 
-Open **http://127.0.0.1:8765**. See [Brain Explorer](documentation/brain_viewer.md)
-for installation, geometry and fusion rules, persistent import manifests, and
-the evidence-backed PPMI sample download plan.
+```plaintext
+PPMI/ ─► 1. load + reduce ─► 2. feature engineering ─► 3. feature selection ─► 4. classification
+            (PIE-clean)          encode, scale             split by participant,    compare, tune,
+                                                            refit on train, select   score held-out test
+```
 
-## Running an Experiment (`pie.experiment`)
+The split is stratified by class and grouped by `PATNO`, so no participant appears on both
+sides. Scaling, imputation, cross-validation folds and tuning folds all respect that split.
 
-Measurements are only half of a study. `pie.experiment` carries the part that decides whether a
-result survives review: cohort rules that refuse to guess (carrier status, per-module sex
-decoding, visit concurrency), nested model selection whose preprocessing never sees the
-partition it will be judged on, and manifests that tie a result to the code and inputs that
-produced it.
+Each stage writes its data file and an HTML report to `--output-dir`, and `pipeline_report.html`
+links them all. Before a real run, review `config/leakage_features.txt`. It lists the columns
+that would leak the target (for example, the clinician's diagnosis when you are predicting
+`COHORT`), and the right list depends on your question. [Pipeline](documentation/pipeline.md)
+documents every flag and output.
+
+Prefer a notebook? [`walkthroughs/basic_classification.ipynb`](walkthroughs/basic_classification.ipynb)
+runs the same analysis stage by stage, inspecting the frame between steps.
+
+### 2. Test a hypothesis
 
 ```python
-from pie.experiment import cohort, prediction, provenance
+import numpy as np
+from pie import stats
 
-frame["sex_male"] = cohort.decode_sex(demographics)       # PPMI codes SEX per data module
-predictions, audit = prediction.nested_fold(frame, train_rows, test_rows,
-                                            families={"t1": t1_columns}, batch_cols=["scanner_batch"],
-                                            icv="MaskVol", adjust_baseline=False, seed=20260909)
-provenance.write_manifest(out_dir, inputs=[cohort_csv], code=Path(__file__).parent, seed=20260909)
+rng = np.random.default_rng(1)
+pd_group, hc_group = rng.normal(28, 10, 60), rng.normal(4, 3, 40)   # synthetic motor scores
+
+r = stats.welch_ttest(pd_group, hc_group)
+r["p_value"], r["cohens_d"]
+
+stats.compute_ledd({"levodopa_ir": 300, "pramipexole": 1.5, "rasagiline": 1,
+                    "entacapone": 600})["total_ledd_mg"]    # 649.0: entacapone adds 0.33 × levodopa
 ```
 
-See [**Experiment layer**](documentation/experiment.md).
+See [Statistics](documentation/stats.md), which includes a "which test do I use?" table.
 
-## Deeper Dive: Understanding the Modules
-While the main pipeline is the recommended entry point, PIE is composed of modular components. You can learn more about each one in the detailed documentation:
-- [**Data Loaders**](documentation/data_loader.md)
-- [**Data Reducer**](documentation/data_reducer.md)
-- [**Data Preprocessor**](documentation/data_preprocessor.md)
-- [**Feature Engineer**](documentation/feature_engineer.md)
-- [**Feature Selector**](documentation/feature_selector.md)
-- [**Classifier & Reporting**](documentation/classifier.md)
-- [**Imaging layer**](documentation/imaging.md)
-- [**Experiment layer**](documentation/experiment.md)
+### 3. Build a cohort you can defend
+
+```python
+import tempfile
+from pathlib import Path
+import pandas as pd
+from pie.experiment import cohort, provenance
+
+demographics = pd.DataFrame({"PATNO": [1, 1, 2, 3, 3], "SEX": [1, 1, 0, 1, 2],
+                             "PAG_NAME": ["SCREEN", "PARTICIPANT_PROFILE", "SCREEN",
+                                          "SCREEN", "PARTICIPANT_PROFILE"]})
+demographics["sex_male"] = cohort.decode_sex(demographics)   # PPMI codes SEX differently per module
+sex_male = cohort.unique_per_participant(demographics, "sex_male")
+sex_male.to_dict()                                           # {1: 1.0, 2: 0.0}: PATNO 3's records disagree
+
+run = Path(tempfile.mkdtemp())
+sex_male.to_csv(run / "cohort.csv")
+provenance.write_manifest(run, inputs=[run / "cohort.csv"], code=Path("pie/experiment"), seed=20260913)
+provenance.verify_manifest(run)                              # [] while inputs and outputs are unchanged
+```
+
+`pie.experiment.prediction.nested_fold` runs model selection whose imputation, scaling and PCA
+are fitted only on training participants. See [Experiment](documentation/experiment.md).
+
+### 4. Turn MRI into features
+
+```bash
+venv_imaging/bin/python -m pie.imaging.run \
+    --zips Imaging/MRI_First_Study.zip Imaging/MRI_First_Study_dataset.zip \
+    --ppmi-dir PPMI --work-dir Imaging/derived \
+    --loni-csv Imaging/MRI_First_Study_9_07_2026.csv --ida-metadata Imaging/MRI_First_Study_IDA_Metadata.zip
+
+python pie/pipeline.py --data-dir ./PPMI --imaging-features Imaging/derived/fastsurfer_idps.csv ...
+```
+
+Diffusion, neuromelanin and DaTscan have their own runners, described in
+[Imaging](documentation/imaging.md), [DWI](documentation/imaging_dwi.md) and
+[NM and DaTscan](documentation/imaging_nm_datscan.md). For resting-state fMRI, see
+[fMRI processing](documentation/fmriprep.md).
+
+### 5. Explore brains in 3-D
+
+You can try the Brain Explorer without PPMI access. The fetch script downloads openly licensed
+scans (about 220 MB, SHA-256 verified) and writes a viewer manifest:
+
+```bash
+venv_imaging/bin/python scripts/fetch_viewer_examples.py        # download, verify, write Imaging/examples/manifest.json
+# optional: segment the T1 with FastSurfer for 3-D structures (the script prints the exact command), then re-run it
+venv_imaging/bin/python -m pie.imaging.viewer serve --manifest Imaging/examples/manifest.json
+# open http://127.0.0.1:8765
+```
+
+<p align="center">
+  <img src="assets/screenshots/brain_viewer_pet.png" width="49%" alt="Brain Explorer: [18F]FE-PE2I dopamine-transporter PET in a healthy control, axial slice through the striatum">
+  <img src="assets/screenshots/brain_viewer_fmri.png" width="49%" alt="Brain Explorer: resting-state BOLD frame, playback controls and a voxel time series">
+</p>
+
+*Left: [18F]FE-PE2I dopamine-transporter PET of a healthy control (OpenNeuro ds006917, CC0). It
+is not DaTscan and not a patient. Right: resting BOLD from a person with Parkinson's disease and
+mild cognitive impairment (OpenNeuro ds005892, CC0).*
+
+The example set also includes a T1 with FastSurfer structures from that same participant, a DTI
+example from a healthy older control, and a head CT. [Brain Explorer](documentation/brain_viewer.md)
+has the full walkthrough and attributions, and covers PIE's own outputs, imports, fusion rules and
+the HTTP API.
+
+## Documentation
+
+Start at the [documentation index](documentation/README.md). It maps every module to its page,
+lists the test commands, and gives the rules for data in examples.
+
+## Data privacy
+
+PPMI data is released under a data use agreement. Never commit participant IDs (`PATNO`
+values), LONI image IDs or participant-level records, whether in code, docs, tests or
+screenshots. Summary statistics and PPMI file names are fine. Examples use synthetic data.
 
 ## Contributing
-Contributions are welcome! Please follow these steps:
-1. Fork the repository.
-2. Create a new branch for your feature: `git checkout -b feature-name`.
-3. Make your changes.
-4. Add or update tests for your changes.
-5. Ensure the full test suite passes: `pytest tests/`.
-6. Commit your changes and create a pull request.
+
+1. Fork the repository and create a branch: `git checkout -b feature-name`.
+2. Make your change, with tests.
+3. Run the relevant suites (see [Tests](documentation/README.md#tests)).
+4. Open a pull request. Keep PPMI data out of it.
 
 ## Contributors
 - Cameron Hamilton
 - Victoria Catterson
 
 ## License
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+MIT. See [LICENSE](LICENSE).
 
 ## Contact
-If you have any questions or suggestions, please don't hesitate to contact Cameron@AllianceAI.co.
+Questions and suggestions: Cameron@AllianceAI.co.

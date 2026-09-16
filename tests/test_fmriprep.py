@@ -141,3 +141,15 @@ def test_changed_derivative_invalidates_work_identity(tmp_path, monkeypatch):
     (reuse / 'new_T1w.nii.gz').write_bytes(b'changed source')
     with pytest.raises(ValueError, match='different'):
         run_fmriprep(c)
+
+
+@pytest.mark.parametrize('where', ['same', 'inside'])
+def test_derivatives_must_be_separate_from_bids_input(tmp_path, where):
+    c = config(tmp_path)
+    bids = Path(c.bids_dir)
+    reuse = bids if where == 'same' else bids / 'derivatives' / 'anatomy'
+    reuse.mkdir(parents=True, exist_ok=True)
+    (reuse / 'dataset_description.json').write_text('{"DatasetType":"derivative"}')
+    c.derivatives = {'anatomy': str(reuse)}
+    with pytest.raises(ValueError, match='separate'):
+        build_command(c)

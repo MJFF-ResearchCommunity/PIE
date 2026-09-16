@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import BrainCanvas from "./BrainCanvas";
 import type { ViewerApi } from "./BrainCanvas";
-import { dateLabel, downloadJson } from "./model";
+import { dateLabel, downloadJson, initialWindow, subjectLabel } from "./model";
 import type { Display, Prepared, Subject, ViewMode } from "./types";
 
 interface Pair {
@@ -18,9 +18,12 @@ async function fetchJson(url: string, signal: AbortSignal) {
 }
 export default function ComparisonWorkspace({
   subject,
+  example,
   defaults,
 }: {
   subject?: Subject;
+  /** A participant this local index has two dated MRIs for, if there is one. */
+  example?: Subject;
   defaults: Display;
 }) {
   const scans = (subject?.scans ?? [])
@@ -78,7 +81,7 @@ export default function ComparisonWorkspace({
         setWindows(
           [p.baseline, p.followup].map((p) => {
             const v = p.volumes.find((v) => v.role === "primary")!;
-            return [v.cal_min, v.cal_max];
+            return initialWindow(v.cal_min, v.cal_max);
           }),
         );
       })
@@ -116,7 +119,7 @@ export default function ComparisonWorkspace({
       <div className="comparison-heading">
         <div>
           <span className="eyebrow">LONGITUDINAL INSPECTION</span>
-          <h2>PPMI {subject?.id ?? "—"} · MRI comparison</h2>
+          <h2>{subject ? subjectLabel(subject) : "—"} · MRI comparison</h2>
         </div>
         {pair && (
           <button
@@ -150,10 +153,18 @@ export default function ComparisonWorkspace({
             Different modalities on different dates are not longitudinal
             follow-ups.
           </p>
-          <p>
-            The local sample participant <strong>116869</strong> now has a
-            baseline and follow-up MRI. Find them in the participant browser.
-          </p>
+          {example ? (
+            <p>
+              The local participant <strong>{subjectLabel(example)}</strong> has
+              MRIs on two dates. Find them in the participant browser.
+            </p>
+          ) : (
+            <p>
+              No participant in this local index has two dated MRIs yet. Add a
+              second dated MRI through a viewer manifest, for example with
+              scripts/prepare_viewer_followup.py.
+            </p>
+          )}
         </div>
       ) : (
         <>
@@ -375,8 +386,8 @@ export default function ComparisonWorkspace({
           <div className="comparison-measures">
             <h3>Regional change is not established</h3>
             <p>
-              These newly converted MRI scans do not yet have reviewed
-              longitudinal segmentations. Regional trend charts and quantitative
+              The viewer has no reviewed longitudinal segmentations for these
+              scans. Regional trend charts and quantitative
               differences remain unavailable; no values are inferred from
               display brightness.
             </p>

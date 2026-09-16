@@ -251,3 +251,11 @@ nilearn_data/
 .playwright-cli/
 PPMI
 PPMI_2025-03/
+
+# Small, provenance-locked reference atlas distributed with the imaging package.
+!pie/imaging/data/
+pie/imaging/data/*
+!pie/imaging/data/atlases/
+pie/imaging/data/atlases/*
+!pie/imaging/data/atlases/CIT168_v1_MNI152NLin2009cAsym_det25.json
+!pie/imaging/data/atlases/CIT168_v1_MNI152NLin2009cAsym_det25.nii.gz

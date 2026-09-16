@@ -43,6 +43,7 @@ import { structureViewLabel } from "./structureDisplay";
 import type { ViewerApi } from "./BrainCanvas";
 import { MODALITIES } from "./types";
 import type {
+  BundleEntry,
   Catalog,
   Display,
   Modality,
@@ -54,13 +55,19 @@ import type {
   Structures,
 } from "./types";
 import {
+  bundleLine,
   canOverlay,
+  comparisonExample,
   dateLabel,
   downloadJson,
+  exampleShortcuts,
+  initialWindow,
   nearestScan,
   regionContext,
   regionName,
+  subjectLabel,
 } from "./model";
+import { serviceUnavailableMessage } from "./apiTarget";
 
 const names: Record<Modality, string> = {
   MRI: "Structural MRI",
@@ -290,7 +297,7 @@ export default function App() {
       .catch((e) => {
         if (e.name !== "AbortError")
           setError(
-            "The imaging service is unavailable. Start the PIE viewer server on port 8765, then reload.",
+            serviceUnavailableMessage(import.meta.env.DEV, __PIE_API_PORT__),
           );
       });
     return () => {
@@ -330,7 +337,7 @@ export default function App() {
           mode: p.scan.modality === "fMRI" ? "axial" : d.mode,
           metric: p.scan.modality === "fMRI" ? "bold" : defaults.metric,
           crosshair: p.scan.modality === "fMRI",
-          window: [v?.cal_min ?? 0, v?.cal_max ?? 1],
+          window: initialWindow(v?.cal_min ?? 0, v?.cal_max ?? 1),
           colormap: v?.colormap ?? "gray",
           opacity: v?.opacity ?? 1,
           anatomyOpacity: p.context ? 0.8 : 1,
@@ -409,6 +416,7 @@ export default function App() {
           .toLowerCase()
           .includes(query.toLowerCase()),
     ) ?? [];
+  const shortcuts = exampleShortcuts(catalog?.subjects ?? []);
   const compatible = prepared?.context
     ? []
     : (subject?.scans.filter((s) => scan && canOverlay(scan, s)) ?? []);
@@ -432,10 +440,10 @@ export default function App() {
     setBusy(true);
     update({
       metric,
-      window: [
+      window: initialWindow(
         extra?.cal_min ?? primary?.cal_min ?? 0,
         extra?.cal_max ?? primary?.cal_max ?? 1,
-      ],
+      ),
       colormap: extra?.colormap ?? "gray",
     });
   };
@@ -726,43 +734,27 @@ export default function App() {
                 </select>
                 <ChevronDown size={13} />
               </label>
-              {!!catalog?.subjects.some((p) =>
-                p.scans.some(
-                  (s) => s.metadata.example && s.modality === "fMRI",
-                ),
-              ) && (
+              {shortcuts.length > 0 && (
                 <div
                   className="example-shortcuts"
                   aria-label="Local fMRI examples"
                 >
-                  <span className="eyebrow">fMRI EXAMPLES · PRODROMAL</span>
-                  {catalog.subjects
-                    .filter((p) =>
-                      p.scans.some(
-                        (s) => s.metadata.example && s.modality === "fMRI",
-                      ),
-                    )
-                    .map((p) => (
-                      <button
-                        className="text-link"
-                        key={p.id}
-                        onClick={() => {
-                          setCohort("all");
-                          setQuery(p.id);
-                          setSubjectId(p.id);
-                          setScanId(
-                            p.scans.find(
-                              (s) =>
-                                s.modality === "fMRI" &&
-                                !s.metadata.short_reference,
-                            )!.id,
-                          );
-                          setSection("explore");
-                        }}
-                      >
-                        PPMI {p.id} <ArrowRight size={12} />
-                      </button>
-                    ))}
+                  <span className="eyebrow">fMRI EXAMPLES</span>
+                  {shortcuts.map((x) => (
+                    <button
+                      className="text-link"
+                      key={x.subjectId}
+                      onClick={() => {
+                        setCohort("all");
+                        setQuery(x.subjectId);
+                        setSubjectId(x.subjectId);
+                        setScanId(x.scanId);
+                        setSection("explore");
+                      }}
+                    >
+                      {x.label} <ArrowRight size={12} />
+                    </button>
+                  ))}
                 </div>
               )}
               <div
@@ -789,7 +781,7 @@ export default function App() {
                   >
                     <span className="participant-number">
                       <span className="subject-dot" />
-                      PPMI {p.id}
+                      {subjectLabel(p)}
                       <ChevronRight size={13} />
                     </span>
                     <span className="participant-cohort">{p.group}</span>
@@ -808,13 +800,26 @@ export default function App() {
                 )}
               </div>
               <div className="collection-note">
-                <span className="eyebrow">CONNECTED COLLECTION</span>
-                <strong>PPMI · local imaging</strong>
+                <span className="eyebrow">LOCAL COLLECTION</span>
+                <strong>Local imaging index</strong>
                 <p>
                   {catalog?.scan_count.toLocaleString() ?? "—"} indexed scans
                   <br />
                   Images stay on this machine.
                 </p>
+                {!!catalog?.warnings.length && (
+                  <details style={{ overflowWrap: "anywhere", fontSize: 12 }}>
+                    <summary>
+                      {catalog.warnings.length} index{" "}
+                      {catalog.warnings.length === 1 ? "warning" : "warnings"}
+                    </summary>
+                    <ul>
+                      {catalog.warnings.map((w) => (
+                        <li key={w}>{w}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
                 <button onClick={() => setSection("samples")}>
                   Plan more downloads <ArrowRight size={13} />
                 </button>
@@ -826,6 +831,7 @@ export default function App() {
             <ComparisonWorkspace
               key={subjectId}
               subject={subject}
+              example={comparisonExample(catalog?.subjects ?? [])}
               defaults={defaults}
             />
           ) : section === "acquisitions" ? (
@@ -846,7 +852,7 @@ export default function App() {
                   <div>
                     <span className="eyebrow">PARTICIPANT</span>
                     <h2>
-                      {subject ? `PPMI ${subject.id}` : "Choose a participant"}{" "}
+                      {subject ? subjectLabel(subject) : "Choose a participant"}{" "}
                       <span className="group-badge">{subject?.group}</span>
                     </h2>
                   </div>
@@ -1976,7 +1982,7 @@ function Acquisitions({
   return (
     <main className="acquisitions-page">
       <span className="eyebrow">PARTICIPANT RECORD</span>
-      <h2>{subject ? `PPMI ${subject.id}` : "Select a participant"}</h2>
+      <h2>{subject ? subjectLabel(subject) : "Select a participant"}</h2>
       <p>
         Every row is a real acquisition or a derived image. A shared date does
         not establish image registration.
@@ -2057,8 +2063,11 @@ function Acquisitions({
 
 interface Plan {
   available: boolean;
+  download_guide?: boolean;
   message?: string;
   notes?: string[];
+  warnings?: string[];
+  next_bundle?: BundleEntry[];
   coverage?: {
     cohort: string;
     modality: string;
@@ -2112,20 +2121,38 @@ function SamplePlan() {
       {error && <p role="alert">{error}</p>}
       {!plan && !error && <p>Reading the local sample plan…</p>}
       <section className="next-downloads-note">
-        <h3>Next bundle: participant 3123</h3>
-        <p>
-          Follow-up T1 MRI and reconstructed SPECT: June 2013 / May 2014. AV-133
-          PET: July 2013 / June 2014. Confirm exact acquisitions in IDA.
-        </p>
-        <p>
-          Both parts of fMRI collection 1 are complete by image-ID inventory;
-          examples 101685 and 218968 are now available in Explorer. Participant
-          116869 supplies a local two-visit MRI example. The older inventory
-          below predates these additions.
-        </p>
-        <a className="button" href="/api/download-guide" download>
-          Download the updated IDA checklist
-        </a>
+        <h3>Next bundle</h3>
+        {plan?.next_bundle?.length ? (
+          <>
+            <p>
+              Shortlisted participants whose local imaging is least complete, from
+              your local tables. Confirm every acquisition in IDA.
+            </p>
+            <ul>
+              {plan.next_bundle.map((entry) => (
+                <li key={entry.subject}>
+                  <strong>PPMI {entry.subject}</strong> · {entry.cohort} ·{" "}
+                  {entry.local_modalities.length
+                    ? `local: ${entry.local_modalities.join(", ")}`
+                    : "nothing local yet"}
+                  <br />
+                  {entry.requests.map(bundleLine).join(" · ")}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p>
+            No local download plan yet. Run{" "}
+            <code>python -m pie.imaging.viewer sample-plan</code> against your PPMI
+            tables to list the participants to request next.
+          </p>
+        )}
+        {plan?.download_guide && (
+          <a className="button" href="/api/download-guide" download>
+            Download the local IDA checklist
+          </a>
+        )}
       </section>
       {plan && !plan.available && <p>{plan.message}</p>}
       {plan?.available && (
@@ -2253,6 +2280,9 @@ function SamplePlan() {
             </table>
           </div>
           <div className="plan-notes">
+            {plan.warnings?.map((w) => (
+              <p key={w}>Warning: {w}</p>
+            ))}
             {plan.notes?.map((n) => (
               <p key={n}>{n}</p>
             ))}

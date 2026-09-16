@@ -101,8 +101,8 @@ if __name__ == "__main__":  # self-check on a synthetic listing
         dict(zip="z", patno=1, series_desc="MPRAGE", session="2011-01-01_10_00_00.0", image_id="I1", n_files=170, bytes=100, member_prefix="p/"),
         dict(zip="z", patno=1, series_desc="MPRAGE_Repeat", session="2011-01-01_10_00_00.0", image_id="I2", n_files=176, bytes=120, member_prefix="p/"),
         dict(zip="z", patno=1, series_desc="Coronal", session="2011-01-01_10_00_00.0", image_id="I3", n_files=1, bytes=1, member_prefix="p/"),
-        dict(zip="z", patno=2, series_desc="3D_T1-weighted", session="2021-03-23_09_05_05.0", image_id="I4", n_files=1, bytes=25e6, member_prefix="p/"),
-        dict(zip="z", patno=2, series_desc="Transverse", session="2021-03-23_09_05_05.0", image_id="I5", n_files=1, bytes=60e6, member_prefix="p/"),
+        dict(zip="z", patno=2, series_desc="3D_T1-weighted", session="2000-01-01_09_00_00.0", image_id="I4", n_files=1, bytes=25e6, member_prefix="p/"),
+        dict(zip="z", patno=2, series_desc="Transverse", session="2000-01-01_09_00_00.0", image_id="I5", n_files=1, bytes=60e6, member_prefix="p/"),
     ])
     demo["session_date"] = pd.to_datetime(demo["session"].str[:10])
     sel = select_t1_series(demo)

@@ -15,8 +15,9 @@ from typing import List, Union, Optional, Any, Dict, Tuple
 # Add the parent directory to the Python path to make the pie module importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pie.classifier import Classifier
+from pie.classifier import Classifier, check_classification_target, split_train_test
 from pie.feature_selector import FeatureSelector
+from sklearn.preprocessing import LabelEncoder
 
 # Endgame visualization / explain imports
 try:
@@ -168,6 +169,7 @@ def generate_classification_report_html(
             <div class="best-model">
                 <h2>4. Best Model Details</h2>
                 <h3>Selected Model: <span class="highlight">{report_data.get('best_model_name', 'N/A')}</span></h3>
+                <p><em>Cross-validated on the training split, before tuning. Held-out performance is in section 9.</em></p>
         """
 
         # Add metrics table if available
@@ -335,7 +337,7 @@ def generate_classification_report_html(
     test_metrics = report_data.get('test_metrics', {})
     if test_metrics:
         html_content += """
-                <p>Performance metrics on the held-out test set:</p>
+                <p>The final model (tuned, if tuning ran) scored once on the held-out test split:</p>
                 <table>
                     <tr><th>Metric</th><th>Value</th></tr>
         """
@@ -406,7 +408,7 @@ def generate_report(
     train_csv_path: str = None,
     test_csv_path: str = None,
     use_feature_selection: bool = True,
-    feature_selection_method: str = 'univariate_kbest',
+    feature_selection_method: str = 'k_best',
     target_column: str = "COHORT",
     exclude_features: List[str] = None,
     output_dir: str = "output",
@@ -419,13 +421,18 @@ def generate_report(
     Runs the complete classification pipeline including optional feature selection,
     model comparison, hyperparameter tuning, and comprehensive reporting.
 
-    Uses endgame as the ML engine for model comparison, tuning, and report generation.
+    A ``PATNO`` column, if present, groups the train/test split and the CV folds and is
+    never a feature. Feature selection is fitted on the training split only. The target
+    must hold class labels (text or integer codes); a continuous target raises ValueError.
+
+    Returns ``(classifier, best_model, report_data)``. There is no failure path that
+    returns None: bad input raises ``ValueError`` (no input given, unreadable file,
+    missing target column, no rows left, continuous target, feature selection keeping
+    nothing) and a failure inside the engine raises ``RuntimeError`` (experiment setup,
+    model comparison), both naming the cause.
     """
     logger.info("Starting classification report generation...")
-
-    # Initialize exclude_features if None
-    if exclude_features is None:
-        exclude_features = []
+    exclude_features = exclude_features or []
 
     # Validate input parameters
     if input_csv_path is None and (train_csv_path is None or test_csv_path is None):
@@ -439,8 +446,11 @@ def generate_report(
             input_csv_path = "output/final_engineered_dataset.csv"
             logger.info("Using feature-engineered data from previous pipeline step")
         else:
-            logger.error("No input data found. Please provide either input_csv_path or both train_csv_path and test_csv_path.")
-            return
+            raise ValueError(
+                "No input data given and none found to auto-detect. Pass input_csv_path, or "
+                "both train_csv_path and test_csv_path, or run from a directory holding "
+                "output/selected_train_data.csv and output/selected_test_data.csv."
+            )
 
     # Create output directory
     output_path = Path(output_dir)
@@ -448,209 +458,110 @@ def generate_report(
     plots_dir = output_path / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize report data collector
     report_data = {
         'target_column': target_column,
         'feature_selection_applied': use_feature_selection,
         'plots_dir': str(plots_dir)
     }
 
-    # Load data based on input type
-    if train_csv_path and test_csv_path:
-        # Case 1: Pre-split data provided
-        logger.info("Loading pre-split train and test data...")
-        report_data['input_data_path'] = f"Train: {train_csv_path}, Test: {test_csv_path}"
-
-        try:
+    # Load data: a pre-split pair, or one frame that is split below
+    try:
+        if train_csv_path and test_csv_path:
             train_df = pd.read_csv(train_csv_path)
             test_df = pd.read_csv(test_csv_path)
-            logger.info(f"Loaded training data from {train_csv_path}. Shape: {train_df.shape}")
-            logger.info(f"Loaded test data from {test_csv_path}. Shape: {test_df.shape}")
-
-            # Combine for setup (it will split internally)
-            train_df['_original_split'] = 'train'
-            test_df['_original_split'] = 'test'
-            df = pd.concat([train_df, test_df], ignore_index=True)
-
+            report_data['input_data_path'] = f"Train: {train_csv_path}, Test: {test_csv_path}"
             report_data['input_data_shape'] = f"Train: {train_df.shape}, Test: {test_df.shape}"
-            report_data['pre_split_data'] = True
+        else:
+            train_df = pd.read_csv(input_csv_path)
+            test_df = None
+            report_data['input_data_path'] = input_csv_path
+            report_data['input_data_shape'] = train_df.shape
+    except Exception as e:
+        paths = f"{train_csv_path} and {test_csv_path}" if train_csv_path and test_csv_path else input_csv_path
+        raise ValueError(f"Could not read the input data ({paths}): {e}") from e
+    report_data['pre_split_data'] = test_df is not None
+    frames = lambda: [f for f in (train_df, test_df) if f is not None]
 
-        except Exception as e:
-            logger.error(f"Failed to load train/test data: {e}")
-            return
+    if target_column not in train_df.columns:
+        raise ValueError(
+            f"Target column '{target_column}' is not in the input data, which has "
+            f"{len(train_df.columns)} columns, e.g. {list(train_df.columns[:5])}. "
+            "Pass target_column=<the label column>."
+        )
 
-    else:
-        # Case 2: Single CSV file provided
-        logger.info("Loading single data file...")
-        report_data['input_data_path'] = input_csv_path
-        report_data['pre_split_data'] = False
-
-        try:
-            df = pd.read_csv(input_csv_path)
-            report_data['input_data_shape'] = df.shape
-            logger.info(f"Loaded data from {input_csv_path}. Shape: {df.shape}")
-        except Exception as e:
-            logger.error(f"Failed to load data: {e}")
-            return
-
-    # Check target column
-    if target_column not in df.columns:
-        logger.error(f"Target column '{target_column}' not found in data")
-        return
-
-    # EXCLUDE SPECIFIED FEATURES EARLY IN THE PIPELINE
-    if exclude_features:
-        logger.info(f"Excluding {len(exclude_features)} specified features from analysis...")
-
-        existing_excluded_features = [feat for feat in exclude_features if feat in df.columns]
-        missing_excluded_features = [feat for feat in exclude_features if feat not in df.columns]
-
-        if existing_excluded_features:
-            logger.info(f"Excluding features: {existing_excluded_features}")
-            df = df.drop(columns=existing_excluded_features)
-            logger.info(f"Data shape after feature exclusion: {df.shape}")
-
-        if missing_excluded_features:
-            logger.warning(f"Specified features not found in data (will be ignored): {missing_excluded_features}")
-
-        report_data['excluded_features'] = existing_excluded_features
-        report_data['excluded_features_count'] = len(existing_excluded_features)
-    else:
-        report_data['excluded_features'] = []
-        report_data['excluded_features_count'] = 0
+    # Exclude leakage features. The target and PATNO are never features, so they cannot
+    # be excluded; PATNO is kept to group the split and the CV folds.
+    existing_excluded = [f for f in exclude_features if f in train_df.columns and f not in (target_column, "PATNO")]
+    missing_excluded = [f for f in exclude_features if f not in train_df.columns]
+    if existing_excluded:
+        logger.info(f"Excluding features: {existing_excluded}")
+        train_df = train_df.drop(columns=existing_excluded)
+        test_df = test_df.drop(columns=existing_excluded) if test_df is not None else None
+    if missing_excluded:
+        logger.warning(f"Specified features not found in data (will be ignored): {missing_excluded}")
+    report_data['excluded_features'] = existing_excluded
+    report_data['excluded_features_count'] = len(existing_excluded)
 
     # Handle missing target values
-    initial_rows = len(df)
-    df = df.dropna(subset=[target_column])
-    if len(df) < initial_rows:
-        logger.info(f"Dropped {initial_rows - len(df)} rows with missing target values")
+    n_before = sum(len(f) for f in frames())
+    train_df = train_df.dropna(subset=[target_column])
+    test_df = test_df.dropna(subset=[target_column]) if test_df is not None else None
+    if sum(len(f) for f in frames()) < n_before:
+        logger.info(f"Dropped {n_before - sum(len(f) for f in frames())} rows with missing target values")
+    if any(f.empty for f in frames()):
+        raise ValueError(
+            f"No rows left after dropping rows with a missing '{target_column}'. "
+            "Check that the target column is populated in the input data."
+        )
+    check_classification_target(pd.concat([f[target_column] for f in frames()]))
 
-    # Verify target contains actual class names, not encoded numbers
-    unique_targets = df[target_column].unique()
-    logger.info(f"Target column values: {unique_targets}")
+    group_col = "PATNO" if "PATNO" in train_df.columns else None
+    id_cols = [c for c in ("PATNO", "EVENT_ID") if c in train_df.columns]
+    if test_df is None:
+        # Split here rather than inside setup_experiment so that feature selection is
+        # fitted on the training rows only. Participants never straddle the split.
+        tr, te = split_train_test(train_df[target_column], train_df[group_col] if group_col else None,
+                                  test_size=0.2, random_state=123)
+        train_df, test_df = train_df.iloc[tr], train_df.iloc[te]
 
-    if all(isinstance(target, (int, float, np.integer, np.floating)) for target in unique_targets if pd.notna(target)):
-        logger.warning("Target column contains numeric values instead of class names!")
-        logger.warning("This suggests the data may have been saved with encoded labels instead of original labels.")
-
-        expected_labels = ["Parkinson's Disease", "Healthy Control", "Prodromal", "SWEDD"]
-        if len(unique_targets) == len(expected_labels):
-            target_mapping = dict(zip(sorted(unique_targets), expected_labels))
-            logger.info(f"Attempting to map encoded targets back to original labels: {target_mapping}")
-            df[target_column] = df[target_column].map(target_mapping)
-            logger.info("Target column mapped back to original class names")
-        else:
-            logger.error("Cannot map targets back to original labels - length mismatch")
-            return
-
-    # Get target statistics
+    df = pd.concat([train_df, test_df], ignore_index=True)  # all rows, for labels and counts
     report_data['n_classes'] = df[target_column].nunique()
     report_data['class_distribution'] = df[target_column].value_counts().to_dict()
+    report_data['train_size'] = len(train_df) / len(df)
 
-    # Apply feature selection if requested
-    if use_feature_selection and target_column in df.columns:
-        logger.info(f"Applying feature selection using {feature_selection_method}...")
+    feature_cols = [c for c in train_df.columns if c != target_column and c not in id_cols]
+    report_data['original_features'] = len(feature_cols)
+    if use_feature_selection:
+        logger.info(f"Applying feature selection ({feature_selection_method}) on the training split...")
+        selector = FeatureSelector(method=feature_selection_method, task_type='classification', random_state=123)
+        selector.fit(train_df[feature_cols], LabelEncoder().fit_transform(train_df[target_column]))
+        keep = selector.selected_feature_names_
+        if not keep:
+            raise ValueError(f"Feature selection '{feature_selection_method}' kept no features.")
+        dropped = [c for c in feature_cols if c not in keep]
+        train_df, test_df = train_df.drop(columns=dropped), test_df.drop(columns=dropped)
+        feature_cols = keep
+        report_data['feature_selection_method'] = feature_selection_method
+        report_data['selected_features'] = len(keep)
+        report_data['feature_reduction_pct'] = round((1 - len(keep) / report_data['original_features']) * 100, 2)
+        logger.info(f"Feature selection complete. Reduced from {report_data['original_features']} to {len(keep)} features")
 
-        if '_original_split' in df.columns:
-            split_info = df['_original_split'].copy()
-            df = df.drop(columns=['_original_split'])
-        else:
-            split_info = None
-
-        original_features = df.shape[1] - 1  # Exclude target
-
-        try:
-            selected_df = FeatureSelector.select_features(
-                data=df,
-                target_column=target_column,
-                task_type='classification',
-                method=feature_selection_method,
-                k_or_frac_kbest=0.5 if 'kbest' in feature_selection_method else None,
-                percentile_univariate=50 if 'percentile' in feature_selection_method else None,
-                random_state=123
-            )
-
-            df = selected_df
-
-            if split_info is not None:
-                df['_original_split'] = split_info
-
-            selected_features = df.shape[1] - 1
-            if '_original_split' in df.columns:
-                selected_features -= 1
-
-            report_data['feature_selection_method'] = feature_selection_method
-            report_data['original_features'] = original_features
-            report_data['selected_features'] = selected_features
-            report_data['feature_reduction_pct'] = round((1 - selected_features/original_features) * 100, 2)
-
-            logger.info(f"Feature selection complete. Reduced from {original_features} to {selected_features} features")
-
-        except Exception as e:
-            logger.warning(f"Feature selection failed: {e}. Proceeding with all features.")
-            report_data['feature_selection_applied'] = False
-
-    # Calculate final feature count
-    n_features = df.shape[1] - 1  # Exclude target
-    if '_original_split' in df.columns:
-        n_features -= 1
+    n_features = len(feature_cols)
     report_data['n_features'] = n_features
 
-    # Initialize classifier
     classifier = Classifier()
-
-    # Prepare setup parameters
-    setup_params = {
-        'data': df,
-        'target': target_column,
-        'train_size': 0.8,
-        'session_id': 123,
-        'use_gpu': False,
-        'log_experiment': False,
-        'experiment_name': "PIE_Classification",
-        'verbose': False,
-        'remove_multicollinearity': False,
-        'remove_outliers': False,
-        'normalize': False,
-        'transformation': False,
-        'pca': False,
-        'ignore_features': [],
-        'feature_selection': False,
-        'fold_strategy': 'stratifiedkfold',
-        'fold': 5,
-        'fold_shuffle': False
-    }
-
-    # If we have pre-split data, handle it
-    if report_data.get('pre_split_data', False) and '_original_split' in df.columns:
-        train_indices = df[df['_original_split'] == 'train'].index
-        test_indices = df[df['_original_split'] == 'test'].index
-
-        df_without_split = df.drop(columns=['_original_split'])
-
-        train_data = df_without_split.iloc[train_indices]
-        test_data = df_without_split.iloc[test_indices]
-
-        setup_params['data'] = train_data
-        setup_params['test_data'] = test_data
-        setup_params.pop('train_size', None)
-
-        report_data['train_size'] = len(train_indices) / (len(train_indices) + len(test_indices))
-        logger.info(f"Using pre-defined train/test split: {len(train_indices)} train, {len(test_indices)} test samples")
-    else:
-        report_data['train_size'] = 0.8
-
-    # Setup experiment
     logger.info("Setting up endgame classification experiment...")
     try:
-        if target_column in df.columns:
-            unique_targets = df[target_column].unique()
-            logger.info(f"Target classes found: {unique_targets}")
-
-        experiment = classifier.setup_experiment(**setup_params)
+        classifier.setup_experiment(
+            data=train_df, test_data=test_df, target=target_column, session_id=123,
+            verbose=False, fold=5, fold_groups=group_col,
+            ignore_features=[c for c in id_cols if c != group_col],
+        )
     except Exception as e:
-        logger.error(f"Failed to setup experiment: {e}")
-        return
+        raise RuntimeError(
+            f"Could not set up the experiment on {len(train_df)} training and "
+            f"{len(test_df)} test rows with {n_features} features: {e}"
+        ) from e
 
     # Compare models
     logger.info(f"Comparing top {n_models_to_compare} models...")
@@ -704,8 +615,11 @@ def generate_report(
         logger.info(f"Model supports SHAP interpretation: {is_tree_based}")
 
     except Exception as e:
-        logger.error(f"Failed to compare models: {e}")
-        return
+        raise RuntimeError(
+            f"Could not compare models: {e}. Check that the features are numeric and free of "
+            "NaN, that every class has enough participants for the CV folds, and that "
+            "budget_time_minutes leaves time for at least one model."
+        ) from e
 
     # Tune the best model
     if tune_best_model:
@@ -743,25 +657,15 @@ def generate_report(
             logger.warning(f"Failed to tune model: {e}. Using untuned model.")
             report_data['tuning_results'] = False
 
-    # Get final model metrics from leaderboard
-    try:
-        logger.info("Extracting model performance metrics...")
-
-        if hasattr(classifier, 'comparison_results') and classifier.comparison_results is not None:
-            best_model_row = classifier.comparison_results.iloc[0]
-            test_metrics = best_model_row.to_dict()
-            test_metrics = {k: v for k, v in test_metrics.items()
-                          if isinstance(v, (int, float)) and not pd.isna(v)}
-
-            report_data['best_model_metrics'] = test_metrics
-            report_data['test_metrics'] = test_metrics
-
-            logger.info(f"Best model metrics: {test_metrics}")
-        else:
-            logger.warning("No comparison results available for metrics extraction")
-
-    except Exception as e:
-        logger.warning(f"Failed to get model metrics: {e}")
+    # Two different numbers: the selected model's cross-validated scores on the training
+    # split (leaderboard row, before tuning), and the final model scored once on the
+    # held-out test split.
+    cv_row = classifier.comparison_results.iloc[0].to_dict()
+    report_data['best_model_metrics'] = {k: v for k, v in cv_row.items()
+                                         if isinstance(v, (int, float)) and not pd.isna(v)}
+    report_data['test_metrics'] = {k: v for k, v in classifier.evaluate_model(best_model).items()
+                                   if not pd.isna(v)}
+    logger.info(f"Held-out test metrics of the final model: {report_data['test_metrics']}")
 
     # Try to generate endgame's comprehensive report
     if ENDGAME_VIS_AVAILABLE:
@@ -1103,7 +1007,7 @@ if __name__ == "__main__":
     parser.add_argument('--exclude-features-file', type=str, help='Path to a text file with features to exclude (one per line).')
 
     parser.add_argument('--use-feature-selection', action='store_true', help='Enable feature selection. Disabled by default.')
-    parser.add_argument('--feature-selection-method', type=str, default='univariate_kbest', help='Feature selection method.')
+    parser.add_argument('--feature-selection-method', type=str, default='k_best', help='FeatureSelector method, fitted on the training split.')
 
     parser.add_argument('--n-models-to-compare', type=int, default=5, help='Number of models to compare.')
     parser.add_argument('--tune-best-model', action='store_true', help='Enable hyperparameter tuning of the best model. Disabled by default.')
@@ -1122,18 +1026,23 @@ if __name__ == "__main__":
             logger.error(f"Could not read exclude features file: {e}")
             sys.exit(1)
 
-    # Run the report generation
-    generate_report(
-        input_csv_path=args.input_csv_path,
-        train_csv_path=args.train_csv_path,
-        test_csv_path=args.test_csv_path,
-        use_feature_selection=args.use_feature_selection,
-        feature_selection_method=args.feature_selection_method,
-        target_column=args.target_column,
-        exclude_features=exclude_features_list,
-        output_dir=args.output_dir,
-        n_models_to_compare=args.n_models_to_compare,
-        tune_best_model=args.tune_best_model,
-        generate_plots=args.generate_plots,
-        budget_time_minutes=args.budget_time_minutes
-    )
+    # Run the report generation. Bad input and engine failures are reported as one line
+    # with a non-zero exit status, not as a traceback.
+    try:
+        generate_report(
+            input_csv_path=args.input_csv_path,
+            train_csv_path=args.train_csv_path,
+            test_csv_path=args.test_csv_path,
+            use_feature_selection=args.use_feature_selection,
+            feature_selection_method=args.feature_selection_method,
+            target_column=args.target_column,
+            exclude_features=exclude_features_list,
+            output_dir=args.output_dir,
+            n_models_to_compare=args.n_models_to_compare,
+            tune_best_model=args.tune_best_model,
+            generate_plots=args.generate_plots,
+            budget_time_minutes=args.budget_time_minutes
+        )
+    except (ValueError, RuntimeError, FileNotFoundError) as e:
+        logger.error(str(e))
+        sys.exit(1)

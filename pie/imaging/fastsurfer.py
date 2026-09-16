@@ -1,7 +1,8 @@
 """
 fastsurfer.py — run FastSurfer's segmentation-only stream on one T1w NIfTI and parse
 its stats. Uses the FastSurfer checkout in PIE/third_party/FastSurfer and the
-PIE/venv_imaging interpreter; no FreeSurfer licence is needed for this stream.
+PIE/venv_imaging interpreter (override with the PIE_FASTSURFER_HOME / PIE_FASTSURFER_PYTHON environment
+variables); no FreeSurfer licence is needed for this stream.
 
 The stream is split into (1) FastSurferVINN inference, which needs ~6 GB of GPU memory and
 is serialised across worker processes with a file lock, and (2) N4 bias-field correction +
@@ -20,9 +21,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 PIE_ROOT = Path(__file__).resolve().parents[2]
-FASTSURFER_HOME = PIE_ROOT / "third_party" / "FastSurfer"
-PYTHON = PIE_ROOT / "venv_imaging" / "bin" / "python"
-STALL_SECONDS = 420  # no new segmentation for this long -> kill the batch process
+FASTSURFER_HOME = Path(os.environ.get("PIE_FASTSURFER_HOME") or PIE_ROOT / "third_party" / "FastSurfer")
+PYTHON = Path(os.environ.get("PIE_FASTSURFER_PYTHON") or PIE_ROOT / "venv_imaging" / "bin" / "python")
+STALL_SECONDS = 420  # no new segmentation for this long -> kill the batch process (GPU)
+CPU_SCAN_SECONDS = int(os.environ.get("PIE_FASTSURFER_CPU_SECONDS", 3600))   # per-scan and stall budget off the GPU
 STATS_FILE = "stats/aseg+DKT.stats"
 SEG_FILE = "mri/aparc.DKTatlas+aseg.deep.mgz"
 # label ids run_fastsurfer.sh passes to segstats for the aparc.DKTatlas+aseg segmentation
@@ -43,10 +45,17 @@ def _lock(path):
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
-def _run(cmd, log, cwd, timeout=1800, stall=None):
+def _budget(device):
+    """(seconds per scan, stall seconds) for FastSurferVINN inference. A GPU scan takes about a minute, so the CUDA
+    budgets stay tight enough to catch a hung process; CPU inference takes tens of minutes, more on a loaded machine,
+    so any non-CUDA device gets CPU_SCAN_SECONDS for both (environment variable PIE_FASTSURFER_CPU_SECONDS)."""
+    return (90, STALL_SECONDS) if str(device).startswith("cuda") else (CPU_SCAN_SECONDS, CPU_SCAN_SECONDS)
+
+
+def _run(cmd, log, cwd, timeout=1800, stall=None, stall_seconds=STALL_SECONDS):
     """Run a FastSurfer script, logging to ``log``. ``timeout`` caps the wall time; ``stall`` is an
     optional callable returning a progress counter, and the process is killed if that counter does
-    not change for STALL_SECONDS (FastSurfer's multi-subject mode has been seen to hang after an
+    not change for ``stall_seconds`` (FastSurfer's multi-subject mode has been seen to hang after an
     inference)."""
     with open(log, "a") as fh:
         fh.write("\n$ " + " ".join(map(str, cmd)) + "\n")
@@ -62,10 +71,10 @@ def _run(cmd, log, cwd, timeout=1800, stall=None):
                 cur = stall()
                 if cur != last:
                     last, last_change = cur, now
-                elif now - last_change > STALL_SECONDS:
+                elif now - last_change > stall_seconds:
                     proc.kill()
                     proc.wait()
-                    raise RuntimeError(f"{Path(cmd[1]).name} stalled for {STALL_SECONDS}s (killed); see {log}")
+                    raise RuntimeError(f"{Path(cmd[1]).name} stalled for {stall_seconds}s (killed); see {log}")
             if now - t0 > timeout:
                 proc.kill()
                 proc.wait()
@@ -93,7 +102,7 @@ def segment(nifti, subjects_dir, sid, threads=4, device="cuda", batch=4, fastsur
               "--asegdkt_segfile", seg, "--conformed_name", mri / "orig.mgz", "--brainmask_name", mri / "mask.mgz",
               "--aseg_name", mri / "aseg.auto_noCCseg.mgz", "--seg_log", sub / "scripts" / "deep-seg.log",
               "--vox_size", "1", "--batch_size", batch, "--viewagg_device", "auto", "--device", device,
-              "--threads", threads], log, fs, timeout=900)
+              "--threads", threads], log, fs, timeout=max(900, _budget(device)[0] + 300))
     if not seg.exists():
         raise RuntimeError(f"FastSurferVINN produced no segmentation for {sid}; see {log}")
     return seg
@@ -116,6 +125,7 @@ def segment_batch(niftis, subjects_dir, threads=4, device="cuda", batch=4, fasts
     listing.write_text("\n".join(map(str, todo)) + "\n")
     sids = [n.name.removesuffix("_T1w.nii.gz") for n in todo]
     progress = lambda: sum((sd / sid / SEG_FILE).exists() for sid in sids)
+    per_scan, stall_seconds = _budget(device)
     with _lock(sd / ".gpu.lock"):
         try:
             # relative output names resolve inside <sd>/<sid>/; without --aseg_name FastSurfer writes no aseg
@@ -124,7 +134,7 @@ def segment_batch(niftis, subjects_dir, threads=4, device="cuda", batch=4, fasts
                   "--brainmask_name", "mri/mask.mgz", "--aseg_name", "mri/aseg.auto_noCCseg.mgz",
                   "--vox_size", "1", "--batch_size", batch,
                   "--viewagg_device", "auto", "--device", device, "--threads", threads], sd / f".{tag}.log", fs,
-                 timeout=90 * len(todo) + 300, stall=progress)
+                 timeout=per_scan * len(todo) + 300, stall=progress, stall_seconds=stall_seconds)
         except RuntimeError:
             pass  # stragglers are retried one by one by the caller
     listing.unlink(missing_ok=True)
@@ -201,7 +211,7 @@ def parse_stats(stats_path):
     out = {}
     for line in Path(stats_path).read_text().splitlines():
         if line.startswith("# Measure"):
-            # "# Measure BrainSeg, BrainSegVol, Brain Segmentation Volume, 1221128.31, mm^3"
+            # "# Measure BrainSeg, BrainSegVol, Brain Segmentation Volume, 1200000.00, mm^3"
             parts = [p.strip() for p in line[len("# Measure"):].split(",")]
             out[parts[1]] = float(parts[3])
         elif line and not line.startswith("#"):
@@ -212,11 +222,11 @@ def parse_stats(stats_path):
 
 if __name__ == "__main__":  # self-check on a minimal stats snippet
     import tempfile
-    snippet = ("# Measure Mask, MaskVol, Mask Volume, 1601112.000000, mm^3\n"
+    snippet = ("# Measure Mask, MaskVol, Mask Volume, 1500000.000000, mm^3\n"          # synthetic values
                "# ColHeaders  Index SegId NVoxels Volume_mm3 StructName normMean normStdDev normMin normMax normRange\n"
-               "  1   2    257716 261560.204  Left-Cerebral-White-Matter       104.2871     9.4616    21.0000   132.0000   111.0000\n")
+               "  1   2    250000 250000.000  Left-Cerebral-White-Matter       100.0000    10.0000    20.0000   130.0000   110.0000\n")
     with tempfile.NamedTemporaryFile("w", suffix=".stats", delete=False) as f:
         f.write(snippet)
     d = parse_stats(f.name)
-    assert d == {"MaskVol": 1601112.0, "Left-Cerebral-White-Matter": 261560.204}, d
+    assert d == {"MaskVol": 1500000.0, "Left-Cerebral-White-Matter": 250000.0}, d
     print("parse_stats self-check OK")

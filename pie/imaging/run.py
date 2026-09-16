@@ -5,7 +5,7 @@ run.py — resumable CLI: LONI zips -> NIfTI -> FastSurfer -> IDP table.
     venv_imaging/bin/python -m pie.imaging.run \
         --zips Imaging/MRI_First_Study.zip Imaging/MRI_First_Study_dataset.zip \
         --ppmi-dir PPMI --work-dir Imaging/derived --workers 4 --threads 4 \
-        [--priority patnos.txt] [--limit N] [--features-only]
+        [--priority patnos.txt] [--limit N] [--features-only] [--device cpu]
 
 Work dir layout: index.csv (all series), sessions.csv (chosen T1 per session + EVENT_ID +
 scanner metadata), nifti/<PATNO>/<IMAGEID>_T1w.nii.gz, fastsurfer/<IMAGEID>/..., failures.csv,
@@ -94,29 +94,29 @@ def stats_one(row, work, threads):
     return row["image_id"]
 
 
-def retry_one(row, work, threads):
+def retry_one(row, work, threads, device="cuda"):
     """Single-scan fallback (own FastSurfer process) for scans a batch skipped."""
     nifti = work / "nifti" / str(row["patno"]) / f'{row["image_id"]}_T1w.nii.gz'
-    run_fastsurfer(nifti, work / "fastsurfer", row["image_id"], threads=threads)
+    run_fastsurfer(nifti, work / "fastsurfer", row["image_id"], threads=threads, device=device)
     return row["image_id"]
 
 
-def process_all(todo, work, workers, threads, chunk, meta_csv, log_ok, log_fail):
+def process_all(todo, work, workers, threads, chunk, meta_csv, log_ok, log_fail, device="cuda"):
     """Pipeline: convert (CPU pool) -> FastSurferVINN on a chunk of scans in one GPU process
     (models loaded once) -> N4 + stats (CPU pool). Conversion of the next chunk and stats of the
     previous chunk overlap with the GPU stage, which is the bottleneck. Scans whose segmentation
     turns out incomplete are re-queued for a second pass."""
     log.info("swept %d incomplete segmentations", sweep_incomplete(work))
     rows = todo.to_dict("records")
-    requeue = _run_chunks(rows, work, workers, threads, chunk, meta_csv, log_ok, log_fail)
+    requeue = _run_chunks(rows, work, workers, threads, chunk, meta_csv, log_ok, log_fail, device)
     if requeue:
         log.info("second pass for %d re-queued scans", len(requeue))
-        left = _run_chunks(requeue, work, workers, threads, chunk, meta_csv, log_ok, log_fail)
+        left = _run_chunks(requeue, work, workers, threads, chunk, meta_csv, log_ok, log_fail, device)
         for r in left:
             log_fail(r, "segmentation still incomplete after re-run")
 
 
-def _run_chunks(rows, work, workers, threads, chunk, meta_csv, log_ok, log_fail):
+def _run_chunks(rows, work, workers, threads, chunk, meta_csv, log_ok, log_fail, device="cuda"):
     requeue = []
     chunks = [rows[i:i + chunk] for i in range(0, len(rows), chunk)]
     with ProcessPoolExecutor(max_workers=workers) as ex:
@@ -132,12 +132,12 @@ def _run_chunks(rows, work, workers, threads, chunk, meta_csv, log_ok, log_fail)
                     metas[image_id], _ = meta, niftis.append(meta["nifti"])
                 except Exception as e:
                     log_fail(r, e)
-            segmented = set(segment_batch(niftis, work / "fastsurfer", threads=threads))
+            segmented = set(segment_batch(niftis, work / "fastsurfer", threads=threads, device=device))
             done_before = {Path(n).name.removesuffix("_T1w.nii.gz") for n in niftis} - segmented
             for image_id in done_before:  # not segmented by the batch: already done earlier, or failed -> retry alone
                 if not (work / "fastsurfer" / image_id / "mri" / "aparc.DKTatlas+aseg.deep.mgz").exists():
                     try:
-                        retry_one(by_id[image_id], work, threads)
+                        retry_one(by_id[image_id], work, threads, device)
                     except Exception as e:
                         log_fail(by_id[image_id], e)
                         continue
@@ -179,6 +179,7 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--threads", type=int, default=4, help="CPU threads per FastSurfer worker")
     ap.add_argument("--chunk", type=int, default=20, help="scans per GPU inference process (models loaded once per chunk)")
+    ap.add_argument("--device", default="cuda", help="FastSurfer inference device, passed to its --device (e.g. cuda, cuda:1, cpu; cpu is far slower)")
     ap.add_argument("--ida-metadata", nargs="*", default=(), help="LONI 'Advanced Download' metadata zip(s) (idaxs XML)")
     ap.add_argument("--loni-csv", nargs="*", default=(), help="LONI collection CSV(s) downloaded with the images (visit, group, age)")
     ap.add_argument("--priority", help="text file of PATNOs to process first")
@@ -212,7 +213,7 @@ def main(argv=None):
             fail_fh.write(f'{row["patno"]},{row["image_id"]},"{str(e)[:300]}"\n')
             fail_fh.flush()
 
-        process_all(todo, work, a.workers, a.threads, a.chunk, meta_csv, log_ok, log_fail)
+        process_all(todo, work, a.workers, a.threads, a.chunk, meta_csv, log_ok, log_fail, device=a.device)
         fail_fh.close()
 
     if meta_csv.exists():

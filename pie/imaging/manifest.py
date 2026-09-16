@@ -38,8 +38,11 @@ def is_dwi_feature(column):
         re.fullmatch(r"nst_(?:afd|seed_success|fa|md)_[lr]", c))
 
 
+DEFAULT_DIRS = {"dat": "datscan_full"}     # modality -> directory under the derived root when it is not the modality name
+
+
 def _modality_dir(derived, modality, modality_dirs):
-    return Path((modality_dirs or {}).get(modality, derived / modality))
+    return Path((modality_dirs or {}).get(modality, derived / DEFAULT_DIRS.get(modality, modality)))
 
 
 def _baseline_idps(derived):
@@ -99,7 +102,7 @@ def build_manifest(derived_dir, modality_dirs=None):
     man = pd.DataFrame({"PATNO": idps["PATNO"].astype(int), "t1_image_id": idps["IMAGEID"].astype(str), "t1_date": idps["SCAN_DATE"]})
     subjects = set(man["PATNO"])
     # DaTscan (PIE SBRs): date from the SPECT index member path
-    dat = _read(derived / "datscan_full" / "datscan_sbr.csv")
+    dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv")
     if dat is not None:
         dat["dat_qc_pass"] = QC["dat"](dat)
         spect_idx = derived / "spect_index.csv"
@@ -110,7 +113,9 @@ def build_manifest(derived_dir, modality_dirs=None):
             dates = si.drop_duplicates("image_id").set_index("image_id")["date"].to_dict()
         dat["dat_date"] = pd.to_datetime(dat["image_id"].astype(str).map(dates), errors="coerce")
         dat["dat_batch"] = _vendor(dat["hdr_manufacturer"]) + "_" + dat["hdr_model"].astype(str).str[:12]
-        man = man.merge(dat[["patno", "image_id", "dat_date", "dat_batch", "dat_qc_pass"]].rename(columns={"patno": "PATNO", "image_id": "dat_image_id"}), on="PATNO", how="left")
+        extra = ["fs_image_id"] if "fs_image_id" in dat else []     # the T1 the stored SPECT transform refers to
+        man = man.merge(dat[["patno", "image_id", "dat_date", "dat_batch", "dat_qc_pass"] + extra]
+                        .rename(columns={"patno": "PATNO", "image_id": "dat_image_id", "fs_image_id": "dat_fs_image_id"}), on="PATNO", how="left")
     # DWI
     dwi_dir = _modality_dir(derived, "dwi", modality_dirs)
     dwi = _read(dwi_dir / "dwi_features.csv")
@@ -125,7 +130,7 @@ def build_manifest(derived_dir, modality_dirs=None):
     if nmf is not None:
         nmf["nm_qc_pass"] = QC["nm"](nmf)
         nmf["nm_batch"] = _vendor(nmf["manufacturer"]) + "_" + nmf["voxel_mm"].astype(str)
-        extra = _modality_metadata(nmf, "nm", nm_dir / "nm_index.csv", subjects, "nm")
+        extra = _modality_metadata(nmf, "nm", nm_dir / "nm_index.csv", subjects, "selected")
         man = man.merge(nmf[["patno", "nm_date", "nm_batch", "nm_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     # FLAIR
     flair_dir = _modality_dir(derived, "flair", modality_dirs)
@@ -133,7 +138,7 @@ def build_manifest(derived_dir, modality_dirs=None):
     if fl is not None:
         fl["flair_qc_pass"] = QC["flair"](fl)
         fl["flair_batch"] = _vendor(fl["manufacturer"]) + "_" + np.where(fl["flair_3d"].astype(bool), "3D", "2D")
-        extra = _modality_metadata(fl, "flair", flair_dir / "flair_index.csv", subjects, "flair")
+        extra = _modality_metadata(fl, "flair", flair_dir / "flair_index.csv", subjects, "selected")
         man = man.merge(fl[["patno", "flair_date", "flair_batch", "flair_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     for mod in ("dat", "dwi", "nm", "flair"):
         if f"{mod}_date" in man:
@@ -156,7 +161,7 @@ def assemble_features(derived_dir, modality_dirs=None):
     idps.loc[~idps["t1_qc_pass"], [c for c in idps.columns if c not in ("PATNO", "IMAGEID", "t1_qc_pass")]] = np.nan
     df = man.merge(idps, on="PATNO", how="left")
     blocks = {}
-    dat = _read(derived / "datscan_full" / "datscan_sbr.csv")
+    dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv")
     if dat is not None:
         cols = [c for c in DAT_COLS if c in dat and c not in ("image_id", "hdr_manufacturer", "hdr_model", "hdr_scale_fit", "reg_metric")]
         blocks["dat"] = dat[["patno"] + cols].rename(columns={c: f"dat_{c}" for c in cols})

@@ -8,7 +8,7 @@ Unlike the atlas pipeline in ``pie.imaging.nm`` (affine MNI mapping + a T1/T2-de
 neuromelanin band itself and the reference sits in the dark peduncle, both several millimetres from the band.
 
 Stages (each resumable, run in order):
-    syn        cache an ANTs SyN T1(brain) -> MNI152 1 mm warp per FastSurfer subject (~2 min each; reused by dwi_refine)
+    syn        cache an ANTs SyN T1(brain) -> MNI152 1 mm warp per FastSurfer subject (~2 min each)
     normalize  slab -> T1 (rigid, SimpleITK) -> MNI midbrain box (SyN), saved as <work>/<patno>/nm_mni.nii.gz
     template   mean of the intensity-normalised slabs -> <work>/template/nm_template.nii.gz + sn / crus masks
     features   per subject: crus mode, CNR map, SN mean CNR (+ anterior/posterior/medial/lateral quadrants) ->
@@ -174,7 +174,8 @@ def _normalize_job(args):
 
 
 def sn_prior():
-    """CIT168 SNc + SNr (Pauli 2017, nilearn) resampled (nearest) onto the MNI box: the search prior for the masks."""
+    """CIT168 SNc + SNr (the bundled MNI2009c atlas, ``dwi.pauli_atlas``) resampled (nearest) onto the MNI box: the
+    search prior for the masks."""
     from nilearn.image import resample_to_img
 
     from .dwi import pauli_atlas
@@ -213,7 +214,8 @@ def _mode(v, bins=64):
 
 def build_template(work_dir, patnos, min_frac=0.5):
     """Voxel-wise mean of the intensity-normalised MNI slabs (each divided by its own median inside the SN prior
-    dilated 10 mm); voxels with data in fewer than ``min_frac`` of the subjects are zero. Returns (template, count)."""
+    dilated 10 mm); voxels with data in fewer than ``min_frac`` of the subjects are zero. Returns (template, count,
+    number of subjects used)."""
     prior = _dilate_mm(sn_prior(), 10.0)
     acc = np.zeros(BOX_SHAPE, np.float64)
     cnt = np.zeros(BOX_SHAPE, np.int32)

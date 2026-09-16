@@ -16,8 +16,10 @@ import warnings
 import json
 import joblib
 
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.base import clone
+from sklearn.model_selection import train_test_split, StratifiedKFold, StratifiedGroupKFold
 from sklearn.preprocessing import LabelEncoder
+from sklearn.utils.multiclass import type_of_target
 from sklearn.metrics import (
     accuracy_score, roc_auc_score, recall_score, precision_score,
     f1_score, log_loss, matthews_corrcoef, cohen_kappa_score,
@@ -30,7 +32,6 @@ try:
     import endgame as eg
     from endgame.automl import TabularPredictor
     from endgame.quick import classify as quick_classify, compare as quick_compare
-    from endgame.tune import OptunaOptimizer
     from endgame.explain import explain as eg_explain
     from endgame.ensemble import SuperLearner
     from endgame.calibration import ConformalClassifier
@@ -70,6 +71,11 @@ def _score(y_true, y_pred, y_proba=None, metric_name="Accuracy"):
         raise ValueError(f"Unknown metric: {metric_name}")
     if metric_name == "AUC" and y_proba is not None:
         try:
+            y_proba = np.asarray(y_proba)
+            # Binary: roc_auc_score wants the positive-class column. Given both
+            # columns it raises, and the AUC used to come out NaN.
+            if y_proba.ndim == 2 and y_proba.shape[1] == 2:
+                y_proba = y_proba[:, 1]
             return fn(y_true, y_proba)
         except Exception:
             return np.nan
@@ -85,6 +91,30 @@ def _compute_metrics(y_true, y_pred, y_proba=None):
         except Exception:
             results[name] = np.nan
     return results
+
+
+def check_classification_target(y: pd.Series) -> None:
+    """Raise ``ValueError`` if *y* is continuous: PIE's models are classifiers and
+    regression is out of scope. Integer-valued targets (0/1, 1/2/3, ...) are classes."""
+    if type_of_target(y.dropna()).startswith("continuous"):
+        raise ValueError(
+            f"Target '{y.name}' is continuous ({y.nunique()} distinct values). PIE "
+            "classification needs class labels: map or bin the target into classes first."
+        )
+
+
+def split_train_test(y: pd.Series, groups=None, test_size: float = 0.2, random_state: int = 123):
+    """Positional ``(train, test)`` row indices of a stratified split.
+
+    With *groups* (e.g. PATNO) no group is on both sides: one participant's visits are
+    strongly correlated, so a row-level split rewards recognising the person.
+    """
+    positions = np.arange(len(y))
+    if groups is None:
+        return train_test_split(positions, test_size=test_size, stratify=y, random_state=random_state)
+    splitter = StratifiedGroupKFold(n_splits=max(2, round(1 / test_size)), shuffle=True,
+                                    random_state=random_state)
+    return next(splitter.split(positions, y, groups))
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +285,10 @@ def _info_get(info, key: str, default=""):
 # every worker — on wide PPMI feature matrices that quickly exhausts RAM.
 _MAX_MODEL_THREADS = 2
 
-
-class _SkipEndgame(Exception):
-    """Internal control-flow signal: skip the endgame fast-path and fall
-    through to the budgeted manual CV loop. Distinct from a real failure so
-    we don't log it as 'endgame unavailable'."""
+# endgame's GBDT wrappers take the thread count through **kwargs, so the signature
+# check in _inject_thread_cap cannot see it. Uncapped, the xgb wrapper did not finish a
+# single fit on a 240-row table in 15 minutes; capped, it takes seconds.
+_KWARGS_THREAD_PARAM = {"XGBWrapper": "n_jobs", "LGBMWrapper": "n_jobs", "CatBoostWrapper": "thread_count"}
 
 
 def _inject_thread_cap(cls, defaults: dict) -> dict:
@@ -273,19 +302,21 @@ def _inject_thread_cap(cls, defaults: dict) -> dict:
       ConvergenceWarning and ships a half-trained model.
     * Quiet CatBoost, which is otherwise extremely chatty.
 
-    Caller kwargs always win — we only fill values the caller didn't set.
+    Caller values win, except ``None``: for the thread count ``None`` means "all
+    cores" to the underlying library (endgame's registry sets ``n_jobs=None`` for xgb),
+    so it is capped like a missing value.
     """
     import inspect
 
+    thread_keys = [_KWARGS_THREAD_PARAM[cls.__name__]] if cls.__name__ in _KWARGS_THREAD_PARAM else []
     try:
         params = inspect.signature(cls.__init__).parameters
     except (TypeError, ValueError):
-        return defaults
-
-    if "n_jobs" in params and "n_jobs" not in defaults:
-        defaults["n_jobs"] = _MAX_MODEL_THREADS
-    if "thread_count" in params and "thread_count" not in defaults:
-        defaults["thread_count"] = _MAX_MODEL_THREADS
+        params = {}
+    thread_keys += [k for k in ("n_jobs", "thread_count") if k in params]
+    for key in thread_keys:
+        if defaults.get(key) is None:
+            defaults[key] = _MAX_MODEL_THREADS
 
     # Bump iteration budgets for iterative linear solvers. sklearn's defaults
     # (100 for LR, 1000 for Ridge/SGD) are tuned for tiny demos.
@@ -320,12 +351,14 @@ def _instantiate_model(model_id: str, task_type: str = "classification", **kwarg
     mod = importlib.import_module(_info_get(info, "module"))
     cls = getattr(mod, _info_get(info, "class"))
 
-    # Use endgame default_params as base, let caller kwargs override
+    # Use endgame default_params as base, let caller kwargs override. A registry
+    # default of -1 ("all cores", set for rf and extra_trees) is not the caller's
+    # choice, so it is reset to None and capped like any unset thread count.
     defaults = {}
     if not isinstance(info, dict):
         dp = getattr(info, "default_params", None)
         if isinstance(dp, dict):
-            defaults = dp.copy()
+            defaults = {k: (None if k in ("n_jobs", "thread_count") and v == -1 else v) for k, v in dp.items()}
     defaults.update(kwargs)
     defaults = _inject_thread_cap(cls, defaults)
     return cls(**defaults)
@@ -371,6 +404,7 @@ class Classifier:
         self._random_state: int = 123
         self._predictor: Optional[Any] = None  # TabularPredictor when using auto_ml
         self._task_type: str = "classification"
+        self._groups_train: Optional[np.ndarray] = None  # CV groups (fold_groups column)
 
     # ------------------------------------------------------------------
     # Backward-compatible API
@@ -409,7 +443,11 @@ class Classifier:
         """
         Setup the classification experiment.
 
-        Stores data, splits train/test, records configuration.
+        Stores data, splits train/test, records configuration. ``fold_groups`` names a
+        column (e.g. ``PATNO``) whose values must never be split: it groups the
+        train/test split (when ``test_data`` is None) and every CV fold, and is not
+        used as a feature. The target must hold class labels; a continuous target
+        raises ``ValueError``.
         """
         logger.info("Setting up endgame classification experiment...")
 
@@ -438,6 +476,7 @@ class Classifier:
             "fold_strategy": fold_strategy,
             "fold": fold,
             "fold_shuffle": fold_shuffle,
+            "fold_groups": fold_groups,
         }
         if test_data is None:
             self.setup_params["train_size"] = train_size
@@ -447,15 +486,19 @@ class Classifier:
         self._random_state = session_id
 
         ignore = set(ignore_features or [])
+        if fold_groups is not None:
+            ignore.add(fold_groups)  # a grouping key is never a feature
 
         if test_data is not None:
-            train_df = data
-            test_df = test_data
+            train_df = data.dropna(subset=[target])
+            test_df = test_data.dropna(subset=[target])
         else:
-            train_df, test_df = train_test_split(
-                data, train_size=train_size, random_state=session_id,
-                stratify=data[target],
-            )
+            data = data.dropna(subset=[target])
+            groups = data[fold_groups] if fold_groups is not None else None
+            train_idx, test_idx = split_train_test(data[target], groups, test_size=1 - train_size,
+                                                   random_state=session_id)
+            train_df, test_df = data.iloc[train_idx], data.iloc[test_idx]
+        self._groups_train = train_df[fold_groups].to_numpy() if fold_groups is not None else None
 
         feature_cols = [c for c in train_df.columns if c != target and c not in ignore]
 
@@ -488,11 +531,11 @@ class Classifier:
                 if isinstance(df[col].dtype, pd.CategoricalDtype):
                     df[col] = df[col].astype(df[col].cat.categories.dtype)
 
-        # Encode target if needed for metric computation
-        is_numeric = np.issubdtype(self._y_train.dtype, np.number)
-        if not is_numeric:
-            self._label_encoder = LabelEncoder()
-            self._label_encoder.fit(pd.concat([self._y_train, self._y_test]).unique().astype(str))
+        all_y = pd.concat([self._y_train, self._y_test])
+        check_classification_target(all_y)
+        # Always encode: every model sees classes 0..k-1 (XGBoost rejects e.g. a 1/2
+        # target), and predictions decode back to the original labels and dtype.
+        self._label_encoder = LabelEncoder().fit(all_y)
 
         logger.info(
             f"Experiment setup complete. "
@@ -525,8 +568,9 @@ class Classifier:
         """
         Compare multiple classification models and return the best one(s).
 
-        Uses endgame's ``quick.compare()`` when available, otherwise loops
-        over the model catalog with cross-validated scoring.
+        Cross-validates every selected model in a loop that honours ``include``,
+        ``exclude``, ``turbo``, ``budget_time`` and ``fold_groups``. (endgame's own
+        comparison, which ignores all of those, is ``quick_compare_models``.)
         """
         self._require_setup()
 
@@ -562,73 +606,16 @@ class Classifier:
                 print(f"Time budget: {budget_time} minutes")
             print("=" * 60 + "\n")
 
-        # Try endgame quick.compare first — but ONLY if (a) endgame is
-        # installed, AND (b) we either have no time budget or the installed
-        # signature exposes a way to honour one.  Older endgame releases run
-        # `compare()` to completion regardless of how long it takes; on a wide
-        # PPMI frame that means hours of CPU and gigabytes of resident worker
-        # copies even when the caller asked for a 30-minute budget.  In that
-        # case we skip straight to the manual loop, which respects the
-        # deadline check at the top of every model iteration.
-        if ENDGAME_AVAILABLE:
-            try:
-                import inspect as _inspect
-                try:
-                    qc_params = set(_inspect.signature(quick_compare).parameters)
-                except (TypeError, ValueError):
-                    qc_params = set()
-
-                budget_supported = bool(qc_params & {"time_limit", "timeout", "max_time"})
-
-                if budget_time and not budget_supported:
-                    logger.info(
-                        "endgame quick.compare doesn't support a time budget in this release; "
-                        "using the budgeted manual loop instead."
-                    )
-                    raise _SkipEndgame()
-
-                candidate_kwargs = {
-                    "preset": "default",
-                    "cv_folds": n_folds,
-                    "cv": n_folds,  # alias for older releases
-                    "metric": sort.lower(),
-                    "time_limit": int(budget_time * 60) if budget_time else None,
-                    "timeout": int(budget_time * 60) if budget_time else None,
-                    "max_time": int(budget_time * 60) if budget_time else None,
-                    "verbose": verbose,
-                }
-                accepted = {
-                    k: v for k, v in candidate_kwargs.items()
-                    if (not qc_params or k in qc_params) and v is not None
-                }
-
-                result = quick_compare(self._X_train, self._y_train, **accepted)
-                self.comparison_results = pd.DataFrame(result.leaderboard).round(round)
-                self.best_model = result.best_model
-
-                # Store all result models for later use
-                if hasattr(result, "results"):
-                    for mr in result.results:
-                        self.models_dict[mr.name] = mr.model
-
-                if n_select > 1 and hasattr(result, "results"):
-                    top = [mr.model for mr in result.results[:n_select]]
-                    self.best_model = top[0]
-                    return top
-                return self.best_model
-            except _SkipEndgame:
-                pass
-            except Exception as exc:
-                logger.info(f"endgame quick.compare unavailable ({exc}), falling back to manual loop")
-
-        # Manual fallback: loop over catalog, cross-validate each.
+        # Loop over the selected models, cross-validating each. (An endgame
+        # quick.compare fast path used to run first when no budget was set; it
+        # ignored include/exclude/turbo and the thread cap, so it was removed.)
         #
         # Memory note: only CV metrics are retained per model. Full-data refits
         # happen exactly once at the end, for the winner(s) — not per model.
         import gc as _gc
         import time as _time
         deadline = _time.time() + budget_time * 60 if budget_time else float("inf")
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=self._random_state)
+        skf = self._cv(n_folds)
 
         y_enc = self._encode_target(self._y_train)
         rows: List[Dict[str, Any]] = []
@@ -704,7 +691,7 @@ class Classifier:
                 })
 
                 fold_metrics: List[Dict[str, float]] = []
-                for fold_idx, (train_idx, val_idx) in enumerate(skf.split(self._X_train, y_enc)):
+                for fold_idx, (train_idx, val_idx) in enumerate(skf.split(self._X_train, y_enc, self._groups_train)):
                     _emit({
                         "phase": "fold_start",
                         "model_id": model_id,
@@ -873,8 +860,10 @@ class Classifier:
         **kwargs,
     ) -> Any:
         """
-        Tune hyperparameters of a model using Optuna (via endgame) or
-        sklearn's RandomizedSearchCV as fallback.
+        Tune hyperparameters with sklearn's RandomizedSearchCV over ``custom_grid``
+        or a small built-in grid, using the experiment's (grouped) CV folds. With
+        ``choose_better`` the original model is kept unless the tuned one scores
+        higher in the same CV.
         """
         self._require_setup()
 
@@ -885,27 +874,10 @@ class Classifier:
 
         logger.info(f"Tuning model: {type(estimator).__name__}")
 
-        # Try endgame OptunaOptimizer
-        if ENDGAME_AVAILABLE:
-            try:
-                optimizer = OptunaOptimizer(
-                    estimator=estimator,
-                    X=self._X_train,
-                    y=self._encode_target(self._y_train),
-                    cv=fold or self._fold,
-                    metric=optimize.lower(),
-                    n_trials=n_iter,
-                    random_state=self._random_state,
-                )
-                tuned = optimizer.optimize()
-                self.tuned_model = tuned
-                logger.info("Endgame Optuna tuning completed.")
-                return tuned
-            except Exception as exc:
-                logger.info(f"Endgame tuning unavailable ({exc}), falling back to RandomizedSearchCV")
-
-        # Fallback: sklearn RandomizedSearchCV
-        from sklearn.model_selection import RandomizedSearchCV
+        # (An endgame OptunaOptimizer branch used to run first; it was called with
+        # arguments OptunaOptimizer does not take, failed every time, and was removed.
+        # RandomizedSearchCV below is what always did the tuning.)
+        from sklearn.model_selection import RandomizedSearchCV, cross_val_score
 
         param_distributions = custom_grid or self._default_param_grid(estimator)
         if not param_distributions:
@@ -913,21 +885,32 @@ class Classifier:
             self.tuned_model = estimator
             return estimator
 
+        cv = self._cv(fold or self._fold)
+        scoring = "accuracy" if optimize == "Accuracy" else optimize.lower()
+        y_enc = self._encode_target(self._y_train)
         search = RandomizedSearchCV(
             estimator=estimator,
             param_distributions=param_distributions,
             n_iter=n_iter,
-            cv=StratifiedKFold(n_splits=fold or self._fold, shuffle=True, random_state=self._random_state),
-            scoring="accuracy" if optimize == "Accuracy" else optimize.lower(),
+            cv=cv,
+            scoring=scoring,
             random_state=self._random_state,
             # Capped (not -1): loky workers each receive a copy of X_train, so
             # n_jobs * sizeof(X_train) is the real RAM ceiling here.
             n_jobs=_MAX_MODEL_THREADS,
             verbose=1 if verbose else 0,
         )
-        search.fit(self._X_train, self._encode_target(self._y_train))
+        search.fit(self._X_train, y_enc, groups=self._groups_train)
         self.tuned_model = search.best_estimator_
         logger.info(f"Tuning complete. Best params: {search.best_params_}")
+
+        if choose_better:
+            baseline = cross_val_score(clone(estimator), self._X_train, y_enc, cv=cv, scoring=scoring,
+                                       groups=self._groups_train, n_jobs=_MAX_MODEL_THREADS).mean()
+            if baseline >= search.best_score_:
+                logger.info(f"Tuned CV {scoring} {search.best_score_:.4f} does not beat the original "
+                            f"({baseline:.4f}); keeping the original model.")
+                self.tuned_model = estimator
 
         if return_tuner:
             return self.tuned_model, search
@@ -990,6 +973,28 @@ class Classifier:
         if verbose:
             logger.info(f"Predictions generated: {result_df.shape}")
         return result_df
+
+    def evaluate_model(self, estimator: Optional[Any] = None) -> Dict[str, float]:
+        """Leaderboard metrics for a fitted model, scored once on the held-out test split.
+        Defaults to ``tuned_model``, then ``best_model``."""
+        self._require_setup()
+        if estimator is None:
+            estimator = self.tuned_model if self.tuned_model is not None else self.best_model
+        if estimator is None:
+            raise ValueError("No model to evaluate.")
+        proba = None
+        if hasattr(estimator, "predict_proba"):
+            try:
+                proba = estimator.predict_proba(self._X_test)
+            except Exception:
+                pass
+        return _compute_metrics(self._encode_target(self._y_test), estimator.predict(self._X_test), proba)
+
+    def _cv(self, n_splits: int):
+        """Stratified k-fold; grouped (no group in two folds) when setup had ``fold_groups``."""
+        if self._groups_train is not None:
+            return StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=self._random_state)
+        return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self._random_state)
 
     def finalize_model(self, estimator: Optional[Any] = None) -> Any:
         """Refit the model on the full dataset (train + test)."""
@@ -1404,7 +1409,7 @@ class Classifier:
     def _encode_target(self, y: pd.Series) -> np.ndarray:
         """Encode target labels to integers if a LabelEncoder is fitted."""
         if self._label_encoder is not None:
-            return self._label_encoder.transform(y.astype(str))
+            return self._label_encoder.transform(y)
         return y.values
 
     @staticmethod

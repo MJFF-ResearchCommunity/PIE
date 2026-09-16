@@ -39,3 +39,19 @@ def test_montage_explicit_world_grids(tmp_path):
     nib.save(nib.Nifti1Image(np.zeros_like(data), affine), overlay)
     with pytest.raises(ValueError, match='Empty montage'):
         spatial_montage(image, {}, output, mask=overlay)
+
+
+def test_montage_titles_give_world_position_of_oblique_slice_centre(tmp_path, monkeypatch):
+    import matplotlib.axes
+    titles = []
+    monkeypatch.setattr(matplotlib.axes.Axes, 'set_title', lambda self, text, **kw: titles.append(text))
+    angle = np.deg2rad(30)   # rotation about x: axial voxel slices tilt in world z
+    affine = np.array([[2, 0, 0, -20], [0, 2 * np.cos(angle), -2 * np.sin(angle), -10],
+                       [0, 2 * np.sin(angle), 2 * np.cos(angle), 5], [0, 0, 0, 1]])
+    image = tmp_path / 'oblique.nii.gz'
+    nib.save(nib.Nifti1Image(np.ones((20, 20, 20), np.float32), affine), image)
+    spatial_montage(image, {}, tmp_path / 'review.png')
+    canonical = nib.as_closest_canonical(nib.load(image)).affine
+    # Middle axial cut is voxel k=10; the displayed support centre is (9.5, 9.5).
+    expected = nib.affines.apply_affine(canonical, [9.5, 9.5, 10])[2]
+    assert titles[2] == f'z = {expected:.0f} mm'

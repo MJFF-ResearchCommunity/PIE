@@ -9,6 +9,7 @@ generating reports at each stage and a final summary report.
 import os
 import sys
 import logging
+import functools
 import json
 import argparse
 from pathlib import Path
@@ -25,13 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Import PIE-clean modules
 from pie_clean import DataLoader
-from pie_clean import ALL_MODALITIES
+from pie_clean import ALL_MODALITIES, KNOWN_MODALITIES
 
 # Import PIE modules
 from pie.data_reducer import DataReducer
 from pie.feature_engineer import FeatureEngineer
 from pie.classification_report import generate_report as run_classification_step
-from pie.feature_selector import FeatureSelector
+from pie.classifier import check_classification_target, split_train_test
+from pie.feature_selector import FeatureSelector, SUPPORTED_METHODS
 from pie.reporting import (
     generate_data_reduction_html_report,
     generate_feature_engineering_report_html,
@@ -39,10 +41,7 @@ from pie.reporting import (
 )
 
 # Imports for feature selection step
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.feature_selection import VarianceThreshold, SelectFdr, f_classif
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 # Configure logging
 logging.basicConfig(
@@ -58,6 +57,7 @@ logger = logging.getLogger("PIE.pipeline")
 # --- TIMING DECORATOR ---
 def timing_decorator(func):
     """A simple decorator to log the execution time of a function."""
+    @functools.wraps(func)   # keep the real name and signature visible to help() and notebooks
     def wrapper(*args, **kwargs):
         logger.info(f"--- Timing: Starting '{func.__name__}' ---")
         start_time = time.time()
@@ -133,12 +133,14 @@ def _generate_feature_selection_report_html(report_data, output_html_path):
 # --- PIPELINE STEPS ---
 
 @timing_decorator
-def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_path: Path, modalities: Optional[List[str]] = None, imaging_features: Optional[str] = None) -> dict:
+def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_path: Path, modalities: Optional[List[str]] = None, imaging_features: Optional[str] = None, target_column: str = "COHORT") -> dict:
     """Loads, reduces, merges, and consolidates data.
 
     ``imaging_features`` is an optional CSV keyed by PATNO/EVENT_ID (e.g. the
     ``fastsurfer_idps.csv`` produced by ``pie.imaging.run``); it joins the tabular
-    modalities as the ``imaging`` modality.
+    modalities as the ``imaging`` modality, or as table ``idps`` of it when the
+    Imaging folder was loaded too. Rows without a valid COHORT are dropped only when
+    COHORT is the ``target_column``.
     """
     logger.info("Starting data loading and reduction step...")
     if not os.path.exists(data_dir):
@@ -149,7 +151,12 @@ def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_pa
     if imaging_features:
         img = pd.read_csv(imaging_features)
         img = img[[c for c in img.columns if c not in ("IMAGEID", "SCAN_DATE") and not img[c].dtype == object] + ["EVENT_ID"]]
-        data_dict["imaging"] = img
+        if isinstance(data_dict.get("imaging"), dict):
+            # The Imaging folder was loaded as a modality: add the IDPs as one more table
+            # rather than replacing its tables.
+            data_dict["imaging"]["idps"] = img
+        else:
+            data_dict["imaging"] = img
         logger.info(f"Added imaging features {img.shape} from {imaging_features}")
     initial_size_mb = _calculate_dict_size(data_dict)
     initial_summary = _get_dict_summary(data_dict)
@@ -163,9 +170,12 @@ def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_pa
     reduced_summary = _get_dict_summary(reduced_dict)
 
     merged_df = reducer.merge_reduced_data(reduced_dict, output_filename=None)
-    final_df = reducer.consolidate_cohort_columns(merged_df) if not merged_df.empty else pd.DataFrame()
+    # Rows without a valid cohort are only dropped when COHORT is what is being predicted.
+    final_df = (reducer.consolidate_cohort_columns(merged_df, keep_only_valid=(target_column == "COHORT"))
+                if not merged_df.empty else pd.DataFrame())
 
     if not final_df.empty:
+        Path(output_csv_path).parent.mkdir(parents=True, exist_ok=True)
         final_df.to_csv(output_csv_path, index=False)
         logger.info(f"Final reduced and consolidated data saved to: {output_csv_path}")
     else:
@@ -194,8 +204,8 @@ def run_data_reduction_step(data_dir: str, output_csv_path: Path, output_html_pa
     }
 
 @timing_decorator
-def run_feature_engineering_step(input_csv_path: str, output_csv_path: Path, output_html_path: Path) -> dict:
-    """Applies feature engineering to the reduced data."""
+def run_feature_engineering_step(input_csv_path: str, output_csv_path: Path, output_html_path: Path, target_column: str = "COHORT") -> dict:
+    """Applies feature engineering to the reduced data. The target column is never encoded or scaled."""
     logger.info("Starting feature engineering step...")
     if not os.path.exists(input_csv_path):
         logger.error(f"Input file not found: {input_csv_path}. Step cannot proceed.")
@@ -208,13 +218,14 @@ def run_feature_engineering_step(input_csv_path: str, output_csv_path: Path, out
         logger.warning("Input DataFrame is empty. Skipping feature engineering.")
         final_engineered_df = pd.DataFrame()
     else:
-        engineer = FeatureEngineer(df.copy())
+        engineer = FeatureEngineer(df.copy(), protected_columns=[target_column])
         engineer.one_hot_encode(auto_identify_threshold=20, max_categories_to_encode=25, min_frequency_for_category=0.01)
         engineer.scale_numeric_features(scaler_type='standard')
         final_engineered_df = engineer.get_dataframe()
         report_data.update(engineer.get_engineered_feature_summary())
     
     if not final_engineered_df.empty:
+        Path(output_csv_path).parent.mkdir(parents=True, exist_ok=True)
         final_engineered_df.to_csv(output_csv_path, index=False)
         logger.info(f"Engineered data saved to: {output_csv_path}")
     
@@ -242,79 +253,75 @@ def run_feature_selection_step(
     fs_param_value: float,
     leakage_features_path: Optional[str] = None
 ) -> dict:
-    """Performs feature selection on the engineered data."""
+    """Splits by participant, finishes preprocessing on the training rows only, and
+    selects features. The output CSVs hold the selected features, PATNO (so stage 4
+    can group its CV folds) and the target."""
     logger.info("Starting feature selection step...")
     if not os.path.exists(input_csv_path):
         logger.error(f"Input file not found: {input_csv_path}. Step cannot proceed.")
         raise FileNotFoundError(f"Input file not found: {input_csv_path}")
-        
+
     report_data = {'input_csv_path': input_csv_path, 'target_column': target_column}
     df = pd.read_csv(input_csv_path)
-    
-    # Remove leakage features before any other processing
+    report_data['raw_data_shape'] = df.shape
+
+    # Remove leakage features before any other processing. The target and the ID
+    # columns are handled explicitly below, so a leakage list naming them cannot drop them.
+    if leakage_features_path and not Path(leakage_features_path).exists():
+        logger.warning(f"Leakage features file not found: {leakage_features_path}. No leakage columns will be removed.")
     if leakage_features_path and Path(leakage_features_path).exists():
         with open(leakage_features_path, 'r') as f:
             leakage_features = {line.strip() for line in f if line.strip()}
-        
-        cols_to_drop = [col for col in df.columns if col in leakage_features]
-        
+
+        cols_to_drop = [col for col in df.columns
+                        if col in leakage_features and col not in (target_column, 'PATNO', 'EVENT_ID')]
+
         if cols_to_drop:
             df.drop(columns=cols_to_drop, inplace=True)
             logger.info(f"Removed {len(cols_to_drop)} leakage features specified in {leakage_features_path}.")
             report_data['leakage_features_removed'] = cols_to_drop
-    
+
     initial_rows = len(df)
     df.dropna(subset=[target_column], inplace=True)
+    df.reset_index(drop=True, inplace=True)
     report_data['rows_dropped_missing_target'] = initial_rows - len(df)
     report_data['clean_data_shape'] = df.shape
+    check_classification_target(df[target_column])
 
     if 'PATNO' in df.columns:
         df['PATNO'] = df['PATNO'].astype(int)
 
     id_cols = ['PATNO', 'EVENT_ID']
     feature_cols = [col for col in df.columns if col not in [target_column] + id_cols]
-    
-    X = df[feature_cols]
+
+    X = df[feature_cols].copy()
     y = df[target_column]
 
-    # --- Start of new code ---
-    # Handle pipe-separated values in object columns that are likely numeric
-    X = X.copy()  # Avoid SettingWithCopyWarning
-
-    # Define patterns for columns to skip. PATNO and EVENT_ID are already excluded
-    # from X, but this handles other potential ID/date-like columns.
+    # Handle pipe-separated values in object columns that are likely numeric.
+    # Skip ID/date-like columns (PATNO and EVENT_ID are already excluded from X).
     ID_DATE_PATTERNS = ['ID', 'DATE', 'TIME', 'PATNO', 'EVENT']
 
     for col in X.select_dtypes(include=['object']).columns:
-        # Skip if it looks like an ID or date column based on name patterns
         if any(pattern in col.upper() for pattern in ID_DATE_PATTERNS):
             logger.info(f"Skipping pipe-averaging for potential ID/date column: '{col}'")
             continue
 
-        if not X[col].astype(str).str.contains('\|', na=False).any():
+        if not X[col].astype(str).str.contains('|', regex=False, na=False).any():
             continue
 
-        # This column has pipes. Let's see if it's mostly numeric.
         logger.info(f"Column '{col}' contains pipe-separated values. Analyzing...")
 
         def average_pipe_values(val):
             if isinstance(val, str) and '|' in val:
                 try:
-                    # Split, convert to float, and average
                     return np.mean([float(x) for x in val.split('|')])
                 except (ValueError, TypeError):
-                    # If any part isn't a number, this value is not numeric
                     return np.nan
             return val
 
-        # Apply the averaging function to a temporary series
-        converted_series = X[col].apply(average_pipe_values)
-        
-        # Now, try to convert the entire series to a numeric type
-        numeric_series = pd.to_numeric(converted_series, errors='coerce')
+        numeric_series = pd.to_numeric(X[col].apply(average_pipe_values), errors='coerce')
 
-        # Heuristic: If over 90% of the original non-null values can be
-        # converted to a number, we'll treat the column as numeric.
+        # If over 90% of the original non-null values convert, treat the column as numeric.
         original_non_null_count = X[col].notna().sum()
         numeric_count = numeric_series.notna().sum()
 
@@ -327,9 +334,12 @@ def run_feature_selection_step(
                 f"({numeric_count}/{original_non_null_count} values converted). "
                 "Leaving as is."
             )
-    # --- End of new code ---
 
-    # Impute any remaining NaNs from feature engineering before selection
+    # One-hot columns from stage 2 are bool (they read back from CSV as bool); they are
+    # features, so make them 0/1 instead of letting the non-numeric filter drop them.
+    bool_cols = X.select_dtypes(include='bool').columns.tolist()
+    X[bool_cols] = X[bool_cols].astype(int)
+
     non_numeric_cols = X.select_dtypes(exclude=np.number).columns
     if len(non_numeric_cols) > 0:
         logger.warning(
@@ -337,34 +347,48 @@ def run_feature_selection_step(
         )
         X = X.drop(columns=non_numeric_cols)
 
-    # NOTE: Temporarily skipping SimpleImputer due to a shape mismatch error.
-    # This is a workaround and the imputation strategy should be revisited.
-    logger.warning("Temporarily using fillna(0) instead of SimpleImputer.")
-    X_imputed = X.fillna(0)
-    
+    # Split by participant: one person's visits must not sit on both sides of the split.
+    groups = df['PATNO'] if 'PATNO' in df.columns else None
+    train_idx, test_idx = split_train_test(y, groups, test_size=0.2, random_state=42)
+    X_train, X_test = X.iloc[train_idx].copy(), X.iloc[test_idx].copy()
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    # Stage 2 standardised every numeric column on all rows. z-scoring is affine, so
+    # re-standardising on training statistics gives exactly the train-only fit and removes
+    # the test rows' influence. 0 is then the training mean, so the 0-fill that follows is
+    # train-mean imputation.
+    continuous = [c for c in X_train.columns if c not in bool_cols]
+    if continuous:
+        scaler = StandardScaler().fit(X_train[continuous])
+        X_train[continuous] = scaler.transform(X_train[continuous])
+        X_test[continuous] = scaler.transform(X_test[continuous])
+    X_train = X_train.fillna(0)
+    X_test = X_test.fillna(0)
+
     # Label encode the target for the selector
-    le = LabelEncoder()
-    y_encoded = le.fit_transform(y)
-
-    X_train, X_test, y_train, y_test, y_train_encoded, _ = train_test_split(
-        X_imputed, y, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
-    )
-
+    le = LabelEncoder().fit(y)
     selector = FeatureSelector(
         method=fs_method,
         task_type='classification',
-        k_or_frac=fs_param_value if fs_method == 'k_best' else None,
+        # fs_param is the fraction for every fraction-based method (k_best, rfe, mrmr, relief)
+        k_or_frac=fs_param_value if fs_method != 'fdr' else 0.5,
         alpha_fdr=fs_param_value if fs_method == 'fdr' else 0.05
     )
-    
-    selector.fit(X_train, y_train_encoded)
+
+    selector.fit(X_train, le.transform(y_train))
     X_train_final = selector.transform(X_train)
     X_test_final = selector.transform(X_test)
 
-    # Combine selected features with the original target y
-    train_df = pd.concat([X_train_final.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
-    test_df = pd.concat([X_test_final.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1)
+    def _assemble(X_sel, idx, y_part):
+        parts = [X_sel.reset_index(drop=True)]
+        if groups is not None:
+            parts.append(groups.iloc[idx].reset_index(drop=True))
+        return pd.concat(parts + [y_part.reset_index(drop=True)], axis=1)
 
+    train_df = _assemble(X_train_final, train_idx, y_train)
+    test_df = _assemble(X_test_final, test_idx, y_test)
+
+    Path(train_csv_path).parent.mkdir(parents=True, exist_ok=True)
     train_df.to_csv(train_csv_path, index=False)
     test_df.to_csv(test_csv_path, index=False)
     logger.info(f"Selected train/test data saved to {train_csv_path} and {test_csv_path}")
@@ -522,7 +546,8 @@ def run_pipeline(
             output_csv_path=reduced_csv,
             output_html_path=output_path / "data_reduction_report.html",
             modalities=modalities if modalities else ALL_MODALITIES,
-            imaging_features=imaging_features
+            imaging_features=imaging_features,
+            target_column=target_column
         )
     
     # --- 2. Feature Engineering ---
@@ -530,13 +555,13 @@ def run_pipeline(
     logger.info("--- STEP 2: FEATURE ENGINEERING ---")
     logger.info("="*80)
     if not skip_to_step or skip_to_step in ['reduction', 'engineering']:
-        if not reduced_csv.exists():
-            logger.error(f"{reduced_csv} not found. Cannot run feature engineering. Please run the reduction step first.")
-            return
+        if not reduced_csv.exists():  # raise, not return: a missing stage input is a failed run (CLI exits non-zero)
+            raise FileNotFoundError(f"{reduced_csv} not found. Cannot run feature engineering. Please run the reduction step first.")
         pipeline_report_data['feature_engineering'] = run_feature_engineering_step(
             str(reduced_csv),
             output_csv_path=engineered_csv,
-            output_html_path=output_path / "feature_engineering_report.html"
+            output_html_path=output_path / "feature_engineering_report.html",
+            target_column=target_column
         )
 
     # --- 3. Feature Selection ---
@@ -545,8 +570,7 @@ def run_pipeline(
     logger.info("="*80)
     if not skip_to_step or skip_to_step in ['reduction', 'engineering', 'selection']:
         if not engineered_csv.exists():
-            logger.error(f"{engineered_csv} not found. Cannot run feature selection. Please run the engineering step first.")
-            return
+            raise FileNotFoundError(f"{engineered_csv} not found. Cannot run feature selection. Please run the engineering step first.")
         pipeline_report_data['feature_selection'] = run_feature_selection_step(
             str(engineered_csv),
             train_csv_path=train_csv,
@@ -560,14 +584,15 @@ def run_pipeline(
 
     # --- 4. Classification ---
     if not train_csv.exists() or not test_csv.exists():
-        logger.error(f"Train/Test CSVs not found. Cannot run classification. Please run the full pipeline.")
-        return
-        
+        raise FileNotFoundError(f"{train_csv} or {test_csv} not found. Cannot run classification. Please run the selection step first.")
+
     logger.info("\n" + "="*80)
     logger.info("--- STEP 4: CLASSIFICATION ---")
     logger.info("="*80)
     classification_output_dir = output_path / "classification"
     exclude_features = []
+    if leakage_features_path and not Path(leakage_features_path).exists():
+        logger.warning(f"Leakage features file not found: {leakage_features_path}. No leakage columns will be removed.")
     if leakage_features_path and Path(leakage_features_path).exists():
         with open(leakage_features_path, 'r') as f:
             exclude_features = [line.strip() for line in f if line.strip()]
@@ -604,57 +629,68 @@ def run_pipeline(
     logger.info("--- PIE Pipeline Finished Successfully! ---")
 
 
+def parse_modalities(text: str) -> Optional[List[str]]:
+    """Parse ``--modalities``: comma, semicolon or space separated, case-insensitive.
+
+    Names outside KNOWN_MODALITIES (the five core modalities plus PIE-clean's extended
+    folders) are dropped with a warning. Returns None, meaning the five core
+    modalities, when nothing valid is left.
+    """
+    tokens = [t.lower() for t in re.split(r'[;,\s]+', text or '') if t]
+    unknown = [m for m in tokens if m not in KNOWN_MODALITIES]
+    if unknown:
+        logger.warning(f"Unknown modalities provided and will be ignored: {unknown}. Valid options: {KNOWN_MODALITIES}")
+    valid = [m for m in tokens if m in KNOWN_MODALITIES]
+    if tokens and not valid:
+        logger.warning("No valid modalities specified after filtering; defaulting to the core modalities.")
+    return valid or None
+
+
 if __name__ == "__main__":
+    logging.getLogger("PIE").propagate = False  # it has its own stdout handler; root's basicConfig one would repeat every line
     parser = argparse.ArgumentParser(description="Run the PIE Automated ML Pipeline.")
     parser.add_argument('--data-dir', type=str, default='./PPMI', help='Path to raw PPMI data directory.')
     parser.add_argument('--output-dir', type=str, default='output/pipeline_run', help='Directory to save all pipeline outputs and reports.')
     parser.add_argument('--target-column', type=str, default='COHORT', help='Name of the target variable.')
     parser.add_argument('--leakage-features-path', type=str, default='config/leakage_features.txt', help='Path to a file containing features to exclude to prevent data leakage.')
-    parser.add_argument('--modalities', type=str, default='', help='Comma/space-separated list of modalities to include. Default: all. Options: subject_characteristics, medical_history, motor_assessments, non_motor_assessments, biospecimen, study_enrollment, imaging, ppmi_online, remote_screening, found, roche_app')
+    parser.add_argument('--modalities', type=str, default='', help='Comma/space-separated list of modalities to include. Default: the five core modalities. Options: ' + ', '.join(KNOWN_MODALITIES))
     parser.add_argument('--imaging-features', type=str, default=None, help='Optional CSV of imaging-derived phenotypes keyed by PATNO/EVENT_ID (see pie/imaging/run.py) to add as the "imaging" modality.')
     
     # Feature Selection Params
-    parser.add_argument('--fs-method', type=str, default='fdr', help="Feature selection method ('fdr' or 'k_best').")
-    parser.add_argument('--fs-param', type=float, default=0.05, help="Parameter for the FS method (alpha for 'fdr', k-fraction for 'k_best').")
+    parser.add_argument('--fs-method', type=str, default='fdr', choices=list(SUPPORTED_METHODS), help="Feature selection method (see pie/feature_selector.py).")
+    parser.add_argument('--fs-param', type=float, default=0.05, help="FDR alpha for 'fdr'; fraction of features kept for k_best, rfe, mrmr and relief.")
 
     # Classification Params
-    parser.add_argument('--n-models', type=int, default=5, help='Number of models to compare in classification.')
+    parser.add_argument('--n-models', type=int, default=5, help='How many top-ranked models to refit on the full training split; the comparison always runs the whole default model set.')
     parser.add_argument('--tune', action='store_true', help='Tune the best model.')
     parser.add_argument('--no-plots', action='store_false', dest='plots', help='Disable plot generation in classification.')
-    parser.add_argument('--budget', type=float, default=30.0, help='Time budget in minutes for model comparison.')
+    parser.add_argument('--budget', type=float, default=30.0, help='Time budget in minutes for model comparison; checked before each model starts, so a model already fitting is not interrupted.')
 
     # Pipeline Control
     parser.add_argument('--skip-to', type=str, choices=['reduction', 'engineering', 'selection', 'classification'], help='Skip to a specific step of the pipeline.')
 
     args = parser.parse_args()
 
-    # Normalize modalities (case-insensitive, comma/space separated)
-    modalities_list = None
-    if args.modalities:
-        tokens = re.split(r'[;,\s]+', args.modalities)
-        normalized = [t.strip().lower() for t in tokens if t and t.strip()]
-        # Filter to known modalities, warn on unknowns
-        if normalized:
-            unknown = [m for m in normalized if m not in ALL_MODALITIES]
-            if unknown:
-                logger.warning(f"Unknown modalities provided and will be ignored: {unknown}. Valid options: {ALL_MODALITIES}")
-            modalities_list = [m for m in normalized if m in ALL_MODALITIES]
-            if not modalities_list:
-                logger.warning("No valid modalities specified after filtering; defaulting to all modalities.")
-                modalities_list = None
+    modalities_list = parse_modalities(args.modalities)
 
-    run_pipeline(
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        target_column=args.target_column,
-        leakage_features_path=args.leakage_features_path,
-        modalities=modalities_list,
-        fs_method=args.fs_method,
-        fs_param_value=args.fs_param,
-        n_models_to_compare=args.n_models,
-        tune_best_model=args.tune,
-        generate_plots=args.plots,
-        budget_time_minutes=args.budget,
-        skip_to_step=args.skip_to,
-        imaging_features=args.imaging_features
-    )
+    # A missing stage input or a failed classification stage is reported as one line with
+    # a non-zero exit status, not as a traceback.
+    try:
+        run_pipeline(
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            target_column=args.target_column,
+            leakage_features_path=args.leakage_features_path,
+            modalities=modalities_list,
+            fs_method=args.fs_method,
+            fs_param_value=args.fs_param,
+            n_models_to_compare=args.n_models,
+            tune_best_model=args.tune,
+            generate_plots=args.plots,
+            budget_time_minutes=args.budget,
+            skip_to_step=args.skip_to,
+            imaging_features=args.imaging_features
+        )
+    except (ValueError, RuntimeError, FileNotFoundError) as e:
+        logger.error(str(e))
+        sys.exit(1)

@@ -1,191 +1,172 @@
-# PIE DataReducer Documentation
+# DataReducer (`pie.data_reducer`)
 
-## Overview
+A full PPMI load is dozens of tables and thousands of columns, many empty, constant or operational.
+`DataReducer` profiles each table *before* the merge, drops the columns that cannot carry signal, and
+then merges the survivors into one row per `PATNO`/`EVENT_ID`. Reducing first is what keeps the
+merge in memory: the wide frame is built only from columns that survived.
 
-The `DataReducer` class, located in `pie/data_reducer.py`, is a powerful tool designed to analyze and simplify the complex, multi-modal datasets loaded by the `DataLoader`. Its primary purpose is to inspect each data table *before* a final merge, identify columns that are likely to be uninformative or problematic, and apply these reductions to create a smaller, cleaner, and more memory-efficient dataset.
-
-This pre-merge reduction strategy is crucial for managing the massive feature space that results from combining dozens of PPMI files, making subsequent analysis and feature engineering more tractable.
-
-## Key Features
-
-- **Automated Data Profiling**: Analyzes each DataFrame for key quality metrics, including missing value percentages, constant-value columns, low-variance numeric columns, and high-cardinality ID-like columns.
-- **Configurable Reduction Logic**: Provides sensible defaults for column-dropping criteria (e.g., drop if >95% missing) but allows for full customization of these thresholds.
-- **Intelligent Merging**: Includes a robust `merge_reduced_data` method that correctly handles nested data dictionaries, prefixes column names to avoid collisions, and ensures the final merged DataFrame has unique patient-visit (`PATNO`, `EVENT_ID`) keys.
-- **COHORT Consolidation**: Provides a dedicated function to find all cohort-related columns spread across different files, consolidate them into a single standardized `COHORT` column, and filter for valid participant groups.
-- **Comprehensive Reporting**: Generates both a console summary and a detailed HTML report summarizing the reduction process, showing what was dropped and why, and quantifying the reduction in size and complexity.
-
-## The Data Reduction Workflow
-
-The `DataReducer` is designed to be used in a sequential workflow after loading data with the `DataLoader`:
-
-1.  **Load Data**: Use `DataLoader.load(merge_output=False)` to get a dictionary of DataFrames.
-2.  **Analyze**: Instantiate `DataReducer` with this dictionary and call `analyze()` to profile the data and get drop suggestions.
-3.  **Reduce**: Call `apply_drops()` to create a new, smaller dictionary of DataFrames.
-4.  **Merge**: Call `merge_reduced_data()` on the reduced dictionary to create a single, wide-format DataFrame.
-5.  **Consolidate**: Call `consolidate_cohort_columns()` on the merged DataFrame to clean up the cohort information.
-
-## API Reference
-
-### `DataReducer(data_dict, config)`
-
-The constructor for the class.
-
-```python
-def __init__(self, data_dict: Dict[str, Any], config: Optional[Dict[str, Any]] = None):
+```
+DataLoader dict ──analyze──► report ──get_drop_suggestions──► {table: [cols]} ──apply_drops──► reduced dict
+reduced dict ──merge_reduced_data──► wide frame ──consolidate_cohort_columns──► analysis frame (one COHORT column)
 ```
 
-#### Parameters
+This is step 1 of the [pipeline](pipeline.md), run there with the default configuration.
 
-- **`data_dict`** `(Dict)`: The dictionary of data returned by `DataLoader.load(merge_output=False)`.
-- **`config`** `(Dict, optional)`: A dictionary to override the default analysis configuration. See default config below.
-
-#### Default Configuration
+## Constructor
 
 ```python
-DEFAULT_CONFIG = {
-    "missing_threshold": 0.95,        # Drop if > 95% of values are missing.
-    "single_value_threshold": 1.0,    # Drop if 100% of non-null values are the same.
-    "low_variance_threshold": 0.01,   # For numeric columns, drop if standard deviation is less than this.
-    "high_cardinality_ratio": 0.9,    # Drop if (unique values / rows) > 0.9 (potential ID columns).
-    "common_metadata_cols": [...],    # A list of known metadata columns to drop.
-    "check_low_variance_numeric": True,
-    "check_high_cardinality": False   # Disabled by default as it can be risky.
+DataReducer(data_dict: dict, config: dict | None = None)
+```
+
+`data_dict` is the output of `DataLoader.load(merge_output=False)`: values are DataFrames or dicts of
+DataFrames (e.g. `medical_history`). `config` overrides individual keys of `DataReducer.DEFAULT_CONFIG`:
+
+| Key | Default | Rule |
+|---|---|---|
+| `missing_threshold` | `0.95` | Drop if the missing fraction is **>** this. |
+| `single_value_threshold` | `1.0` | Drop if there is one distinct non-null value covering ≥ this share of non-null rows. |
+| `low_variance_threshold` | `0.01` | Numeric columns: drop if standard deviation < this. |
+| `check_low_variance_numeric` | `True` | Enable the low-variance rule. |
+| `high_cardinality_ratio` | `0.9` | Drop if unique/rows > this **and** the column looks like an ID (numeric, or strings averaging > 10 characters). |
+| `check_high_cardinality` | `False` | Enable the high-cardinality rule. Off by default: on one-row-per-visit tables every continuous measurement is high-cardinality. |
+| `common_metadata_cols` | `["REC_ID", "ORIG_ENTRY", "LAST_UPDATE", "PAG_NAME", "QUERY_ID", "QUERY_TEXT"]` | Always dropped: PPMI record-keeping, not measurements. |
+
+`PATNO` and `EVENT_ID` are never suggested. Rules run in the order missing → single value → low
+variance → high cardinality → metadata, and each column is reported under the first rule it hits.
+The thresholds are absolute: `missing_threshold=0.95` drops a biomarker measured in only 4 % of
+visits even if it is the best predictor in that 4 %.
+
+## Methods
+
+| Method | Returns |
+|---|---|
+| `analyze()` | `{key: {"summary_stats": ..., "drop_suggestions": ...}}`. `key` is the modality, or `"modality.table"` for nested dicts. |
+| `get_drop_suggestions(analysis_report=None)` | `{key: [columns]}`. Calls `analyze()` when no report is passed. |
+| `apply_drops(drop_suggestions)` | A deep copy of `data_dict` with those columns removed; the original is untouched. Unknown keys are logged and skipped. |
+| `generate_report_str(analysis_report=None)` | Plain-text summary: shape and up to five dropped columns with reasons per table. |
+| `merge_reduced_data(reduced_data_dict, output_filename="merged_reduced_data.csv")` | One wide DataFrame. Writes it to `output_filename`; pass `None` to skip writing. |
+| `consolidate_cohort_columns(dataframe, target_cohort_col_name="COHORT", keep_only_valid=True)` | The frame with a single cleaned cohort column; filtered to valid cohorts when `keep_only_valid`. |
+
+### `analyze()` report
+
+```python
+report["medical_history.Vital_Signs"] = {
+    "summary_stats": {
+        "shape": (rows, cols),
+        "column_info": {col: {"Dtype", "Non-Null Count", "Null Count", "Null Pct"}},
+        "numeric_summary": {col: describe() stats},
+        "categorical_summary": {col: {top-5 value counts..., "_unique_count": n}},
+    },
+    "drop_suggestions": {"columns": [...], "reasons": {col: "High Missing % (97.50%)"}, "count": n},
 }
 ```
 
----
+An empty table gets `summary_stats = {"shape": (0, 0), "info": "Empty DataFrame"}` and
+`drop_suggestions = {"reason": "Empty DataFrame", "columns": []}`.
 
-### Main Methods
+### `merge_reduced_data`
 
-#### `analyze()`
+- Every non-key column is renamed `<modality>_<column>`, or `<modality>_<table>_<column>` for nested
+  tables (`medical_history_Vital_Signs_SYSSUP`). Prefixing everything means the same PPMI variable
+  name in two forms can never collide, and a column's origin is visible in every downstream report.
+  Leakage lists (`config/leakage_features.txt`) use these prefixed names.
+- `PATNO` is cast to `str`.
+- Tables without both `PATNO` and `EVENT_ID` are skipped with a warning.
+- Duplicate `PATNO`/`EVENT_ID` rows within one table are collapsed to the first non-null value per
+  column, so each table contributes at most one row per visit and the joins cannot multiply rows.
+- The base frame is the union of key pairs over all tables; each table is left-joined onto it. Row
+  order is arbitrary.
 
-Performs a full analysis of all DataFrames in the data dictionary.
+### `consolidate_cohort_columns`
 
-- **Returns** `(Dict)`: A detailed report dictionary containing summary statistics and drop suggestions for every data table.
+PPMI records cohort in more than one table, so after the merge it appears as several prefixed
+columns (`subject_characteristics_COHORT`, ...). This method:
 
-#### `get_drop_suggestions()`
+1. Takes every column whose name contains `COHORT` (case-insensitive) and sets
+   `target_cohort_col_name` to the first non-empty value across them, in column order.
+2. Drops the source columns.
+3. Maps `PD` → `Parkinson's Disease` and `Control` → `Healthy Control` (case-insensitive).
+4. With `keep_only_valid=True` (the default), keeps only rows whose cohort is
+   `Parkinson's Disease`, `Prodromal`, `Healthy Control` or `SWEDD`; rows with a missing or other
+   cohort are **removed**, not relabelled. The pipeline passes `keep_only_valid=False` unless COHORT
+   is the target, so rows are not lost over a label that is not being modelled. Missing cohorts stay
+   missing (`NaN`).
 
-A convenience method to extract only the drop suggestions from a full analysis report.
+Any column with `COHORT` in its name counts as a source, so rename unrelated ones first.
 
-- **Returns** `(Dict[str, List[str]])`: A dictionary where keys are the table names (e.g., `'motor_assessments'`, `'medical_history.Concomitant_Medication'`) and values are lists of column names suggested for dropping.
+## Example
 
-#### `apply_drops(drop_suggestions)`
+Runnable with synthetic data:
 
-Applies the suggested column drops to the original data, returning a new, reduced data dictionary.
+```python
+import numpy as np
+import pandas as pd
+from pie.data_reducer import DataReducer
 
-- **Parameters**:
-    - **`drop_suggestions`** `(Dict)`: The dictionary of columns to drop, typically from `get_drop_suggestions()`.
-- **Returns** `(Dict)`: A new, deep-copied dictionary of DataFrames with the specified columns removed.
+rng = np.random.default_rng(0)
+patno = np.repeat(np.arange(1, 21), 2)                 # 20 fake participants x 2 visits
+event = np.tile(["BL", "V04"], 20)
+n = len(patno)
+data_dict = {
+    "subject_characteristics": pd.DataFrame({
+        "PATNO": patno, "EVENT_ID": event,
+        "COHORT": np.repeat(rng.choice(["PD", "Control", "Prodromal", "Other"], 20), 2),
+        "AGE": rng.normal(65, 8, n),
+        "REC_ID": np.arange(n),                        # metadata
+        "SITE": ["S1"] * n,                            # single value
+        "MOSTLY_EMPTY": [1.0] + [np.nan] * (n - 1),    # 97.5 % missing
+    }),
+    "medical_history": {
+        "Vital_Signs": pd.DataFrame({
+            "PATNO": np.concatenate([patno, [1]]),     # one duplicate visit row
+            "EVENT_ID": np.concatenate([event, ["BL"]]),
+            "SYSSUP": rng.normal(125, 10, n + 1),
+            "TINY_VAR": 1 + rng.normal(0, 1e-4, n + 1),
+        }),
+    },
+}
 
-#### `merge_reduced_data(reduced_data_dict, output_filename)`
+reducer = DataReducer(data_dict, config={"missing_threshold": 0.9})
+report = reducer.analyze()
+print(reducer.generate_report_str(report))
+drops = reducer.get_drop_suggestions(report)
+# {'subject_characteristics': ['MOSTLY_EMPTY', 'REC_ID', 'SITE'],
+#  'medical_history.Vital_Signs': ['TINY_VAR']}
 
-Merges the DataFrames from a (typically reduced) dictionary into a single, wide-format DataFrame.
+reduced = reducer.apply_drops(drops)
+merged = reducer.merge_reduced_data(reduced, output_filename=None)
+merged.columns.tolist()
+# ['PATNO', 'EVENT_ID', 'subject_characteristics_COHORT', 'subject_characteristics_AGE',
+#  'medical_history_Vital_Signs_SYSSUP']            40 rows: the duplicate visit was collapsed
 
-- **Parameters**:
-    - **`reduced_data_dict`** `(Dict)`: The dictionary of DataFrames to merge.
-    - **`output_filename`** `(str, optional)`: If a path is provided, the final merged DataFrame will be saved as a CSV.
-- **Returns** `(pd.DataFrame)`: The final, merged DataFrame.
+final = reducer.consolidate_cohort_columns(merged)
+sorted(final["COHORT"].unique())
+# ['Healthy Control', "Parkinson's Disease", 'Prodromal']      the "Other" rows are gone
+```
 
-#### `consolidate_cohort_columns(dataframe)`
-
-Finds all columns related to cohort information in a DataFrame, consolidates them into a single `COHORT` column, standardizes the values (e.g., "PD" -> "Parkinson's Disease"), and filters the DataFrame to include only valid, specified cohorts.
-
-- **Parameters**:
-    - **`dataframe`** `(pd.DataFrame)`: The DataFrame to process (typically the output of `merge_reduced_data`).
-- **Returns** `(pd.DataFrame)`: The processed DataFrame with a clean `COHORT` column.
-
----
-
-## Practical Usage Example
-
-This example shows the complete, end-to-end workflow from loading to a final, reduced, and consolidated DataFrame.
+On a real download:
 
 ```python
 from pie_clean import DataLoader
 from pie.data_reducer import DataReducer
 
-# --- 1. Load Data ---
-# Always start by loading data as a dictionary
-print("Step 1: Loading data...")
-data_dict = DataLoader.load(merge_output=False)
-print(f"Loaded {len(data_dict)} modalities.")
-
-# --- 2. Initialize and Analyze ---
-# Optionally, define a custom configuration
-custom_config = {
-    "missing_threshold": 0.90, # Be more aggressive with missing values
-    "check_high_cardinality": True # Also check for ID-like columns
-}
-reducer = DataReducer(data_dict, config=custom_config)
-print("\nStep 2: Analyzing data for potential reduction...")
-analysis_report = reducer.analyze()
-
-# (Optional) Print a simple text summary to the console
-print(reducer.generate_report_str(analysis_report))
-
-# --- 3. Get Suggestions and Reduce ---
-print("\nStep 3: Applying drop suggestions...")
-drop_suggestions = reducer.get_drop_suggestions(analysis_report)
-reduced_data_dict = reducer.apply_drops(drop_suggestions)
-print("Data reduction complete.")
-
-# --- 4. Merge the Reduced Data ---
-print("\nStep 4: Merging the reduced data dictionary...")
-merged_df = reducer.merge_reduced_data(
-    reduced_data_dict,
-    output_filename="./output/merged_after_reduction.csv"
-)
-print(f"Merged DataFrame shape: {merged_df.shape}")
-
-# --- 5. Consolidate COHORT Information ---
-print("\nStep 5: Consolidating and cleaning the COHORT column...")
-final_df = reducer.consolidate_cohort_columns(merged_df)
-print(f"Final DataFrame shape after COHORT consolidation: {final_df.shape}")
-
-# Save the final, cleaned DataFrame
-final_df.to_csv("./output/final_clean_data.csv", index=False)
-print("\nWorkflow complete. Final clean data saved to './output/final_clean_data.csv'")
-
+data = DataLoader.load("./PPMI", merge_output=False,
+                       biospec_exclude=["project_9000", "project_222", "project_196"])
+reducer = DataReducer(data)
+reduced = reducer.apply_drops(reducer.get_drop_suggestions())
+final = reducer.consolidate_cohort_columns(reducer.merge_reduced_data(reduced, output_filename=None))
 ```
 
----
+The HTML version of the report is written by `pie.reporting.generate_data_reduction_html_report`
+(see [pipeline.md](pipeline.md#reports)).
 
-## How to Run the Test Script
+## Tests
 
-A comprehensive test script, `tests/test_data_reducer.py`, is provided to demonstrate the entire reduction workflow and generate a detailed HTML report.
-
-### Prerequisites
-
-1.  Ensure you have a local copy of the PPMI dataset.
-2.  The test script expects the data to be in a folder named `PPMI` in the root of the project directory. If your data is located elsewhere, you must edit the `data_dir` variable in the test script.
-
-    ```python
-    # Inside tests/test_data_reducer.py
-    data_dir = "./PPMI"  # <-- CHANGE THIS PATH IF YOUR DATA IS ELSEWHERE
-    ```
-
-### Running the Script
-
-No special parameters are needed. Simply navigate to the root directory of the PIE project in your terminal and run the script:
+| Test (`tests/test_data_reducer.py`) | Checks |
+|---|---|
+| `test_consolidate_keep_only_valid_false_keeps_rows` | Synthetic: `keep_only_valid=False` keeps other and missing cohorts, still maps `PD`. |
+| `test_data_reduction_workflow` (`ppmi`) | Full workflow on `./PPMI` (skipped if missing); writes `output/final_reduced_consolidated_data.csv` and `output/data_reduction_report.html`, which the feature engineering test reads. |
 
 ```bash
-python3 tests/test_data_reducer.py
+pytest tests/test_data_reducer.py -m "not ppmi" -q
 ```
-
-### What the Test Does and What to Expect
-
-The test script executes the full workflow described above:
-
-1.  **Loads** all data modalities using `DataLoader`.
-2.  **Summarizes** the initial state (number of tables, columns, size in MB).
-3.  **Analyzes** the data using `DataReducer` with default settings.
-4.  **Reduces** the data by applying the drop suggestions.
-5.  **Summarizes** the reduced state, showing the percentage decrease in size and complexity.
-6.  **Merges** the reduced data into a single DataFrame.
-7.  **Consolidates** the `COHORT` column in the final merged DataFrame.
-8.  **Saves** two key outputs to the `output/` directory:
-    *   `final_reduced_consolidated_data.csv`: The final, analysis-ready dataset.
-    *   `data_reduction_report.html`: A detailed HTML report.
-9.  **Opens the Report**: The script will attempt to automatically open `data_reduction_report.html` in your default web browser for immediate inspection.
-
-The console output will provide a running commentary on each step, including size comparisons, making it easy to see the impact of the reduction process.

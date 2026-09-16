@@ -80,6 +80,8 @@ def main(argv=None):
     import argparse
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
+    from .batch import fastsurfer_by_patno
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--work-dir", required=True)
     ap.add_argument("--sessions", required=True)
@@ -89,12 +91,10 @@ def main(argv=None):
     ap.add_argument("--patnos")
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
-    sess = pd.read_csv(a.sessions, dtype={"image_id": str})
-    fs_root = Path(a.fastsurfer_dir)
-    fs_by_patno = {int(r.patno): r.image_id for r in sess.sort_values("session_date").itertuples() if (fs_root / r.image_id / "mri" / "mask.mgz").exists()}
+    fs_by_patno = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)      # the T1 the DWI run used: earliest finished session
     out_csv = work / "dwi_features_syn.csv"
     done = set(pd.read_csv(out_csv)["patno"]) if out_csv.exists() else set()
-    jobs = [(int(d.name), str(d), str(fs_root / fs_by_patno[int(d.name)])) for d in sorted(work.iterdir())
+    jobs = [(int(d.name), str(d), fs_by_patno[int(d.name)]) for d in sorted(work.iterdir())
             if d.is_dir() and d.name.isdigit() and (d / "fw.nii.gz").exists() and int(d.name) not in done and int(d.name) in fs_by_patno]
     if a.patnos:
         keep = {int(x) for x in Path(a.patnos).read_text().split()}

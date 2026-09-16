@@ -38,6 +38,27 @@ def sha256(path):
 # developer edits the source file while a long conversion is still running.
 _CONVERSION_CODE_SHA256 = sha256(__file__)
 
+# Power-style FD: rotations become arc length on a sphere of this radius; the pilot
+# counts frames above the threshold as high motion. qc.json records both values.
+FD_RADIUS_MM = 50
+FD_THRESHOLD_MM = 0.3
+
+
+def _device(path):
+    return os.stat(path).st_dev
+
+
+def _check_free_space(output_root, scratch_root, dicom_bytes):
+    """Raw DICOM copies (1x + 1 GiB) go to scratch, converter staging (3x + 1 GiB)
+    to output_root. Roots on one filesystem draw on the same free space, so sum."""
+    need = {}
+    for path, amount in ((output_root, 3 * dicom_bytes + 1024**3), (scratch_root, dicom_bytes + 1024**3)):
+        first, total = need.get(_device(path), (path, 0))
+        need[_device(path)] = (first, total + amount)
+    for path, amount in need.values():
+        if shutil.disk_usage(path).free < amount:
+            raise OSError(f"Insufficient free space on {path}: {amount} bytes required")
+
 
 def write_json(path, value):
     """Publish a complete metadata file; reject NaNs instead of concealing them."""
@@ -160,11 +181,7 @@ def convert_archive_series(record, output_root, *, dcm2niix=DCM2NIIX, archive_ca
             raise ValueError("Duplicate archive member paths")
         if record.get("dicom_entries") and len(members) != int(record["dicom_entries"]):
             raise ValueError("Archive member count differs from inventory")
-        required = sum(i.file_size for i in members) * 4 + 2 * 1024**3
-        if shutil.disk_usage(root).free < required:
-            raise OSError("Insufficient working space for selected series")
-        if shutil.disk_usage(scratch).free < sum(i.file_size for i in members) + 1024**3:
-            raise OSError('Insufficient configured DICOM scratch space')
+        _check_free_space(root, scratch, sum(i.file_size for i in members))
         with tempfile.TemporaryDirectory(prefix="fmri-convert-", dir=root) as temporary, \
                 tempfile.TemporaryDirectory(prefix="fmri-dicom-", dir=scratch) as raw_temporary:
             temp = Path(temporary)
@@ -307,7 +324,7 @@ def phase_encoding_pair(first, second):
     return sorted(set(reasons))
 
 
-def framewise_displacement(parameters, radius_mm=50):
+def framewise_displacement(parameters, radius_mm=FD_RADIUS_MM):
     """Power-style FD from MCFLIRT rotations (radians), then translations (mm)."""
     params = np.asarray(parameters, dtype=float)
     if params.ndim != 2 or params.shape[1] != 6 or not np.isfinite(params).all():
@@ -377,7 +394,7 @@ def render_pilot_review(motion_dir, alignment_dir, output, *, title=""):
     time = np.arange(len(values)) * qc["tr_seconds"]
     fig, axs = plt.subplots(2, 1, figsize=(12, 5), sharex=True)
     axs[0].plot(time[1:], values[1:, 0], linewidth=.8)
-    axs[0].axhline(.3, color="red", linestyle="--", linewidth=.8)
+    axs[0].axhline(qc.get("fd_threshold_mm", FD_THRESHOLD_MM), color="red", linestyle="--", linewidth=.8)
     axs[0].set_ylabel("FD (mm)")
     axs[1].plot(time[1:], values[1:, 1], linewidth=.8)
     axs[1].set_ylabel("Raw DVARS")
@@ -395,9 +412,13 @@ def verify_pilot_metrics(motion_dir, alignment_dir):
     motion_dir, alignment_dir = Path(motion_dir), Path(alignment_dir)
     qc = json.loads((motion_dir / "qc.json").read_text())
     alignment = json.loads((alignment_dir / "alignment.json").read_text())
+    # Verify with the values the record was written with; records that predate
+    # these keys were written with the current defaults.
+    radius = qc.get("fd_radius_mm", FD_RADIUS_MM)
+    threshold = qc.get("fd_threshold_mm", FD_THRESHOLD_MM)
     params = np.loadtxt(motion_dir / "motion.par")
     delta = np.abs(np.diff(params, axis=0))
-    fd = np.r_[0, 50 * delta[:, :3].sum(axis=1) + delta[:, 3:].sum(axis=1)]
+    fd = np.r_[0, radius * delta[:, :3].sum(axis=1) + delta[:, 3:].sum(axis=1)]
     tab = np.loadtxt(motion_dir / "motion_qc.tsv", skiprows=1)
     np.testing.assert_allclose(fd, tab[:, 0], rtol=1e-12)
     array = np.asarray(nib.load(motion_dir / "motion.nii.gz").dataobj, dtype=np.float32)
@@ -408,10 +429,15 @@ def verify_pilot_metrics(motion_dir, alignment_dir):
     sd = samples.std(axis=1, ddof=1)
     variable = sd > np.finfo(float).eps
     tsnr = np.median(samples.mean(axis=1)[variable] / sd[variable])
-    for value, key in [(fd[1:].mean(), "mean_fd_mm_excluding_first"),
-                       ((fd[1:] > .3).mean(), "fraction_fd_gt_0p3"),
-                       ((fd <= .3).sum() * qc["tr_seconds"], "seconds_fd_le_0p3"),
-                       (tsnr, "median_native_motion_corrected_tsnr")]:
+    good = fd[1:] <= threshold
+    checks = [(fd[1:].mean(), "mean_fd_mm_excluding_first"), ((~good).mean(), "fraction_fd_gt_0p3"),
+              (tsnr, "median_native_motion_corrected_tsnr")]
+    # Legacy key: records written before the rename also counted frame 0 (FD fixed at 0).
+    if "seconds_fd_le_0p3_excluding_first" in qc:
+        checks.append((good.sum() * qc["tr_seconds"], "seconds_fd_le_0p3_excluding_first"))
+    else:
+        checks.append(((fd <= threshold).sum() * qc["tr_seconds"], "seconds_fd_le_0p3"))
+    for value, key in checks:
         np.testing.assert_allclose(value, qc[key], rtol=1e-12)
     t1mask = np.asarray(nib.load(alignment_dir / "t1_brain_mask.nii.gz").dataobj) > 0
     boldmask = np.asarray(nib.load(alignment_dir / "bold_mask_in_t1.nii.gz").dataobj) > 0
@@ -421,7 +447,6 @@ def verify_pilot_metrics(motion_dir, alignment_dir):
     # FLIRT's float precision and text serialization do not support 1e-8 checks.
     np.testing.assert_allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-6)
     longest = streak = 0
-    good = fd[1:] <= .3
     for flag in good:
         streak = streak + 1 if flag else 0
         longest = max(longest, streak)
@@ -526,7 +551,8 @@ def motion_pilot(nifti, sidecar, output, *, fsl_dir, discard_seconds=10, resume=
     params = np.loadtxt(output / "motion.par")
     if params.shape != (array.shape[-1], 6):
         raise ValueError("Motion parameter/image length mismatch")
-    fd = framewise_displacement(params)
+    fd = framewise_displacement(params, FD_RADIUS_MM)
+    low = fd[1:] <= FD_THRESHOLD_MM   # frame 0 has no predecessor; its FD is fixed at 0
     samples = array[mask].astype(np.float64)
     sd = samples.std(axis=1, ddof=1)
     variable = sd > np.finfo(float).eps
@@ -543,8 +569,9 @@ def motion_pilot(nifti, sidecar, output, *, fsl_dir, discard_seconds=10, resume=
               "tr_seconds": tr, "remaining_volumes": len(fd), "brain_mask_voxels": int(mask.sum()),
               "mean_fd_mm_excluding_first": float(fd[1:].mean()),
               "median_fd_mm_excluding_first": float(np.median(fd[1:])),
-              "max_fd_mm": float(fd.max()), "fraction_fd_gt_0p3": float((fd[1:] > .3).mean()),
-              "seconds_fd_le_0p3": float((fd <= .3).sum() * tr),
+              "max_fd_mm": float(fd.max()), "fd_radius_mm": FD_RADIUS_MM, "fd_threshold_mm": FD_THRESHOLD_MM,
+              "fraction_fd_gt_0p3": float((~low).mean()),
+              "seconds_fd_le_0p3_excluding_first": float(low.sum() * tr),
               "median_native_motion_corrected_tsnr": float(np.median(tsnr)),
               "median_dvars_raw": float(np.median(dvars[1:])),
               "susceptibility_corrected": False, "slice_timing_corrected": False,

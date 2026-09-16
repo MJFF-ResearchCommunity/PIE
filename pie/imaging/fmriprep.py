@@ -82,10 +82,13 @@ class FMRIPrepConfig:
             path = Path(folder).expanduser().resolve(strict=True)
             if not (path / 'dataset_description.json').is_file():
                 raise ValueError('Derivative dataset_description.json is required')
-            for key in ('output_dir', 'work_dir', 'cache_dir'):
+            # Raw input and a reused derivative must be independent datasets:
+            # equal or nested paths let one be indexed and hashed as the other.
+            for key in ('bids_dir', 'output_dir', 'work_dir', 'cache_dir'):
                 other = paths[key]
                 if path == other or path in other.parents or other in path.parents:
-                    raise ValueError('Reused derivatives must be separate from writable output/work/cache')
+                    raise ValueError('Reused derivatives must be separate from the BIDS input '
+                                     'and writable output/work/cache')
 
 
 def build_command(config: FMRIPrepConfig, *, version_only=False):

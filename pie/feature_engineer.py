@@ -26,15 +26,19 @@ class FeatureEngineer:
     noise detection, interaction features).
     """
 
-    def __init__(self, dataframe: pd.DataFrame):
+    def __init__(self, dataframe: pd.DataFrame, protected_columns: Optional[List[str]] = None):
         """
         Initializes the FeatureEngineer with a DataFrame.
 
         Args:
             dataframe: The pandas DataFrame to engineer features on.
+            protected_columns: Extra columns (e.g. the prediction target) that automatic
+                encoding, scaling and feature generation must never touch. PATNO, EVENT_ID
+                and COHORT are always protected. Matched case-insensitively.
         """
         if not isinstance(dataframe, pd.DataFrame):
             raise ValueError("Input must be a pandas DataFrame.")
+        self.protected_columns = {"PATNO", "EVENT_ID", "COHORT"} | {c.upper() for c in (protected_columns or [])}
         self.df = dataframe.copy() # Work on a copy
         self.original_columns = list(dataframe.columns)
         self.engineered_feature_names: Dict[str, List[str]] = {} # To track new features from operations
@@ -80,8 +84,7 @@ class FeatureEngineer:
             The FeatureEngineer instance for chaining.
         """
         # Prepare the comprehensive list of columns to ignore for OHE
-        default_ignores_upper = {
-            'PATNO', 'EVENT_ID', 'COHORT',
+        default_ignores_upper = self.protected_columns | {
             # PPMI metadata columns — identifiers/timestamps, not features
             'PAG_NAME', 'REC_ID', 'INFODT', 'ORIG_ENTRY', 'LAST_UPDATE',
             'SITE_APRV', 'GUID', 'APPRDX', 'PRIMDIAG',
@@ -308,10 +311,7 @@ class FeatureEngineer:
         if columns is None:
             numeric_cols = self.df.select_dtypes(include=np.number).columns.tolist()
             # Exclude common ID/target columns if they are numeric
-            columns_to_scale = [
-                col for col in numeric_cols
-                if col.upper() not in ['PATNO', 'EVENT_ID', 'COHORT']
-            ]
+            columns_to_scale = [col for col in numeric_cols if col.upper() not in self.protected_columns]
             if not columns_to_scale:
                  logger.info("No numeric columns found to scale (or only ID/target columns).")
                  return self
@@ -373,10 +373,7 @@ class FeatureEngineer:
         """
         if columns is None:
             numeric_cols = self.df.select_dtypes(include=np.number).columns.tolist()
-            columns_to_process = [
-                col for col in numeric_cols
-                if col.upper() not in ['PATNO', 'EVENT_ID', 'COHORT']
-            ]
+            columns_to_process = [col for col in numeric_cols if col.upper() not in self.protected_columns]
             if not columns_to_process:
                  logger.info("No numeric columns found for polynomial features (or only ID/target columns).")
                  return self
@@ -526,6 +523,12 @@ class FeatureEngineer:
             return self
 
         numeric_cols = [c for c in columns if pd.api.types.is_numeric_dtype(self.df[c])]
+        # An all-NaN column has nothing to impute from. sklearn's imputers silently drop
+        # such columns, which misaligns the column-wise assignment below, so leave them NaN.
+        empty = [c for c in numeric_cols if self.df[c].isna().all()]
+        if empty:
+            logger.warning(f"Not imputing {len(empty)} all-NaN column(s): {empty[:10]}")
+            numeric_cols = [c for c in numeric_cols if c not in empty]
 
         if method.startswith("simple_"):
             from sklearn.impute import SimpleImputer
@@ -744,7 +747,7 @@ class FeatureEngineer:
         else:
             raise ValueError(f"Unknown noise detection method: {method}")
 
-        noise_mask = detector.fit_predict(X, y)
+        noise_mask = pd.Series(detector.fit_detect(X, y), index=self.df.index, name="is_noisy")
         n_noisy = noise_mask.sum()
         logger.info(f"Detected {n_noisy} potentially noisy samples ({n_noisy / len(y) * 100:.1f}%) using {method}.")
         return noise_mask
@@ -760,9 +763,8 @@ class FeatureEngineer:
 
         Args:
             method: Interaction method. Options:
-                'auto'         - endgame AutoAggregator
-                'interactions' - endgame InteractionFeatures
-                'polynomial'   - sklearn PolynomialFeatures (degree=2, interaction_only=True)
+                'auto', 'interactions' - endgame InteractionFeatures (pairwise products and ratios)
+                'polynomial'           - sklearn PolynomialFeatures (degree=2, interaction_only=True)
             columns: Columns to use. If None, uses all numeric columns.
             **kwargs: Additional kwargs passed to the generator.
 
@@ -771,7 +773,7 @@ class FeatureEngineer:
         """
         if columns is None:
             columns = self.df.select_dtypes(include=np.number).columns.tolist()
-            columns = [c for c in columns if c.upper() not in ["PATNO", "EVENT_ID", "COHORT"]]
+            columns = [c for c in columns if c.upper() not in self.protected_columns]
 
         if not columns or len(columns) < 2:
             logger.info("Not enough numeric columns for interaction features.")
@@ -784,14 +786,12 @@ class FeatureEngineer:
             logger.warning("endgame not available; falling back to polynomial interactions.")
             return self.engineer_polynomial_features(columns=columns, degree=2, interaction_only=True)
 
-        if method == "auto":
-            from endgame.preprocessing import AutoAggregator
-            gen = AutoAggregator(**kwargs)
-        elif method == "interactions":
-            from endgame.preprocessing import InteractionFeatures
-            gen = InteractionFeatures(**kwargs)
-        else:
+        if method not in ("auto", "interactions"):
             raise ValueError(f"Unknown interaction method: {method}")
+        # 'auto' used to map to AutoAggregator, a group-by aggregator that needs group_cols
+        # and so could not run with defaults; interactions are what this method promises.
+        from endgame.preprocessing import InteractionFeatures
+        gen = InteractionFeatures(**kwargs)
 
         new_features = gen.fit_transform(self.df[columns])
         new_cols = [c for c in new_features.columns if c not in self.df.columns]

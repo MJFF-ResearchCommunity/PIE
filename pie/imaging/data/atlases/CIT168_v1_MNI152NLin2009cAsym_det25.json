@@ -1,0 +1,69 @@
+{
+  "atlas": "CIT168",
+  "version": "1.0.0",
+  "space": "MNI152NLin2009cAsym",
+  "resolution_mm": [
+    1,
+    1,
+    1
+  ],
+  "source_url": "https://raw.githubusercontent.com/canlab/Neuroimaging_Pattern_Masks/master/Atlases_and_parcellations/2018_CIT168_Reinf_Learn_v1.0.0/MNI152_2009c_nonlin_asym_1mm/CIT168toMNI152_prob_atlas_bilat_1mm.nii.gz",
+  "source_sha256": "c2b0b37a297ed67c7fbdec99bb85c34fe6b47e427897caadab8dd5c1c25102ad",
+  "sha256": "3cb36032548b9285a36bee341145f8b1c9e416602111d6ad9ae0a5b02bb9043b",
+  "filename": "CIT168_v1_MNI152NLin2009cAsym_det25.nii.gz",
+  "shape": [
+    193,
+    229,
+    193
+  ],
+  "affine": [
+    [
+      1.0,
+      0.0,
+      -0.0,
+      -96.0
+    ],
+    [
+      0.0,
+      1.0,
+      -0.0,
+      -132.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      -78.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "derivation": "Maximum probability label (one-based), only where maximum probability >= 0.25; otherwise background 0",
+  "probability_threshold": 0.25,
+  "labels": [
+    "Pu",
+    "Ca",
+    "NAC",
+    "EXA",
+    "GPe",
+    "GPi",
+    "SNc",
+    "RN",
+    "SNr",
+    "PBP",
+    "VTA",
+    "VeP",
+    "HN",
+    "HTH",
+    "MN",
+    "STH"
+  ],
+  "citation": "Pauli, Nili & Tyszka, Scientific Data 5:180063 (2018), doi:10.1038/sdata.2018.63",
+  "source_readme": "https://raw.githubusercontent.com/canlab/Neuroimaging_Pattern_Masks/master/Atlases_and_parcellations/2018_CIT168_Reinf_Learn_v1.0.0/README.pdf",
+  "correction_date": "2026-09-15",
+  "article_license": "CC-BY-4.0; the source article license is not asserted to be the separate dataset license"
+}

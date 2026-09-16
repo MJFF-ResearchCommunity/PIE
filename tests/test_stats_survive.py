@@ -42,3 +42,15 @@ def test_cox_regression(surv_df):
     assert 2.0 < coefs["group"]["hazard_ratio"] < 5.0
     assert "concordance" in r
     assert "ph_test" in r
+    assert r["ph_test_error"] is None
+
+
+def test_cox_regression_reports_a_failed_ph_test(surv_df, monkeypatch):
+    import lifelines.statistics
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("synthetic PH failure")
+    monkeypatch.setattr(lifelines.statistics, "proportional_hazard_test", broken)
+    with pytest.warns(RuntimeWarning, match="synthetic PH failure"):
+        r = cox_regression(surv_df, time="time", event="event", covariates=["group", "age"])
+    assert r["ph_test"] == [] and "synthetic PH failure" in r["ph_test_error"]

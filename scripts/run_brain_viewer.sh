@@ -17,8 +17,7 @@ if [[ ! -d brain-viewer/node_modules ]]; then
   npm --prefix brain-viewer ci
 fi
 npm --prefix brain-viewer run build
-if [[ ! -f Imaging/derived/viewer_sample_plan/plan.json ]]; then
-  "$PIE_VIEWER_PYTHON" -m pie.imaging.viewer sample-plan
-fi
-echo "Open http://127.0.0.1:8765 — images and API are served locally."
+# Same arguments as serve, so --repo, --ppmi-dir and --output also shape the plan.
+"$PIE_VIEWER_PYTHON" -m pie.imaging.viewer sample-plan --if-missing "$@"
+echo "Starting PIE Brain Explorer on http://127.0.0.1 (port 8765 unless --port is given); images and API are served locally."
 exec "$PIE_VIEWER_PYTHON" -m pie.imaging.viewer serve "$@"

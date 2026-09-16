@@ -14,13 +14,14 @@ Prisma (b = 700/1000/2000, 64 directions each, plus reverse-phase b0s). Pipeline
                   FW and tissue FA inside the ROI neighbourhood: DIPY's multi-shell NLS (Hoy et al. 2014) for the
                   PPMI-2 shells, a bounded voxel-wise fit with a tissue-diffusivity prior for single-shell PPMI-1
                   data (`fw_method` records which; single-shell free-water is ill-posed and closer to MD).
-5. `register`     mean b0 -> conformed T1 (rigid, mutual information; no susceptibility correction);
-                  T1 -> MNI152NLin2009cAsym affine (brain-masked) to bring the CIT168 subcortical atlas
-                  (Pauli 2017: SNc, SNr, RN, STN, VTA, ...) into subject space alongside the FastSurfer labels.
+5. `register`     mean b0 -> conformed T1 (rigid, mutual information; susceptibility distortion is corrected only by
+                  the optional topup step, `--fsl`); T1 -> MNI152NLin2009cAsym affine (brain-masked) to bring the
+                  CIT168 subcortical atlas (Pauli et al. 2018, the authors' MNI2009c projection bundled in
+                  `pie.imaging.atlases`: SNc, SNr, RN, STN, VTA, ...) into subject space alongside the FastSurfer labels.
 6. `features`     mean FA, MD, FW, FAt per ROI (left/right; the substantia nigra also split into anterior and
                   posterior halves, the posterior half being the free-water marker of nigral degeneration).
 
-    venv_imaging/bin/python -m pie.imaging.dwi --zips <DTI zips> --collection <LONI csv> --sessions Imaging/derived/sessions.csv \
+    venv_imaging/bin/python -m pie.imaging.dwi --zips <DTI zips> --sessions Imaging/derived/sessions.csv \
         --fastsurfer-dir Imaging/derived/fastsurfer --work-dir Imaging/derived/dwi --workers 6   # -> dwi_features.csv
 """
 
@@ -49,7 +50,7 @@ DERIVED_SUFFIXES = ("_ADC", "_FA", "_TRACEW", "_ColFA", "_TENSOR", "_EXP")  # dc
 FS_ROIS = {"thalamus": (10, 49), "caudate": (11, 50), "putamen": (12, 51), "pallidum": (13, 52),
            "cerebellum_wm": (7, 46), "cerebral_wm": (2, 41)}
 FS_SINGLE = {"brainstem": (16,)}
-# CIT168 / Pauli 2017 deterministic labels (1-based, nilearn order)
+# CIT168 v1.0 deterministic labels (1-based), in the order of pie/imaging/data/atlases/CIT168_*.json
 PAULI = ["Pu", "Ca", "NAC", "EXA", "GPe", "GPi", "SNc", "RN", "SNr", "PBP", "VTA", "VeP", "HN", "HTH", "MN", "STH"]
 PAULI_ROIS = {"snc": ("SNc",), "snr": ("SNr",), "sn": ("SNc", "SNr"), "red_nucleus": ("RN",), "stn": ("STH",), "vta": ("VTA",),
               "gpe": ("GPe",), "gpi": ("GPi",), "nac": ("NAC",)}
@@ -424,9 +425,9 @@ def _brain(img, mask_img, mm=2.0):
 
 def register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0):
     """Rigid (mutual information) registration of the mean b0 to the brain-masked conformed T1 at 2 mm.
-    Returns (transform fixed(T1)->moving(b0), metric). EPI susceptibility distortion is not corrected: a
-    T1-guided B-spline restricted to the phase-encoding axis was tried and cost 9 min per subject without
-    improving the fit; FSL topup on the PPMI-2 reverse-phase b0s is the proper upgrade."""
+    Returns (transform fixed(T1)->moving(b0), metric). EPI susceptibility distortion is corrected only upstream, by
+    ``susceptibility_correct`` (FSL topup, ``--fsl``) where a reverse-phase b0 exists; a T1-guided B-spline
+    restricted to the phase-encoding axis was tried here and cost 9 min per subject without improving the fit."""
     import SimpleITK as sitk
 
     fixed = _brain(t1_img, t1_mask_img)
@@ -501,10 +502,13 @@ def labels_to_dwi(label_img, target, chain):
 
 
 def pauli_atlas():
-    from nilearn import datasets
+    """CIT168 v1 labels transformed by the authors to the registration's MNI2009c space.
 
-    a = datasets.fetch_atlas_pauli_2017(atlas_type="deterministic")
-    return nib.load(a["maps"]) if isinstance(a["maps"], str) else a["maps"]
+    Do not use fetch_atlas_pauli_2017 here: that deterministic file is native CIT168.
+    """
+    from .atlases import cit168_mni2009c
+
+    return cit168_mni2009c()
 
 
 # ------------------------------------------------------------------------------------------ features

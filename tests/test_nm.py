@@ -43,17 +43,25 @@ def test_rois_and_features_recover_planted_contrast():
     assert np.isfinite(out["nm_sn_posterior_l_cnr"]) and np.isfinite(out["nm_sn_mean_cnr"])
 
 
-def test_features_do_not_invent_contrast_from_noise():
-    """A slab with no neuromelanin band: every contrast measure must sit near zero. Order statistics on noisy voxels
-    (brightest-fraction, fixed-threshold volumes) report positive contrast that only tracks the noise level."""
+def test_independent_noise_does_not_acquire_contrast_from_localized_masks():
+    """Test independent measurements, not a same-image maximum's expected zero.
+
+    Localization on noise can select a positive contrast, especially for small
+    subregions. Averaging independent noise in those fixed masks must be unbiased.
+    """
     shape, pauli, fs, code = _phantom()
     rois = nm.nm_rois(fs, pauli, (1.5, 0.5, 0.5))
     rng = np.random.default_rng(1)
     img = np.full(shape, 100.0, dtype=np.float32) + rng.normal(0, 13, shape).astype(np.float32)   # CV 0.13 as in PPMI slabs
     phys_y = np.broadcast_to(np.arange(shape[1])[None, :, None].astype(float), shape)
-    out = nm.features(img, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5))
-    bad = {k: round(v, 3) for k, v in out.items() if "cnr" in k and np.isfinite(v) and abs(v) > 0.03}
-    assert not bad, bad
+    masks = {}
+    nm.features(img, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), mask_out=masks)
+    contrasts = []
+    for _ in range(100):
+        independent = 100 + rng.normal(0,13,shape)
+        reference = independent[masks['ref']].mean()
+        contrasts.append([(independent[masks['sn_'+side]].mean()-reference)/reference for side in ['l','r']])
+    assert np.max(np.abs(np.mean(contrasts,axis=0))) < .003
 
 
 def test_refined_position_recovers_a_band_offset_from_the_atlas():
@@ -72,3 +80,20 @@ def test_refined_position_recovers_a_band_offset_from_the_atlas():
     assert abs(out["nm_sn_l_cnr"] - 0.20) < 0.04 and abs(out["nm_sn_r_cnr"] - 0.20) < 0.04, (out["nm_sn_l_cnr"], out["nm_sn_r_cnr"])
     assert out["nm_sn_l_cnr_atlas"] < 0.12 and out["nm_sn_r_cnr_atlas"] < 0.12
     assert abs(out["nm_sn_shift_mm_l"] - 1.5) < 0.6 and abs(out["nm_sn_shift_mm_r"] - 1.5) < 0.6
+
+
+def test_reference_excludes_both_final_refined_masks():
+    shape, pauli, fs, _ = _phantom()
+    rois = nm.nm_rois(fs, pauli, (1.5, .5, .5))
+    img = np.full(shape, 100., np.float32)
+    img[np.roll(rois['sn_l'], -3, axis=2)] = 125.
+    img[np.roll(rois['sn_r'], 3, axis=2)] = 115.
+    masks = {}
+    y = np.broadcast_to(np.arange(shape[1])[None,:,None], shape)
+    values = nm.features(img, rois, y, mask_out=masks)
+    sn = masks['sn_l'] | masks['sn_r']
+    assert (rois['ref'] & sn).any(), 'fixture must expose the previous overlap bug'
+    assert not (masks['ref'] & sn).any()
+    assert values['n_ring'] == masks['ref'].sum()
+    assert values['nm_ring_mean'] == img[masks['ref']].mean()
+    assert abs(values['nm_sn_l_cnr'] - .25) < .02

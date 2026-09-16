@@ -12,13 +12,15 @@ it slightly differently. These are the primitives for that record.
                         started=started, seed=20260913, datasets=summary)
 
 `sha256` is chunked, so hashing a multi-gigabyte NIfTI costs no memory. `save_json`
-refuses NaN rather than emitting the non-standard `NaN` token that trips strict readers.
+writes NaN and infinities as `null` rather than the non-standard `NaN` token that trips
+strict readers.
 """
 
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
+import os
 import platform
 import sys
 import time
@@ -62,7 +64,11 @@ def jsonable(value):
 
 
 def save_json(path, value, indent=2):
-    """Write `value` as JSON. allow_nan=False: a NaN here means an unfinished computation."""
+    """Write `value` as strict JSON. NaN and ±inf become null (via `jsonable`).
+
+    allow_nan=False is the backstop for a non-finite value `jsonable` does not reach;
+    anything else it does not recognise is written as `str(value)`.
+    """
     Path(path).write_text(json.dumps(jsonable(value), indent=indent, default=str, allow_nan=False) + "\n")
 
 
@@ -98,19 +104,32 @@ def environment(packages=("numpy", "scipy", "pandas", "sklearn", "joblib", "niba
     return record
 
 
+def _relative(path, out_dir):
+    """`path` relative to `out_dir`, POSIX-style (`../x` for files outside it)."""
+    return Path(os.path.relpath(Path(path).absolute(), out_dir.absolute())).as_posix()
+
+
 def write_manifest(out_dir, inputs=(), code=None, outputs=None, started=None,
                    name="manifest.json", include_environment=True, **extra):
     """Write `out_dir/name` describing this run, and return the record.
 
-    inputs   paths read (hashed if they exist)
+    inputs   paths read; each must be an existing file. A missing one raises rather than
+             silently dropping out of the record
     code     directory or list of source files whose content defines the analysis
-    outputs  paths written; None means "every file in out_dir except the manifest"
+    outputs  paths written (each must exist); None means every file under out_dir,
+             recursively, except the manifest. Keyed by path relative to out_dir, so
+             subdirectories and files outside out_dir re-verify correctly
     started  time.time() at the start of the run, to record wall-clock seconds
     extra    anything else the study wants on the record (seed, counts, selections)
     """
     out_dir = Path(out_dir)
+    inputs = list(inputs)
+    outputs = None if outputs is None else list(outputs)
+    missing = [str(p) for p in [*inputs, *(outputs or [])] if not Path(p).is_file()]
+    if missing:
+        raise FileNotFoundError(f"Manifest paths that are not existing files: {missing}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    record = {"created_utc": utc_now(), "inputs_sha256": {str(p): sha256(p) for p in inputs if Path(p).is_file()}}
+    record = {"created_utc": utc_now(), "inputs_sha256": {str(p): sha256(p) for p in inputs}}
     if code is not None:
         record["code_sha256"] = code_hashes(code)
     if include_environment:
@@ -120,8 +139,8 @@ def write_manifest(out_dir, inputs=(), code=None, outputs=None, started=None,
     record.update(extra)
     # Outputs last: hashing the manifest into itself is impossible, so it is always excluded.
     if outputs is None:
-        outputs = [p for p in sorted(out_dir.iterdir()) if p.is_file() and p.name != name]
-    record["outputs_sha256"] = {Path(p).name: sha256(p) for p in outputs if Path(p).is_file()}
+        outputs = [p for p in sorted(out_dir.rglob("*")) if p.is_file() and p != out_dir / name]
+    record["outputs_sha256"] = {_relative(p, out_dir): sha256(p) for p in outputs}
     save_json(out_dir / name, record)
     return record
 
@@ -130,6 +149,8 @@ def verify_manifest(out_dir, name="manifest.json"):
     """Re-hash what a manifest claims and return the paths that no longer match.
 
     Empty result means the run's inputs and outputs are byte-identical to when it ran.
+    Output keys are paths relative to out_dir (older manifests keyed top-level files by
+    bare name, which is the same thing). Code hashes are not re-checked here.
     """
     out_dir = Path(out_dir)
     record = read_json(out_dir / name)
@@ -138,7 +159,7 @@ def verify_manifest(out_dir, name="manifest.json"):
         if not Path(path).is_file() or sha256(path) != digest:
             changed.append(path)
     for filename, digest in (record.get("outputs_sha256") or {}).items():
-        target = out_dir / filename
+        target = Path(os.path.normpath(out_dir / filename))
         if not target.is_file() or sha256(target) != digest:
             changed.append(str(target))
     return changed

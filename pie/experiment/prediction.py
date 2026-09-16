@@ -51,13 +51,23 @@ DEFAULT_OUTCOME = "saa_prodromal"
 PARTICIPANT = "PATNO"
 # Measures of the nigra itself are not proportional to head size, so intracranial volume
 # is a nuisance covariate for cortical and subcortical morphometry but not for these.
-NON_ICV_PREFIXES = ("new_nm_", "new_dti_", "nm_", "dwi_")
+# Nor is functional connectivity: `fmri_` edges are correlations between regional time
+# series, dimensionless and not scaled by head size. (`fmri_` was added after the study
+# engine was frozen; it changes only features whose names start with it.)
+NON_ICV_PREFIXES = ("new_nm_", "new_dti_", "nm_", "dwi_", "fmri_")
 
 
 def finite_numeric(frame, cols):
     """Requested columns as floats, with missing columns and infinities alike as NaN."""
     return (frame.reindex(columns=list(cols)).apply(pd.to_numeric, errors="coerce")
             .replace([np.inf, -np.inf], np.nan).to_numpy(float))
+
+
+def participant_ids(frame):
+    """Participant IDs for the audit: plain ints for numeric IDs (as the study engine
+    recorded them), otherwise as given, so string IDs such as "P001" work too."""
+    ids = frame[PARTICIPANT]
+    return ids.astype(int).tolist() if pd.api.types.is_numeric_dtype(ids) else ids.tolist()
 
 
 class CovariateDesign:
@@ -244,6 +254,11 @@ def nested_fold(frame, train_ids, test_ids, families, batch_cols, icv, adjust_ba
     plus `baseline` and `selected`. `audit` records the winning candidate and its inner
     score for each, every candidate's inner-fold AUC and log loss, the participants in
     each inner split, and any candidate that failed to fit.
+
+    A candidate that fails in any inner fold is ineligible. If a winner then fails to fit
+    the whole training partition, the next-ranked eligible candidate is used and the
+    failure is recorded with `stage="final_refit"`; `inner_rank` in `selections` says how
+    far down the inner ranking the fitted candidate was (0 = the inner winner).
     """
     if set(train_ids) & set(test_ids):
         raise ValueError("Outer partition overlap")
@@ -264,8 +279,8 @@ def nested_fold(frame, train_ids, test_ids, families, batch_cols, icv, adjust_ba
         cache, ncov = split_design(innertrain, [validation], families, batch_cols, icv,
                                    adjust_baseline, covariates)
         audit.append({"inner_fold": k,
-                      "fit_patnos": innertrain[PARTICIPANT].astype(int).tolist(),
-                      "validation_patnos": validation[PARTICIPANT].astype(int).tolist()})
+                      "fit_patnos": participant_ids(innertrain),
+                      "validation_patnos": participant_ids(validation)})
         for i, c in enumerate(candidates):
             try:
                 xa, xb = candidate_arrays(cache, ncov, c)
@@ -274,36 +289,54 @@ def nested_fold(frame, train_ids, test_ids, families, batch_cols, icv, adjust_ba
                 scores[i, k] = roc_auc_score(y[b], p)
                 losses[i, k] = log_loss(y[b], p)
             except (ValueError, FloatingPointError, ConvergenceWarning) as exc:
-                failures.append({"candidate": i, "inner_fold": k, "error": str(exc)})
+                failures.append({"candidate": i, "inner_fold": k, "stage": "inner", "error": str(exc)})
     means = np.where(np.isfinite(scores).all(axis=1), np.nan_to_num(scores).mean(axis=1), -np.inf)
     meanloss = np.where(np.isfinite(losses).all(axis=1), np.nan_to_num(losses).mean(axis=1), np.inf)
 
-    def winner(indices):
-        eligible = [i for i in indices if np.isfinite(means[i])]
-        if not eligible:
-            raise ValueError("All candidates failed")
+    def ranking(indices):
         # Deterministic: largest mean inner AUC, then log loss, then declared grid order.
-        return min(eligible, key=lambda i: (-means[i], meanloss[i], i))
+        order = sorted((i for i in indices if np.isfinite(means[i])),
+                       key=lambda i: (-means[i], meanloss[i], i))
+        if not order:
+            raise ValueError("All candidates failed")
+        return order
 
-    baseline = winner([i for i, c in enumerate(candidates) if c.family == "baseline"])
-    winners = {"baseline": baseline, "selected": winner(range(len(candidates)))}
+    rankings = {"baseline": ranking([i for i, c in enumerate(candidates) if c.family == "baseline"]),
+                "selected": ranking(range(len(candidates)))}
     for family in families:
-        winners[family] = winner([i for i, c in enumerate(candidates) if c.family == family])
-    needed = {candidates[i].family for i in winners.values()} - {"baseline"}
+        rankings[family] = ranking([i for i, c in enumerate(candidates) if c.family == family])
+    needed = {candidates[order[0]].family for order in rankings.values()} - {"baseline"}
     cache, ncov = split_design(train, [test], {k: v for k, v in families.items() if k in needed},
                                batch_cols, icv, adjust_baseline, covariates)
-    fitted = {}
+    fitted, refit_failed = {}, set()
     predictions = {}
     selected = {}
-    for name, i in winners.items():
-        c = candidates[i]
-        if i not in fitted:
-            xa, xb = candidate_arrays(cache, ncov, c)
-            model = fit_checked(c, xa, y, seed)
-            fitted[i] = model.predict_proba(xb)[:, 1]
+    for name, order in rankings.items():
+        # Refit the inner winner on the whole training partition; a refit failure is handled
+        # like an inner one (recorded, candidate disqualified) and the next-ranked is used.
+        for rank, i in enumerate(order):
+            c = candidates[i]
+            if i in refit_failed:
+                continue
+            if i not in fitted:
+                if (c.family, c.residualize, c.pca) not in cache:   # fallback into another family
+                    extra, _ = split_design(train, [test], {c.family: families[c.family]},
+                                            batch_cols, icv, adjust_baseline, covariates)
+                    cache.update({key: v for key, v in extra.items() if key not in cache})
+                try:
+                    xa, xb = candidate_arrays(cache, ncov, c)
+                    fitted[i] = fit_checked(c, xa, y, seed).predict_proba(xb)[:, 1]
+                except (ValueError, FloatingPointError, ConvergenceWarning) as exc:
+                    refit_failed.add(i)
+                    failures.append({"candidate": i, "inner_fold": None, "stage": "final_refit",
+                                     "error": str(exc)})
+                    continue
+            break
+        else:
+            raise ValueError(f"All candidates failed the final refit for {name!r}")
         predictions[name] = fitted[i]
         selected[name] = {"candidate": asdict(c), "mean_inner_auc": float(means[i]),
-                          "mean_inner_logloss": float(meanloss[i])}
+                          "mean_inner_logloss": float(meanloss[i]), "inner_rank": rank}
     # No access to test labels above. Caller joins them after obtaining predictions.
     return predictions, {"selections": selected, "inner_audit": audit,
                          "candidate_scores": [{"candidate": asdict(c), "auc": scores[i].tolist(),

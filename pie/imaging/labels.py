@@ -28,6 +28,16 @@ def _month(s):
     return pd.to_datetime(s, format="%m/%Y", errors="coerce")
 
 
+def _carrier(values):
+    """1 = carrier, 0 = explicit negative (0, 0.0, "0", "0.0"), NaN = untested (missing or blank), for any dtype.
+    A CSV column with blanks reads as float, so comparing its text with "0" would code every 0.0 as a carrier."""
+    s = pd.Series(values).astype(object)
+    text = s.astype(str).str.strip()
+    missing = s.isna().to_numpy() | text.eq("").to_numpy()
+    negative = pd.to_numeric(text, errors="coerce").eq(0).to_numpy()
+    return np.where(missing, np.nan, np.where(negative, 0.0, 1.0))
+
+
 def covariates(ppmi_dir):
     ps = _latest(ppmi_dir, "_Subject_Characteristics", "Participant_Status_*.csv")
     ps = ps[["PATNO", "COHORT_DEFINITION", "ENROLL_DATE", "ENROLL_AGE"]].rename(columns={"COHORT_DEFINITION": "COHORT"})
@@ -37,7 +47,7 @@ def covariates(ppmi_dir):
     gen = _latest(ppmi_dir, "_Subject_Characteristics", "iu_genetic_consensus_*.csv")
     gen = gen[["PATNO", "LRRK2", "GBA", "SNCA", "APOE", "PATHVAR_COUNT"]].drop_duplicates("PATNO")
     for g in ["LRRK2", "GBA", "SNCA"]:
-        gen[f"{g}_carrier"] = np.where(gen[g].isna(), np.nan, (gen[g].astype(str) != "0").astype(float))
+        gen[f"{g}_carrier"] = _carrier(gen[g])
     gen["APOE_e4"] = gen["APOE"].astype(str).str.count("E4").where(gen["APOE"].notna())
     out = ps.merge(dm, on="PATNO", how="left").merge(gen, on="PATNO", how="left")
     prs = sorted(Path(ppmi_dir, "_Subject_Characteristics").glob("Polygenic_Risk_Scores_*.csv"))

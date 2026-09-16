@@ -156,7 +156,9 @@ class ImageStore:
             folder = self.cache / cache_key
             folder.mkdir(parents=True, exist_ok=True)
             if scan.kind == "tracts":
-                result = {"scan": scan.public(), "volumes": [], "meshes": [{"url": self.asset(scan.path), "name": scan.description}], "regions": [], "geometry": None}
+                # The fingerprint binds review notes and exports to this exact streamline file.
+                result = {"fingerprint": cache_key, "scan": scan.public(), "volumes": [], "extra": [],
+                          "meshes": [{"url": self.asset(scan.path), "name": scan.description}], "regions": [], "geometry": None}
                 self._prepared[cache_key] = result
                 return result
             volumes = []

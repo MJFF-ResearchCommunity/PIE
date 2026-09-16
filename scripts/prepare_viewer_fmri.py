@@ -5,7 +5,6 @@ opposite phase-encoding runs, or silently choose the largest converter output.
 """
 import argparse
 import csv
-import hashlib
 import json
 import re
 import shutil
@@ -20,7 +19,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pie.imaging.convert import DCM2NIIX
-from pie.imaging.viewer.catalog import iso_date
+from pie.imaging.viewer.catalog import iso_date, merge_manifest, read_manifest, source_fingerprint
 
 
 def bold_description(description):
@@ -80,14 +79,12 @@ def prepare(archives, collection, images, output, max_bytes=3_000_000_000):
         raise ValueError("Explicit selection exceeds the uncompressed extraction budget")
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "manifest.json"
-    doc = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"version": 1, "subjects": [], "scans": []}
-    if doc.get("version") != 1:
-        raise ValueError("Unsupported existing manifest")
+    read_manifest(manifest_path)  # refuse an unusable manifest before converting anything
     converter = subprocess.run([DCM2NIIX, "--version"], capture_output=True, text=True).stdout.strip()
-    scans = []
+    scans, subjects = [], []
     for image_id in images:
         row, source = rows[image_id], selected[image_id]
-        signature = hashlib.sha256(json.dumps([str(source["archive"]), sorted(source["members"])], sort_keys=True).encode()).hexdigest()
+        signature = source_fingerprint(source["archive"], source["members"])
         folder = output / row["Subject"] / image_id
         nifti, sidecar = folder / f"{image_id}_bold.nii.gz", folder / f"{image_id}_bold.json"
         receipt = folder / "conversion.json"
@@ -133,18 +130,9 @@ def prepare(archives, collection, images, output, max_bytes=3_000_000_000):
                                    "run_role": role, "short_reference": short, "example": True,
                                    "manufacturer": meta.get("Manufacturer"), "model": meta.get("ManufacturersModelName"),
                                    "protocol": meta.get("SeriesDescription"), "field_t": meta.get("MagneticFieldStrength"), "sidecar": meta}})
-        if not any(s["id"] == row["Subject"] for s in doc["subjects"]):
-            doc["subjects"].append({"id": row["Subject"], "group": row["Group"], "cohort": row["Group"], "sex": row["Sex"], "age_at_scan": row["Age"]})
+        subjects.append({"id": row["Subject"], "collection": "PPMI", "group": row["Group"], "cohort": row["Group"], "sex": row["Sex"], "age_at_scan": row["Age"]})
         print(f"{image_id}: {row['Subject']} {image.shape}, TR {meta['RepetitionTime']} s, PE {meta.get('PhaseEncodingDirection', 'unknown')} · {role}", flush=True)
-    by_id = {s["id"]: s for s in doc["scans"]}
-    for scan in scans:
-        old = by_id.get(scan["id"])
-        if old and old.get("metadata", {}).get("source_fingerprint") != scan["metadata"]["source_fingerprint"]:
-            raise ValueError("Existing manifest ID belongs to a different source; no manifest changes saved")
-        by_id[scan["id"]] = scan
-    doc["scans"] = list(by_id.values())
-    tmp_manifest = manifest_path.with_suffix(".tmp.json")
-    tmp_manifest.write_text(json.dumps(doc, indent=2)); tmp_manifest.replace(manifest_path)
+    merge_manifest(manifest_path, subjects, scans)
     report = {"archives": inventories, "collection": str(collection), "collection_series": len(rows), "distinct_archive_series": len(all_ids), "missing_ids": sorted(set(rows)-all_ids), "extra_ids": sorted(all_ids-set(rows)), "selected": images, "note": "Central-directory reconciliation is not a pixel-data QC review. Selected DICOM members passed ZIP CRC during extraction; full archives were not decompressed."}
     (output / "fmri_archive_inventory.json").write_text(json.dumps(report, indent=2))
     print(f"Added {len(scans)} examples to {manifest_path}; original archives unchanged", flush=True)

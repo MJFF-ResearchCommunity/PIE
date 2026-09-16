@@ -9,11 +9,13 @@ occipital reference; SBR = target/reference - 1) with open components:
 
     read_projections : photopeak window, all detectors, angle per frame (DICOM NM vectors)
     reconstruct      : filtered back-projection per transaxial slice (scikit-image), Gaussian post-filter
-    register_to_t1   : rigid registration of the SPECT volume to the subject's conformed T1 (SimpleITK, MI)
+    register_to_t1   : registration of the SPECT volume to the subject's conformed T1 via a synthetic DaT template
+                       (SimpleITK, normalised correlation; rigid, plus per-axis scale for fan-beam cameras)
     quantify         : mean counts in FastSurfer caudate/putamen (L/R) and occipital cortex -> SBRs
 
-Not implemented (ponytail): Chang attenuation correction; SBRs are validated/calibrated against PPMI's
-published values on the cohorts that have them, which absorbs the resulting scale offset.
+Attenuation correction (first-order Chang, ``chang_correction``) is implemented but off by default everywhere
+(``reconstruct``, ``process_series`` and the CLI's ``--attenuation``): it lowered agreement with PPMI's SBRs.
+Without it absolute SBRs sit below PPMI's; calibrating against PPMI's published values is left to the study.
 """
 
 import io
@@ -198,11 +200,11 @@ def subtract_point_sources(vol, angles_deg, spacing_mm, filter_name="hann", fact
     return out, int(small.sum())
 
 
-def reconstruct(proj, angles_deg, spacing_mm, fwhm_mm=6.0, filter_name="hann", attenuation=True, point_sources=True):
+def reconstruct(proj, angles_deg, spacing_mm, fwhm_mm=6.0, filter_name="hann", attenuation=False, point_sources=True):
     """Filtered back-projection of every transaxial slice. proj: (n_angles, n_axial, n_transaxial).
     Returns a volume indexed (x, y, z) with isotropic ``spacing_mm`` voxels, external point sources removed
     (see ``subtract_point_sources``; the count is stored on ``reconstruct.point_source_voxels``),
-    Chang-corrected (optional) and Gaussian-smoothed to ``fwhm_mm``."""
+    Chang-corrected when ``attenuation`` (off by default, as in the pipeline) and Gaussian-smoothed to ``fwhm_mm``."""
     from skimage.transform import iradon
 
     n_ang, nz, nx = proj.shape
@@ -287,7 +289,7 @@ def synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0, striatum=(CAUDATE_L, CAUDAT
     return nib.Nifti1Image(syn, t1_img.affine)
 
 
-def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc_img=None, mask_img=None, scale_fit=False):
+def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc_img=None, scale_fit=False):
     """Rigid registration of the SPECT volume to the subject's T1 space via a synthetic DaT template
     (see ``synthetic_spect``), normalised correlation metric. The volume is already in patient axes up to
     the vendor's transaxial conventions, so the initial pose is the centre-of-mass alignment rotated by
@@ -439,11 +441,11 @@ def transform_from_row(row):
     return tx
 
 
-def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0, search_vox=2, mask_img=None, scale_fit=False):
+def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0, search_vox=2, scale_fit=False):
     """Register SPECT -> T1 space (synthetic-template correlation), resample the FastSurfer labels onto the
     SPECT grid and compute SBRs (see ``sbr_from_arrays``). Returns SBRs, ROI means, the registration
     metric (negative normalised correlation; more negative is better) and QC fields."""
-    tx, metric, moving = register_to_t1(spect_img, t1_img, flip_lr, rz=rz, search=search, aparc_img=aparc_img, mask_img=mask_img, scale_fit=scale_fit)
+    tx, metric, moving = register_to_t1(spect_img, t1_img, flip_lr, rz=rz, search=search, aparc_img=aparc_img, scale_fit=scale_fit)
     out = sbr_with_transform(spect_img, aparc_img, tx.GetInverse(), flip_lr=flip_lr, dilate=dilate, ref_dilate=ref_dilate, search_vox=search_vox)
     out["reg_metric"] = metric
     out["flip_lr"] = bool(flip_lr)
@@ -498,8 +500,7 @@ def process_series(zip_path, member, out_dir, fastsurfer_subject_dir=None, fwhm_
     if fastsurfer_subject_dir:
         mri = Path(fastsurfer_subject_dir) / "mri"
         t1, aparc = nib.load(mri / "orig.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
-        mask = nib.load(mri / "mask.mgz") if (mri / "mask.mgz").exists() else None
-        row.update(quantify(img, t1, aparc, flip_lr=flip_lr, mask_img=mask, scale_fit=row.get("hdr_scale_fit", False)))
+        row.update(quantify(img, t1, aparc, flip_lr=flip_lr, scale_fit=row.get("hdr_scale_fit", False)))
         row["fs_image_id"] = Path(fastsurfer_subject_dir).name   # the T1 the transform refers to (needed to requantify)
     return row
 
@@ -562,10 +563,11 @@ def main(argv=None):
     Reconstructs every TOMO projection series in the index (one per subject, the largest by frame count) and
     quantifies SBRs against that subject's FastSurfer segmentation; appends rows to <out-dir>/datscan_sbr.csv."""
     import argparse
-    import csv
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import ProcessPoolExecutor
 
     import pandas as pd
+
+    from .batch import fastsurfer_by_patno, run_batch
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--index", required=True, help="CSV with columns zip, member, patno, image_id, kind, frames (see spect_index.csv)")
@@ -589,10 +591,8 @@ def main(argv=None):
     if a.patnos:
         keep = {int(x) for x in Path(a.patnos).read_text().split()}
         idx = idx[idx["patno"].isin(keep)]
-    sess = pd.read_csv(a.sessions, dtype={"image_id": str})
     fs_root = Path(a.fastsurfer_dir)
-    fs_done = {p.parent.parent.name for p in fs_root.glob("*/stats/aseg+DKT.stats")}
-    fs_by_patno = {int(r.patno): r.image_id for r in sess.sort_values("session_date").itertuples() if r.image_id in fs_done}
+    fs_by_patno = fastsurfer_by_patno(a.sessions, fs_root)     # earliest finished T1, as for the MRI modalities and the manifest
     out_dir = Path(a.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_csv = out_dir / "datscan_sbr.csv"
@@ -602,7 +602,7 @@ def main(argv=None):
         def _fs_dir(r):   # the T1 recorded with the row; older tables fall back to the subject's earliest FastSurfer session
             if isinstance(r.get("fs_image_id"), str) and (fs_root / r["fs_image_id"] / "mri").exists():
                 return str(fs_root / r["fs_image_id"])
-            return str(fs_root / fs_by_patno[int(r["patno"])]) if int(r["patno"]) in fs_by_patno else None
+            return fs_by_patno.get(int(r["patno"]))
         only = {int(x) for x in Path(a.patnos).read_text().split()} if a.patnos else None
         jobs = [(r, _fs_dir(r) if (only is None or int(r["patno"]) in only) else None) for r in d.to_dict("records")]   # fs_dir None = keep as is
         rows = []
@@ -620,35 +620,18 @@ def main(argv=None):
         pd.DataFrame(rows).to_csv(out_csv, index=False)
         print(f"requantified {sum(1 for r in rows if 'sbr_putamen_l_post' in r)}/{len(rows)} rows ->", out_csv)
         return
-    done = set(pd.read_csv(out_csv, dtype={"image_id": str})["image_id"]) if out_csv.exists() else set()
+    done = set(pd.read_csv(out_csv, dtype={"image_id": str})["image_id"]) if out_csv.exists() and out_csv.stat().st_size else set()
     jobs = []
     for r in idx.itertuples():
         if r.image_id in done:
             continue
-        fs_dir = fs_root / fs_by_patno[int(r.patno)] if int(r.patno) in fs_by_patno else None
         zp = r.zip if Path(r.zip).exists() else str(Path(a.zip_dir) / Path(r.zip).name)
-        flip = a.flip_lr == "true"
-        jobs.append((zp, r.member, out_dir / "nifti", str(fs_dir) if fs_dir else None, flip, a.attenuation))
+        jobs.append((zp, r.member, out_dir / "nifti", fs_by_patno.get(int(r.patno)), a.flip_lr == "true", a.attenuation))
     if a.limit:
         jobs = jobs[:a.limit]
-    print(f"{len(jobs)} series to process ({len(done)} already done)", flush=True)
-    with ProcessPoolExecutor(max_workers=a.workers) as ex, open(out_csv, "a", newline="") as fh:
-        writer = None
-        for i, fut in enumerate(as_completed([ex.submit(_job, j) for j in jobs]), start=1):
-            row = fut.result()
-            if writer is None:
-                fields = sorted(set(row) | {"error", "sbr_putamen_l", "sbr_putamen_r", "sbr_caudate_l", "sbr_caudate_r"})
-                if out_csv.stat().st_size == 0:
-                    writer = csv.DictWriter(fh, fieldnames=fields)
-                    writer.writeheader()
-                else:
-                    fields = pd.read_csv(out_csv, nrows=0).columns.tolist()
-                    writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
-            writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
-            fh.flush()
-            if i % 20 == 0 or row.get("error"):
-                print(f"{i}/{len(jobs)} {row['image_id']} {'ERROR ' + row['error'] if row.get('error') else 'ok'}", flush=True)
-    print("done ->", out_csv)
+    print(f"{len(done)} series already done", flush=True)
+    # the shared runner widens the header to every column seen, so a failed first series cannot truncate the table
+    run_batch(jobs, _job, out_csv, workers=a.workers, log_every=20)
 
 
 if __name__ == "__main__":

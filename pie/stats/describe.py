@@ -76,16 +76,91 @@ def normality_test(series: pd.Series, test: str = "shapiro", alpha: float = 0.05
     }
 
 
-def missingness_report(df: pd.DataFrame, variables: Optional[Iterable[str]] = None) -> Dict[str, Any]:
-    """Per-column counts plus a chi-square pattern test across selected columns.
+def _em_normal(x: np.ndarray, max_iter: int = 10_000, tol: float = 1e-10):
+    """Maximum-likelihood mean and covariance of multivariate-normal data with gaps (EM).
 
-    A full Little's MCAR test requires an EM routine that isn't ergonomic to
-    ship here; instead we compute a pragmatic chi-square on per-column missing
-    counts against a uniform expectation. A very small p-value suggests
-    missingness is structured (i.e. not MCAR) and warrants investigation.
+    Rows are grouped by missingness pattern; the E-step fills each pattern's missing
+    values with their conditional expectation and adds the conditional covariance.
     """
-    from scipy.stats import chi2
+    observed = ~np.isnan(x)
+    patterns, inverse = np.unique(observed, axis=0, return_inverse=True)
+    inverse = inverse.ravel()
+    n, p = x.shape
+    mu = np.nanmean(x, axis=0)
+    sigma = np.diag(np.nanvar(x, axis=0))
+    for _ in range(max_iter):
+        filled = np.where(observed, x, 0.0)
+        extra = np.zeros((p, p))
+        for k, obs in enumerate(patterns):
+            miss = ~obs
+            if not miss.any():
+                continue
+            rows = inverse == k
+            s_mo = sigma[np.ix_(miss, obs)]
+            coef = np.linalg.solve(sigma[np.ix_(obs, obs)], s_mo.T).T
+            filled[np.ix_(rows, miss)] = mu[miss] + (x[np.ix_(rows, obs)] - mu[obs]) @ coef.T
+            extra[np.ix_(miss, miss)] += rows.sum() * (sigma[np.ix_(miss, miss)] - coef @ s_mo.T)
+        new_mu = filled.mean(axis=0)
+        centred = filled - new_mu
+        new_sigma = (centred.T @ centred + extra) / n
+        done = max(np.abs(new_mu - mu).max(), np.abs(new_sigma - sigma).max()) < tol
+        mu, sigma = new_mu, new_sigma
+        if done:
+            break
+    return mu, sigma, patterns, inverse
 
+
+def _little_mcar(frame: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """Little's (1988) chi-square test that numeric data are missing completely at random.
+
+    EM gives the ML mean μ and covariance Σ under multivariate normality, then
+    d² = Σ_j n_j (ȳ_j − μ_j)ᵀ Σ_j⁻¹ (ȳ_j − μ_j) over missingness patterns j, on Σ p_j − p
+    degrees of freedom. Reproduces naniar::mcar_test on R's airquality (d² = 35.1, df = 14).
+    None when the test is undefined: nothing missing, fewer than two usable columns, no
+    degrees of freedom, or a singular covariance (e.g. a constant column).
+    """
+    x = frame.to_numpy(dtype=float, na_value=np.nan)
+    x = x[:, ~np.isnan(x).all(axis=0)]            # an all-missing column carries no information
+    x = x[~np.isnan(x).all(axis=1)]               # nor does an all-missing row
+    if x.shape[1] < 2 or not np.isnan(x).any():
+        return None
+    try:
+        mu, sigma, patterns, inverse = _em_normal(x)
+        d2, dof = 0.0, -x.shape[1]
+        for k, obs in enumerate(patterns):
+            rows = x[inverse == k][:, obs]
+            diff = rows.mean(axis=0) - mu[obs]
+            d2 += len(rows) * float(diff @ np.linalg.solve(sigma[np.ix_(obs, obs)], diff))
+            dof += int(obs.sum())
+    except np.linalg.LinAlgError:
+        return None
+    if dof < 1:
+        return None
+    p = float(_sps.chi2.sf(d2, dof))
+    return {
+        "statistic": d2,
+        "p_value": p,
+        "dof": dof,
+        "n_patterns": int(len(patterns)),
+        "n_rows": int(len(x)),
+        "interpretation": (
+            "No evidence that missingness depends on the observed values (p > 0.05); "
+            "this does not show the data are MCAR"
+            if p > 0.05
+            else "Missingness depends on the observed values (p ≤ 0.05): not MCAR, "
+                 "so complete-case estimates may be biased"
+        ),
+    }
+
+
+def missingness_report(df: pd.DataFrame, variables: Optional[Iterable[str]] = None) -> Dict[str, Any]:
+    """Per-column missing counts plus Little's MCAR test across the numeric columns.
+
+    ``little_mcar`` is Little's (1988) test: EM estimates of the mean and covariance, then
+    the d² statistic across missingness patterns. It assumes the numeric columns are
+    jointly normal and its p-value is asymptotic. A non-significant result only fails to
+    show that missingness depends on observed values; it cannot rule out MNAR.
+    """
     cols = list(variables) if variables is not None else list(df.columns)
     per_col: Dict[str, Dict[str, float]] = {}
     for c in cols:
@@ -94,28 +169,9 @@ def missingness_report(df: pd.DataFrame, variables: Optional[Iterable[str]] = No
             "n_missing": n_miss,
             "pct_missing": float(100.0 * n_miss / len(df)) if len(df) else 0.0,
         }
-
-    mcar: Optional[Dict[str, float]] = None
     numeric_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
-    if len(numeric_cols) >= 2:
-        miss_counts = df[numeric_cols].isna().sum()
-        expected = float(miss_counts.mean())
-        if expected > 0:
-            chi2_stat = float(((miss_counts - expected) ** 2 / max(expected, 1e-9)).sum())
-            dof = max(len(numeric_cols) - 1, 1)
-            mcar = {
-                "statistic": chi2_stat,
-                "p_value": float(1 - chi2.cdf(chi2_stat, dof)),
-                "dof": dof,
-                "interpretation": (
-                    "Missingness pattern is consistent with MCAR (p > 0.05)"
-                    if float(1 - chi2.cdf(chi2_stat, dof)) > 0.05
-                    else "Missingness pattern varies across columns (p ≤ 0.05) — consider MAR/MNAR mechanisms"
-                ),
-            }
-
     return {
         "n_rows": int(len(df)),
         "per_column": per_col,
-        "little_mcar": mcar,
+        "little_mcar": _little_mcar(df[numeric_cols]),
     }

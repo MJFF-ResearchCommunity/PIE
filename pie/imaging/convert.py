@@ -7,13 +7,14 @@ conversion; the zip remains the raw archive.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 
-DCM2NIIX = str(Path(__file__).resolve().parents[2] / "venv_imaging" / "bin" / "dcm2niix")
+DCM2NIIX = os.environ.get("PIE_DCM2NIIX") or str(Path(__file__).resolve().parents[2] / "venv_imaging" / "bin" / "dcm2niix")
 
 # JSON sidecar fields worth keeping as per-scan metadata.
 SIDECAR_FIELDS = ["Manufacturer", "ManufacturersModelName", "MagneticFieldStrength", "SoftwareVersions",
