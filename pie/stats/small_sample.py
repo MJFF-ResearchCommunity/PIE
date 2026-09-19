@@ -1,9 +1,9 @@
 """Small-sample inference and classification that keep selection inside validation.
 
-Imaging studies with a few dozen participants often (1) screen features by group tests, (2) search feature
-subsets for the best cross-validated score, and (3) report that score. When steps 1 and 2 use the same
-participants as the reported validation, the score is optimistic: with enough subsets, pure noise yields a
-high "cross-validated" precision or AUC. These helpers do the same analysis honestly and measure the optimism.
+Feature screening and feature-subset search are common in small imaging samples. When they use the same
+participants as the reported validation, the estimate is optimistically biased (Varma & Simon 2006; Cawley &
+Talbot 2010). These helpers run the whole search inside cross-validation, and can also report the resubstitution
+design and its permutation distribution so the size of that bias can be shown for a given sample.
 
     bootstrap_partial_correlation(df, x, y, covars)   partial r with a percentile bootstrap interval (no pingouin)
     naive_subset_search(X, y)                          best subset chosen on the evaluation folds themselves

@@ -126,25 +126,34 @@ def fetch_jhu(cache_dir, download=True):
     return labels, fa, provenance
 
 
-def map_labels_to_subject(subject_fa, atlas_fa, atlas_labels, brain_mask=None, seed=0, syn=True):
+def map_labels_to_subject(subject_fa, atlas_fa, atlas_labels, brain_mask=None, seed=0, syn=True, max_resolution_mm=None):
     """Register the atlas FA template to the subject FA (affine, then SyN) and pull the labels.
 
-    Returns (labels_img on the subject FA grid, transforms dict). Labels use ``genericLabel`` interpolation.
+    ``max_resolution_mm`` (e.g. 2.0): when the subject grid is finer than this, registration runs on a copy
+    resampled to that isotropic spacing, and the labels are still pulled onto the native grid (transforms live in
+    physical space). Scans reconstructed at 1 x 1 x 2 mm then register as fast as native 2 mm scans, and at the
+    resolution the diffusion data actually carry. Returns (labels_img on the subject FA grid, transforms dict).
+    Labels use ``genericLabel`` interpolation.
     """
     import ants
 
-    fixed = _to_ants(subject_fa)
+    native = _to_ants(subject_fa)
     if brain_mask is not None:
-        fixed = fixed * _to_ants(brain_mask)
+        native = native * _to_ants(brain_mask)
+    fixed = native
+    spacing = np.asarray(subject_fa.header.get_zooms()[:3], float)
+    if max_resolution_mm is not None and spacing.min() < 0.95 * max_resolution_mm:
+        fixed = ants.resample_image(native, (max_resolution_mm,) * 3, use_voxels=False, interp_type=0)
     moving = _to_ants(atlas_fa)
     kind = "SyN" if syn else "Affine"
     reg = ants.registration(fixed=fixed, moving=moving, type_of_transform=kind, random_seed=int(seed),
                             syn_metric="CC", syn_sampling=4)
-    warped = ants.apply_transforms(fixed=fixed, moving=_to_ants(atlas_labels), transformlist=reg["fwdtransforms"],
+    warped = ants.apply_transforms(fixed=native, moving=_to_ants(atlas_labels), transformlist=reg["fwdtransforms"],
                                    interpolator="genericLabel")
     out = nib.Nifti1Image(np.rint(_from_ants(warped, subject_fa)).astype(np.int16), subject_fa.affine)
-    warped_fa = ants.apply_transforms(fixed=fixed, moving=moving, transformlist=reg["fwdtransforms"], interpolator="linear")
-    return out, {"fwdtransforms": reg["fwdtransforms"], "warped_template_fa": _from_ants(warped_fa, subject_fa), "type": kind}
+    warped_fa = ants.apply_transforms(fixed=native, moving=moving, transformlist=reg["fwdtransforms"], interpolator="linear")
+    return out, {"fwdtransforms": reg["fwdtransforms"], "warped_template_fa": _from_ants(warped_fa, subject_fa), "type": kind,
+                 "registration_spacing_mm": [float(v) for v in fixed.spacing]}
 
 
 def registration_qc(subject_fa, warped_template_fa, subject_labels, atlas_labels, brain_mask,
