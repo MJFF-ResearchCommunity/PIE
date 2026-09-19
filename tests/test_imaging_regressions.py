@@ -173,8 +173,9 @@ def _current_sha():
 
 
 def test_nm_refeature_labels_rows_with_the_current_version(tmp_path):
+    from pie.imaging.atlases import cit168_provenance
     _nm_subject(tmp_path, _box_sn())
-    row = {"patno": 1, "error": "", "atlas_sha256": _current_sha(), "nm_sn_l_cnr": 9.9, "processing_version": "old"}
+    row = {"patno": 1, "error": "", **cit168_provenance(), "nm_sn_l_cnr": 9.9, "processing_version": "old"}
     out = nm._refeature_job((str(tmp_path / "nm"), row))
     assert out["error"] == "" and out["nm_sn_l_cnr"] != 9.9
     assert out["processing_version"] == nm.PROCESSING_VERSION + "-refeatured"
@@ -197,6 +198,7 @@ def test_nm_refeature_regenerates_a_stale_atlas_from_saved_transforms(tmp_path):
     t1_aff[:3, 3] = (-20.0, -40.0, -30.0)
     nib.save(nib.MGHImage(np.ones((40, 40, 30), np.float32), t1_aff), fs / "mri" / "orig.mgz")
     sitk.WriteTransform(sitk.AffineTransform(3), str(dwi.mni_cache_path(fs)))
+    dwi._write_mni_cache_provenance(dwi.mni_cache_path(fs), {})
     out = nm._refeature_job((str(tmp_path / "nm"), {"patno": 1, "error": ""}, str(fs)))
     assert out["error"] == "" and out["atlas_sha256"] == _current_sha()
     assert out["n_sn_l"] > 0 and out["n_sn_r"] > 0 and 0 < out["sn_slab_coverage"] <= 1.5

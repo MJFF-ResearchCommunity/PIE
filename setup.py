@@ -23,6 +23,9 @@ setuptools.setup(
         "pie.imaging": [
             "data/atlases/CIT168_v1_MNI152NLin2009cAsym_det25.json",
             "data/atlases/CIT168_v1_MNI152NLin2009cAsym_det25.nii.gz",
+            "data/atlases/MNI152NLin2009cAsym_brain_2mm.json",
+            "data/atlases/MNI152NLin2009cAsym_brain_2mm.nii.gz",
+            "data/atlases/MNI152NLin2009cAsym_brain_2mm_LICENSE.txt",
         ],
     },
     classifiers=[

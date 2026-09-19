@@ -4,7 +4,7 @@ embed.py — fixed-length T1 embeddings from pretrained open-weight brain MRI mo
 The downstream question is whether a generic image representation carries information the FastSurfer region
 features miss. Every backend reads the FastSurfer `orig_nu.mgz` (N4-corrected, 1 mm, 256^3) masked with `mask.mgz`,
 resampled linearly into MNI space with the package's cached affine (`pie.imaging.dwi.register_t1_to_mni`, fitted on
-the 2 mm nilearn MNI152NLin2009cAsym brain; ~6 s when not cached) onto the 1 mm grid each model was trained on, then
+the bundled, checksummed 2 mm MNI152NLin2009cAsym template; ~6 s when not cached) onto the 1 mm grid each model was trained on, then
 normalised the way the authors' dataset code does:
 
     brainiac  Tak et al. 2026 (Nat Neurosci), MONAI ViT-B/16 on 96^3, 768-d. Authors: rigid to their head template

@@ -5,8 +5,8 @@ Part of the [imaging layer](imaging.md). Both read the subject's FastSurfer T1 (
 
 | Module | Output | External tools |
 |---|---|---|
-| `nm.py` | `nm_features.csv`: nigral contrast ratios on the native NM slab | dcm2niix, SimpleITK, nilearn (MNI template) |
-| `nm_template.py` | `nm_template_features.csv`: contrast in a study NM template | + ANTsPy (`ants`), scikit-image |
+| `nm.py` | `nm_features.csv`: nigral contrast ratios on the native NM slab | dcm2niix, SimpleITK (the MNI target is bundled with PIE) |
+| `nm_template.py` | `nm_template_features.csv`: contrast in a study NM template | + ANTsPy (`ants`), scikit-image, nilearn (its own 1 mm template) |
 | `datscan.py` | `datscan_sbr.csv`: striatal binding ratios from raw projections | pydicom, scikit-image, SimpleITK |
 
 ## Neuromelanin-sensitive MRI (`nm.py`)
@@ -83,7 +83,7 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 
 | Flag | Meaning |
 |---|---|
-| `--refeature` | Recompute the feature columns of every finished subject from the saved slab and label maps (`refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None)`), without registering. Needs `--keep-nifti` outputs. The saved atlas map is reused only when the row's `atlas_sha256` is the bundled atlas; otherwise (rows from before 2026-09-15) the atlas and hemisphere maps are regenerated from `slab_to_t1.tfm` and the cached T1 → MNI affine and rewritten, `sn_slab_coverage` and the `atlas_*` columns are recomputed, and a subject without those transforms gets an `error` instead of stale-atlas values. Rows are labelled `<PROCESSING_VERSION>-refeatured`. The previous table is kept once as `nm_features.pre_refeature.csv`; `--patnos` restricts the run; `--zips` is required by the parser but unused |
+| `--refeature` | Recompute the feature columns of every finished subject from the saved slab and label maps (`refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None)`), without registering. Needs `--keep-nifti` outputs. The saved atlas map is reused only when the row's `atlas_sha256` **and** `registration_reference_sha256` match the bundled atlas and its reference template: the current atlas hash alone does not authorise an old mapping, because the map may have been made against another reference. Otherwise (rows from before 2026-09-15) the atlas and hemisphere maps are regenerated from `slab_to_t1.tfm` and the verified T1 → MNI cache and rewritten, `sn_slab_coverage` and the provenance columns are recomputed, and a subject without those transforms (or with an unverified cache) gets an `error` instead of stale-atlas values. Rows are labelled `<PROCESSING_VERSION>-refeatured`. The previous table is kept once as `nm_features.pre_refeature.csv`; `--patnos` restricts the run; `--zips` is required by the parser but unused |
 
 `--keep-nifti` saves, per subject: `nm_mean.nii.gz`, `pauli_nm.nii.gz`, `aseg_nm.nii.gz`, `ref_nm.nii.gz`,
 `left_nm.nii.gz`, `sn_refined_nm.nii.gz` (1 = left, 2 = right), `slab_to_t1.tfm` (T1 point → slab point; reused by
@@ -101,7 +101,7 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 | `nm_sn_shift_mm_{l,r}` | Refinement displacement (mm) |
 | `n_repeats`, `repeat_motion_mm_max`, `reg_nm_t1_mi`, `reg_t1_mni_mi`, `reg_init`, `sn_slab_coverage` | QC |
 | `shape`, `voxel_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `flip_angle`, `mt_flag`, `series_desc`, `n_series` | Acquisition |
-| `patno`, `acquisition_date`, `fs_image_id`, `processing_version`, `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold`, `error` | Lineage |
+| `patno`, `acquisition_date`, `fs_image_id`, `processing_version`, `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold`, `registration_reference_space`, `registration_reference_sha256`, `error` | Lineage |
 
 `sn_slab_coverage` is (SN voxels on the slab x voxel volume) / atlas SN voxels in 1 mm T1 space: a resampled-volume
 ratio, not a bounded fraction. New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-09-15-mni-atlas-nonoverlap-reference-v4`.

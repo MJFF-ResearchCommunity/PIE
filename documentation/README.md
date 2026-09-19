@@ -16,6 +16,8 @@ derived images        ──Brain Explorer──► interactive 3-D / slice revi
 |---|---|---|
 | End-to-end tabular pipeline, CLI flags, leakage config | [pipeline.md](pipeline.md) | `pie/pipeline.py`, `config/` |
 | Walkthrough: a basic `COHORT` classification, stage by stage | [basic_classification.ipynb](../walkthroughs/basic_classification.ipynb) | — |
+| Walkthrough: LONI download → imaging-derived phenotypes | [imaging_features.ipynb](../walkthroughs/imaging_features.ipynb) | — |
+| Walkthrough: Brain Explorer, on open data and on your PPMI outputs | [brain_viewer.ipynb](../walkthroughs/brain_viewer.ipynb) | — |
 | Loading raw PPMI tables (PIE-clean) | [data_loader.md](data_loader.md) | `pie_clean` (companion package) |
 | Cleaning raw PPMI tables (PIE-clean) | [data_preprocessor.md](data_preprocessor.md) | `pie_clean` |
 | Dropping low-value columns, merging tables | [data_reducer.md](data_reducer.md) | `pie/data_reducer.py` |

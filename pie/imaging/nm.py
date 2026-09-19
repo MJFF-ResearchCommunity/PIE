@@ -49,7 +49,7 @@ NM_PATTERN = r"GRE.?MT|MT.?GRE|GRE ?- ?MT|NM\s*-|Neuromelanin|NM_MT|NM MT"
 EXCLUDE = r"MTC-NO|B0|Map|TRACEW|ADC|_FA"
 DILATE_MM = 3.0
 REFINE_MM = 2.0        # max in-plane translation when refining the atlas SN position on the slab
-PROCESSING_VERSION = "2026-09-15-mni-atlas-nonoverlap-reference-v4"   # complete runs; --refeature appends "-refeatured"
+PROCESSING_VERSION = "2026-09-16-explicit-mni2009c-reference-v5"   # complete runs; --refeature appends "-refeatured"
 
 
 # ------------------------------------------------------------------------------------------ index / convert
@@ -344,17 +344,18 @@ def _slab_coverage(rois, spacing, n_sn_t1):
     return float((rois["sn_l"].sum() + rois["sn_r"].sum()) * np.prod(spacing) / max(n_sn_t1 * 1.0, 1.0))
 
 
-def refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None):
+def refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None, registration_reference_sha256=None):
     """Feature columns of a finished subject again, from the saved slab and label maps (``--keep-nifti`` outputs),
     without registering: the way to apply a changed ``features`` to a whole run.
 
-    The saved atlas map is reused only when ``atlas_sha256`` (the row's provenance) is the bundled atlas. Otherwise
+    The saved atlas map is reused only when its atlas AND registration-reference hashes match. Otherwise
     (legacy rows mapped the native-space CIT168 file) the atlas and hemisphere maps are regenerated from the saved
     slab -> T1 transform and the cached T1 -> MNI affine, rewritten, and ``sn_slab_coverage`` plus the atlas
     provenance are returned too; without those transforms the subject is refused rather than measured on a stale atlas."""
     import SimpleITK as sitk
 
     from .atlases import cit168_provenance
+    from .dwi import load_mni_cache
 
     d = Path(work_dir) / str(patno)
     img = nib.load(d / "nm_mean.nii.gz")
@@ -363,17 +364,18 @@ def refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None):
     spacing = [float(z) for z in img.header.get_zooms()[:3]]
     tgt = _sitk_native(nm, img.affine)
     cache, slab = (mni_cache_path(fastsurfer_dir) if fastsurfer_dir else None), d / "slab_to_t1.tfm"
-    chain = [sitk.ReadTransform(str(cache)), sitk.ReadTransform(str(slab))] if cache and cache.exists() and slab.exists() else None
+    chain = [load_mni_cache(cache), sitk.ReadTransform(str(slab))] if cache and cache.exists() and slab.exists() else None
     provenance, out = cit168_provenance(), {}
     hemi_path = d / "left_nm.nii.gz"
-    if atlas_sha256 == provenance["atlas_sha256"]:
+    if (atlas_sha256 == provenance["atlas_sha256"]
+            and registration_reference_sha256 == provenance["registration_reference_sha256"]):
         pauli = np.transpose(np.asanyarray(nib.load(d / "pauli_nm.nii.gz").dataobj), (2, 1, 0))
         # The saved hemisphere map permits refeaturing without new registration or guessing voxel handedness.
         left = (np.transpose(np.asanyarray(nib.load(hemi_path).dataobj), (2, 1, 0)).astype(bool) if hemi_path.exists()
                 else atlas_left_mask(tgt, chain) if chain else None)
     elif chain is None:
-        raise ValueError("saved atlas map is not the bundled CIT168 atlas and slab_to_t1.tfm or the cached T1->MNI "
-                         "affine is missing to regenerate it; re-run nm for this subject")
+        raise ValueError("saved atlas/reference mapping is unverified and the slab transform or verified MNI2009c "
+                         "cache is missing; re-run nm for this subject")
     else:
         pauli, left = labels_to_dwi(pauli_atlas(), tgt, chain), atlas_left_mask(tgt, chain)
         for name, arr, dtype in (("pauli_nm", pauli, np.int16), ("left_nm", left, np.uint8)):
@@ -393,7 +395,8 @@ def _refeature_job(args):
     if row.get("error") or not (Path(work_dir) / str(row["patno"]) / "nm_mean.nii.gz").exists():
         return keep
     try:
-        out = refeature_subject(work_dir, row["patno"], fs_dir[0] if fs_dir else None, atlas_sha256=row.get("atlas_sha256"))
+        out = refeature_subject(work_dir, row["patno"], fs_dir[0] if fs_dir else None, atlas_sha256=row.get("atlas_sha256"),
+                                registration_reference_sha256=row.get("registration_reference_sha256"))
         keep["processing_version"] = PROCESSING_VERSION + "-refeatured"   # current features, original registration
         return {**keep, **out, "error": out.pop("nm_error", "")} if "nm_error" not in out else {**keep, "error": out["nm_error"]}
     except Exception as e:
@@ -448,7 +451,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     (work / 'repeat_selection.json').write_text(json.dumps(meta['PIERepeatSelection'], indent=2))
     row = {"patno": patno, "n_series": len(series_rows), "n_repeats": n_rep, "repeat_motion_mm_max": motion,
            "shape": "x".join(map(str, nm_img.shape)), "voxel_mm": "x".join(str(round(float(z), 2)) for z in nm_img.header.get_zooms()[:3]),
-           "manufacturer": str(meta.get("Manufacturer", "")), "model": str(meta.get("ManufacturerModelName", "")),
+           "manufacturer": str(meta.get("Manufacturer", "")), "model": str(meta.get("ManufacturersModelName", meta.get("ManufacturerModelName", ""))),
            "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "flip_angle": meta.get("FlipAngle", np.nan),
            "mt_flag": str(meta.get("MTState", "")), "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
     tx_t1_nm, m_rigid, init_used, tx_mni_t1, m_mni, n_sn_t1 = register_slab(nm_img, fastsurfer_dir, sampling_seed=sampling_seed)

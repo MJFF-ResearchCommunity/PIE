@@ -21,7 +21,7 @@ DTI zip(s) ──index/convert (dcm2niix)──► assemble runs ──[denoise]
 | `dwi_acquisition.py` | Acquisition-aware run grouping/regridding, instrumented DIPY NLS | development only |
 | `dwi_correction.py` | Single-acquisition selection, eddy command builder, geometry checks | opt-in API |
 
-External tools: `dcm2niix` (installed into `venv_imaging`; `PIE_DCM2NIIX` overrides), SimpleITK, DIPY, nilearn (MNI template). Optional:
+External tools: `dcm2niix` (installed into `venv_imaging`; `PIE_DCM2NIIX` overrides), SimpleITK, DIPY (the MNI152NLin2009cAsym target is bundled with PIE, so nothing is downloaded). Optional:
 FSL `topup`/`applytopup` for `--fsl` (found via `$FSLDIR`, else `~/fsl` if `~/fsl/bin/topup` exists); MRtrix3
 `dwidenoise`/`mrdegibbs` for `--denoise` (DIPY fallback when absent); MRtrix3 3.0.x on `PATH` for `--fba`
 (`mrconvert dwi2response dwi2fod mtnormalise tckgen tckedit tckinfo afdconnectivity tcksample`); ANTsPy (`ants`)
@@ -75,10 +75,15 @@ and PPMI-2 Siemens Prisma three-shell (b = 700/1000/2000, 64 directions each, re
    optimisation is NaN, never the prior value; `fw_fit_valid_fraction` records the fitted fraction.
 7. **`register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0)`** — rigid MI, mean b0 → brain-masked
    conformed T1 at 2 mm; returns (T1→b0 transform, metric). **`register_t1_to_mni(t1_img, t1_mask_img,
-   cache_path=None, sampling_seed=0)`** — affine MI, brain-masked T1 → nilearn MNI152NLin2009cAsym (2 mm);
-   with `cache_path` (`mni_cache_path(fs_subject)` =
-   `<fastsurfer>/<IMAGE_ID>/mri/transforms/t1_to_mni152_affine.tfm`) it is fitted once and shared by NM and
-   `embed` (a cached read returns metric NaN).
+   cache_path=None, sampling_seed=0)`** — affine MI, brain-masked T1 → the bundled, checksummed
+   MNI152NLin2009cAsym 2 mm template (`atlases.mni2009c_template()`, not nilearn's default, which is a 2009a
+   image); with `cache_path` (`mni_cache_path(fs_subject)` =
+   `<fastsurfer>/<IMAGE_ID>/mri/transforms/t1_to_MNI152NLin2009cAsym_affine_v2.tfm`, versioned so a legacy cache
+   is not reused by name) it is fitted once and shared by NM and
+   `embed` (a cached read returns metric NaN). The cache carries a `.json` sidecar recording the reference space
+   and SHA-256, a registration version, the transform's own hash and the T1/mask hashes and sampling seed;
+   **`load_mni_cache(path, expected_inputs=None)`** raises on anything unverified or mismatched and leaves the file
+   in place, so a legacy 2009a cache is never silently reused.
 8. **`labels_to_dwi(label_img, target, chain)`** — nearest-neighbour resampling of FastSurfer labels (`[T1→DWI]`)
    and the CIT168 atlas (`[MNI→T1, T1→DWI]`) onto the native DWI grid; the chain is inverted and applied in
    reverse, as ITK composites need. **`pauli_atlas()`** returns `atlases.cit168_mni2009c()`: the authors' CIT168
