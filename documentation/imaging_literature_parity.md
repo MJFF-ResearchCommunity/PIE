@@ -13,9 +13,9 @@ connectivity from group ICA, neuromelanin SN volume and intensity, and JHU tract
 | Basal ganglia network from group ICA, caudate and putamen weights | `fmri_striatal.group_ica`, `select_component`, `dual_regression`, `roi_means` | template for BGN selection is the CIT168 striatum, independent of the patients |
 | Seed-based striatal connectivity | `fmri_striatal.striatal_rois`, `roi_timeseries`, `seed_network_connectivity` | BOLD must already be in MNI152NLin2009cAsym |
 | Neuromelanin SN volume and signal relative to white matter | `nm_volume.hyperintense_volume`, `mask_volume`, `normalised_intensity` | threshold volume depends several-fold on `k`; report it |
-| Tract FA on the 48-label JHU ICBM-DTI-81 atlas | `dwi_tracts.fetch_jhu`, `map_labels_to_subject`, `registration_qc`, `tract_features` | atlas FA template registered to subject FA, so no MNI variant is assumed; laterality checked on load |
+| Tract FA on the 48-label JHU ICBM-DTI-81 atlas | `dwi_tracts.fetch_jhu`, `map_labels_to_subject`, `registration_qc`, `tract_features` | atlas FA template registered to subject FA, so no MNI variant is assumed; laterality checked on load; `max_resolution_mm=2.0` registers finer grids (e.g. 1 x 1 x 2 mm reconstructions) on a 2 mm copy and still pulls labels onto the native grid |
 | Partial correlations with bootstrap | `stats.small_sample.bootstrap_partial_correlation` | no pingouin dependency |
-| SVM with feature-subset search and leave-one-out validation | `stats.small_sample.nested_subset_search`, `naive_subset_search`, `subset_search_null` | the nested version runs the search inside each fold; the null shows how high the naive design scores on noise |
+| SVM with feature-subset search and leave-one-out validation | `stats.small_sample.nested_subset_search`, `naive_subset_search`, `subset_search_null` | the search can run inside each validation fold; the other two help size selection bias in a given sample |
 
 Real-data checks recorded in each module's docstring: JHU tract FA on a PPMI 2 mm scan (template FA
 correlation 0.69 with SyN, 0.54 affine; posterior internal capsule 0.67, splenium 0.56), neuromelanin volumes on
