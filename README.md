@@ -159,6 +159,9 @@ Diffusion, neuromelanin and DaTscan have their own runners, described in
 [NM and DaTscan](documentation/imaging_nm_datscan.md). For resting-state fMRI, see
 [fMRI processing](documentation/fmriprep.md).
 
+Notebook: [`walkthroughs/imaging_features.ipynb`](walkthroughs/imaging_features.ipynb) walks the
+whole path, from the LONI download to IDPs joined to the pipeline.
+
 ### 5. Explore brains in 3-D
 
 You can try the Brain Explorer without PPMI access. The fetch script downloads openly licensed
@@ -182,8 +185,10 @@ mild cognitive impairment (OpenNeuro ds005892, CC0).*
 
 The example set also includes a T1 with FastSurfer structures from that same participant, a DTI
 example from a healthy older control, and a head CT. [Brain Explorer](documentation/brain_viewer.md)
-has the full walkthrough and attributions, and covers PIE's own outputs, imports, fusion rules and
-the HTTP API.
+documents the attributions, PIE's own outputs, imports, fusion rules and the HTTP API.
+
+Notebook: [`walkthroughs/brain_viewer.ipynb`](walkthroughs/brain_viewer.ipynb) demonstrates the
+viewer on the open data above, then shows the same viewer reading your PPMI outputs.
 
 ## Documentation
 

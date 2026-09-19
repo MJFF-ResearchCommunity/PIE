@@ -13,6 +13,25 @@ import numpy as np
 ATLAS_DIR = Path(__file__).with_name('data') / 'atlases'
 CIT168_STEM = 'CIT168_v1_MNI152NLin2009cAsym_det25'
 MNI_SPACE = 'MNI152NLin2009cAsym'
+MNI_TEMPLATE_STEM = 'MNI152NLin2009cAsym_brain_2mm'
+
+
+def mni2009c_template_metadata():
+    return json.loads((ATLAS_DIR / (MNI_TEMPLATE_STEM + '.json')).read_text())
+
+
+def mni2009c_template():
+    """The verified reference matching CIT168, independent of Nilearn defaults."""
+    meta = mni2009c_template_metadata()
+    if meta['space'] != MNI_SPACE:
+        raise ValueError('CIT168 atlas and registration template spaces differ')
+    path = ATLAS_DIR / meta['filename']
+    if hashlib.sha256(path.read_bytes()).hexdigest() != meta['sha256']:
+        raise ValueError('Registration template checksum mismatch')
+    image = nib.load(path)
+    if list(image.shape) != meta['shape'] or not np.allclose(image.affine, meta['affine'], rtol=0, atol=1e-6):
+        raise ValueError('Registration template grid mismatch')
+    return image
 
 
 def cit168_metadata():
@@ -39,4 +58,6 @@ def cit168_mni2009c(expected_space=MNI_SPACE):
 def cit168_provenance():
     meta = cit168_metadata()
     return {'atlas_space': meta['space'], 'atlas_version': meta['version'],
-            'atlas_sha256': meta['sha256'], 'atlas_probability_threshold': meta['probability_threshold']}
+            'atlas_sha256': meta['sha256'], 'atlas_probability_threshold': meta['probability_threshold'],
+            'registration_reference_space': MNI_SPACE,
+            'registration_reference_sha256': mni2009c_template_metadata()['sha256']}

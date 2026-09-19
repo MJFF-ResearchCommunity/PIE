@@ -38,6 +38,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `dwi_tensor_qc.py`, `freewater_qc.py`, `dwi_acquisition.py`, `dwi_correction.py` | Opt-in DWI measurement and correction safeguards ([page](imaging_dwi.md#opt-in-measurement-apis)) | |
 | `nm.py`, `nm_template.py` | Neuromelanin MRI ([page](imaging_nm_datscan.md)) | yes |
 | `datscan.py` | DaTscan SPECT reconstruction and SBRs ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | yes |
+| `dwi_tracts.py`, `fmri_striatal.py`, `nm_volume.py`, `volumes.py` | JHU tract measures, striatal / basal-ganglia-network connectivity, neuromelanin volume, tissue volumes and head-size adjustment ([page](imaging_literature_parity.md)) | |
 | `flair.py` | White-matter hyperintensity burden | yes |
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
 | `qc.py` | Overlay montages and contact sheets for visual QC | yes |
@@ -61,8 +62,10 @@ bash scripts/setup_imaging.sh          # or: bash scripts/setup_imaging.sh cpu  
 The script (needs [`uv`](https://docs.astral.sh/uv/)) clones FastSurfer into `third_party/FastSurfer`, creates a
 Python 3.12 `venv_imaging/` with FastSurfer's requirements (torch for the chosen backend, SimpleITK,
 scikit-image, MONAI, …) plus `dcm2niix pydicom nibabel pandas numpy neuroCombat scikit-learn dipy nilearn antspyx
-matplotlib pytest` and the modelling libraries, and tries `endgame-ml[tabular]`. DIPY and nilearn are needed by
-`dwi`, `nm`, `flair`, `embed` and `nm_template`; ANTsPy (`antspyx`) by `dwi_refine` and `nm_template`.
+matplotlib pytest` and the modelling libraries, and tries `endgame-ml[tabular]`. Of those, DIPY is what the
+diffusion fits need, scikit-image the DaTscan reconstruction and the NM template masks, and nilearn and ANTsPy the
+two optional deformable passes (`dwi_refine`, `nm_template`). The MNI target of the default registrations is
+bundled with PIE, so no template is downloaded.
 
 | Tool | Used by | How PIE finds it |
 |---|---|---|
@@ -313,7 +316,7 @@ the authors' voxel order and intensity normalisation:
 | `sfcn` | Peng et al. 2021, UK Biobank brain age | FSL MNI152 182 x 218 x 182, LAS, `x / x.mean()`, centre crop 160 x 192 x 160 | `emb_sfcn_0..63` + `brainage_sfcn` (expected age over bins 42-82) |
 
 Deviations from the authors' pipelines: affine instead of rigid alignment for BrainIAC and SimCLR, the FastSurfer
-mask instead of HD-BET / SynthStrip, nilearn's MNI152NLin2009cAsym affine target for all three, no WhiteStripe
+mask instead of HD-BET / SynthStrip, the bundled MNI152NLin2009cAsym 2 mm affine target for all three, no WhiteStripe
 (redundant under the masked z-score). Weights: BrainIAC research-only licence, SimCLR MIT, SFCN MIT; a backend
 without weights is skipped with a message (`load_net(name, device="cuda")` raises `FileNotFoundError`).
 
@@ -358,17 +361,22 @@ extracts only `.dcm` members and returns every NIfTI dcm2niix wrote. Tests: `tes
 Tyszka 2018) in the authors' MNI152NLin2009cAsym 1 mm projection, reduced to a deterministic map (maximum-probability
 label, one-based, where that probability >= 0.25). Labels 1-16: `Pu Ca NAC EXA GPe GPi SNc RN SNr PBP VTA VeP HN
 HTH MN STH`. The JSON records source URL and SHA-256, file SHA-256, shape, affine, threshold, citation and the
-correction date (2026-09-15); `setup.py` ships both files as package data.
+correction date (2026-09-15). The same directory holds the registration reference the atlas belongs to,
+`MNI152NLin2009cAsym_brain_2mm.nii.gz` + `.json` + `_LICENSE.txt`. `setup.py` ships all five files as package data.
 
 | Function | What it does |
 |---|---|
 | `cit168_metadata()` | The JSON as a dict |
 | `cit168_mni2009c(expected_space=MNI_SPACE)` | nibabel image after checking template space, file SHA-256, grid and label set; raises `ValueError` on any mismatch |
-| `cit168_provenance()` | `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold` (written into NM rows) |
+| `cit168_provenance()` | `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold`, `registration_reference_space`, `registration_reference_sha256` (written into NM rows) |
+| `mni2009c_template_metadata()`, `mni2009c_template()` | The bundled 2 mm registration reference and its metadata, checked the same way (space, SHA-256, grid). `dwi.register_t1_to_mni` registers to this image |
 
 Nilearn's `fetch_atlas_pauli_2017` deterministic file is in native CIT168 space, not MNI152: never substitute it,
-and never infer template identity from coordinates. `dwi.pauli_atlas()` returns this atlas for DWI, NM and
-`nm_template`. Tests: `tests/test_atlas_space.py`.
+and never infer template identity from coordinates. The registration target is checked for the same reason --
+nilearn's default 2 mm `load_mni152_template` is a distinct 2009**a** image, so registering to it and then mapping
+a 2009c atlas through the result silently mixes two spaces. `dwi.pauli_atlas()` returns this atlas for DWI, NM and
+`nm_template`. Tests: `tests/test_atlas_space.py` (atlas bytes and space, the reference template, and the cache
+provenance below).
 
 ### ZIP index cache and DICOM audit (`archives.py`, `dicom_audit.py`)
 

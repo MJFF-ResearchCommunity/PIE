@@ -1,0 +1,50 @@
+{
+  "space": "MNI152NLin2009cAsym",
+  "filename": "MNI152NLin2009cAsym_brain_2mm.nii.gz",
+  "sha256": "4ad340aa5aefd27dd6d909c99b8bf3429fc10dc626aeff6592e1fb8a8d711bfb",
+  "shape": [
+    97,
+    115,
+    97
+  ],
+  "affine": [
+    [
+      2.0,
+      0.0,
+      0.0,
+      -96.5
+    ],
+    [
+      0.0,
+      2.0,
+      0.0,
+      -132.5
+    ],
+    [
+      0.0,
+      0.0,
+      2.0,
+      -78.5
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "sources": [
+    {
+      "filename": "tpl-MNI152NLin2009cAsym_res-02_T1w.nii.gz",
+      "url": "https://templateflow.s3.amazonaws.com/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-02_T1w.nii.gz",
+      "sha256": "7c4e551ae8150ac1f468595bd62074aa15aed747cd334fce6d177182972b6220"
+    },
+    {
+      "filename": "tpl-MNI152NLin2009cAsym_res-02_desc-brain_mask.nii.gz",
+      "url": "https://templateflow.s3.amazonaws.com/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-02_desc-brain_mask.nii.gz",
+      "sha256": "7a71e9ce99d2af7b68bb5c163908c8e25f4c7a198806fb0893a5c1759b480ecd"
+    }
+  ],
+  "derivation": "Official TemplateFlow res-02 T1w multiplied by its matching binary brain mask; no regridding.",
+  "license_file": "MNI152NLin2009cAsym_brain_2mm_LICENSE.txt"
+}

@@ -450,18 +450,21 @@ def register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0):
 
 
 def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None, sampling_seed=0):
-    """Affine T1 (brain) -> MNI152NLin2009cAsym (nilearn template, brain-masked). Returns (transform fixed(MNI)->moving(T1),
-    metric). With ``cache_path`` (e.g. <fastsurfer subject>/mri/transforms/t1_to_mni152_affine.tfm) the transform is
-    read back if present and written after fitting, so every modality of a subject uses the same atlas mapping."""
+    """Affine T1 -> verified MNI152NLin2009cAsym; returns its fixed-to-moving pull.
+
+    A versioned cache and provenance prevent reuse of legacy Nilearn-2009a maps.
+    A supplied existing cache without matching provenance is rejected and preserved.
+    """
     import SimpleITK as sitk
-    from nilearn import datasets
+    from .atlases import mni2009c_template
+
+    inputs = {'t1_sha256': _registration_image_hash(t1_img),
+              'mask_sha256': _registration_image_hash(t1_mask_img), 'sampling_seed': int(sampling_seed)}
 
     if cache_path is not None and Path(cache_path).exists():
-        return sitk.ReadTransform(str(cache_path)), float("nan")
+        return load_mni_cache(cache_path, expected_inputs=inputs), float("nan")
 
-    mni = datasets.load_mni152_template(resolution=2)
-    mask = datasets.load_mni152_brain_mask(resolution=2)
-    fixed = _brain(mni, mask)
+    fixed = _sitk_from_nib(mni2009c_template())
     moving = _brain(t1_img, t1_mask_img)
     init = sitk.CenteredTransformInitializer(fixed, moving, sitk.AffineTransform(3), sitk.CenteredTransformInitializerFilter.MOMENTS)
     reg = sitk.ImageRegistrationMethod()
@@ -479,11 +482,54 @@ def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None, sampling_seed=0):
     if cache_path is not None:
         Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
         sitk.WriteTransform(tx, str(cache_path))
+        _write_mni_cache_provenance(cache_path, inputs)
     return tx, float(reg.GetMetricValue())
 
 
 def mni_cache_path(fastsurfer_dir):
-    return Path(fastsurfer_dir) / "mri" / "transforms" / "t1_to_mni152_affine.tfm"
+    return Path(fastsurfer_dir) / "mri" / "transforms" / "t1_to_MNI152NLin2009cAsym_affine_v2.tfm"
+
+
+def _registration_image_hash(image):
+    import hashlib
+    digest = hashlib.sha256(np.asarray(image.affine, dtype='<f8').tobytes())
+    data = np.asarray(image.dataobj, dtype='<f4')
+    digest.update(str(data.shape).encode())
+    digest.update(data.tobytes(order='C'))
+    return digest.hexdigest()
+
+
+def _write_mni_cache_provenance(path, inputs):
+    import hashlib
+    from .atlases import mni2009c_template_metadata
+    path = Path(path)
+    meta = mni2009c_template_metadata()
+    record = {'reference_space': meta['space'], 'reference_sha256': meta['sha256'],
+              'transform_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+              'registration_version': 2, 'inputs': inputs}
+    sidecar = path.with_suffix('.json')
+    temporary = sidecar.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(record, indent=2))
+    temporary.replace(sidecar)
+
+
+def load_mni_cache(path, expected_inputs=None):
+    """Reject cached transforms whose actual reference identity is unverified."""
+    import hashlib
+    import SimpleITK as sitk
+    from .atlases import mni2009c_template_metadata
+    path = Path(path)
+    sidecar = path.with_suffix('.json')
+    if not sidecar.exists():
+        raise ValueError('Unverified registration cache: use a fresh versioned MNI2009c cache')
+    record = json.loads(sidecar.read_text())
+    meta = mni2009c_template_metadata()
+    if (record.get('reference_space') != meta['space'] or record.get('reference_sha256') != meta['sha256']
+            or record.get('registration_version') != 2
+            or record.get('transform_sha256') != hashlib.sha256(path.read_bytes()).hexdigest()
+            or (expected_inputs is not None and record.get('inputs') != expected_inputs)):
+        raise ValueError('Registration cache provenance mismatch; preserve it and use a fresh cache')
+    return sitk.ReadTransform(str(path))
 
 
 def labels_to_dwi(label_img, target, chain):
