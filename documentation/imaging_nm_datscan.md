@@ -113,6 +113,45 @@ Tests: `tests/test_nm.py` (planted contrast, independent noise, band-offset refi
 refined masks) and the hemisphere / no-wrap cases in `tests/test_imaging_audit.py`; refeature versioning and stale-atlas handling
 in `tests/test_imaging_regressions.py`.
 
+## Neuromelanin volume and normalised intensity (`nm.hyperintense_volume`, `nm.normalised_intensity`)
+
+The contrast ratios above are computed on a fixed atlas mask, and deliberately exclude threshold
+volumes: single-voxel order statistics are noisy, and bright arteries in the interpeduncular cistern
+contaminate any threshold applied outside the nigra. Many studies nevertheless report a neuromelanin
+"SN volume", either from manual segmentation (Droby et al. 2025, Ben Bashat et al.) or by thresholding
+against a reference region. These three functions compute both kinds of number under explicit,
+auditable rules, so PIE output can be set beside theirs.
+
+```python
+import nibabel as nib, numpy as np
+from pie.imaging import nm
+
+# synthetic phantom: 40 bright nigral voxels, 0.5 x 0.5 x 2.0 mm
+rng = np.random.default_rng(0)
+sig = rng.normal(100, 5, (30, 30, 10))
+sn = np.zeros(sig.shape, bool); sn[10:14, 10:15, 4:6] = True
+sig[sn] = 160
+search = np.zeros(sig.shape, bool); search[8:16, 8:17, 3:7] = True   # atlas SN mask, slightly dilated
+ref = np.zeros(sig.shape, bool); ref[20:28, 5:25, 2:8] = True        # reference region
+img = lambda a: nib.Nifti1Image(a.astype(np.float32), np.diag([0.5, 0.5, 2.0, 1]))
+
+v = nm.hyperintense_volume(img(sig), img(search), img(ref), k=3.0)
+v["volume_mm3"], v["n_voxels"], round(v["threshold"], 1)   # 20.0, 40, 115.0 (reference mean + 3 SD)
+
+i = nm.normalised_intensity(img(sig), img(sn), img(ref))
+round(i["normalised_intensity"], 2), round(i["contrast_ratio"], 2)   # 1.6, 0.6
+
+nm.mask_volume(img(sn))      # 20.0 mm^3: volume of a supplied mask, e.g. a manual segmentation
+```
+
+`search` decides the answer: pass the atlas SN mask, dilated at most by the registration uncertainty,
+never a box, or cisternal arteries enter the count. `k` changes the volume several-fold — medians on
+40 PPMI 2D GRE-MT scans were 160, 66 and 21 mm^3 at k = 2, 2.5 and 3 — so report the `k` with every
+volume. All three images must be on one grid, and the reference must keep at least 20 voxels outside
+the search region. On those 40 scans the per-side volume at k = 3 correlated with the contrast ratio
+at Spearman 0.56, and `normalised_intensity` reproduced the whole-nigra contrast ratio exactly on the
+same masks.
+
 ## Neuromelanin template pipeline (`nm_template.py`)
 
 After Wengler et al. 2020 / Cassidy et al. 2019: instead of an atlas SN label and a ring next to it, masks are

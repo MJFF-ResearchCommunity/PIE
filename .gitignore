@@ -249,6 +249,7 @@ nilearn_data/
 # Profiling dumps (cProfile etc.)
 *.prof
 .playwright-cli/
+.playwright-mcp/
 PPMI
 PPMI_2025-03/
 # Safety net: PPMI tabular/serialized data must never be committed, wherever it lands.

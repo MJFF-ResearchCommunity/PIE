@@ -6,7 +6,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
-from pie.imaging import dwi_tracts as dt
+from pie.imaging import dwi as dt
 
 
 def _atlas(shape=(40, 40, 52)):

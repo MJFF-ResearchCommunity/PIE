@@ -98,6 +98,16 @@ that would leak the target (for example, the clinician's diagnosis when you are 
 `COHORT`), and the right list depends on your question. [Pipeline](documentation/pipeline.md)
 documents every flag and output.
 
+<p align="center">
+  <img src="assets/screenshots/classification_report_leaderboard.png" width="90%" alt="Classification report: a leaderboard of 13 models scored on accuracy, AUC, recall, precision, F1, MCC and kappa, with the selected model highlighted">
+  <img src="assets/screenshots/classification_report_features.png" width="90%" alt="Classification report: the features that most separated the two classes, ranked with importance scores">
+</p>
+
+*`classification/classification_report.html` at the end of a run: every model compared on the
+training split, then the features that separated the classes. Further down it also gives the
+confusion matrix, a SHAP summary and the held-out test scores. This run used synthetic data, not
+PPMI, so the numbers illustrate the format rather than any real result.*
+
 Prefer a notebook? [`walkthroughs/basic_classification.ipynb`](walkthroughs/basic_classification.ipynb)
 runs the same analysis stage by stage, inspecting the frame between steps.
 
@@ -157,9 +167,9 @@ python pie/pipeline.py --data-dir ./PPMI --imaging-features Imaging/derived/fast
 Diffusion, neuromelanin and DaTscan have their own runners, described in
 [Imaging](documentation/imaging.md), [DWI](documentation/imaging_dwi.md) and
 [NM and DaTscan](documentation/imaging_nm_datscan.md). For resting-state fMRI, see
-[fMRI processing](documentation/fmriprep.md). Tract, neuromelanin-volume, tissue-volume and
-basal-ganglia-network measures that match the published imaging literature are in
-[Literature-parity measures](documentation/imaging_literature_parity.md).
+[fMRI processing](documentation/fmriprep.md). Each page also documents the measures that match the
+published imaging literature — JHU tract FA, neuromelanin volume, tissue volumes and the basal
+ganglia network — and [Imaging](documentation/imaging.md) tabulates how they line up.
 
 Check a measure before you model with it. Look at the QC overlays (`pie.imaging.qc`)
 and registration checks, and test the measure against something it should track that is not your outcome, such as

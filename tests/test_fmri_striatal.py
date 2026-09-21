@@ -3,7 +3,7 @@ import nibabel as nib
 import numpy as np
 from scipy import stats
 
-from pie.imaging import fmri_striatal as fs
+from pie.imaging import fmri_connectivity as fs
 
 
 def test_striatal_rois_split_hemispheres_in_mni():

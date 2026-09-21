@@ -30,15 +30,14 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `convert.py` | Extract one series, run dcm2niix, keep NIfTI + JSON sidecar | |
 | `link.py` | Map a session date to a PPMI `EVENT_ID` | |
 | `fastsurfer.py` | FastSurferVINN segmentation (GPU), N4 + segstats (CPU), `.stats` parser | self-check |
-| `features.py` | Wide IDP table from FastSurfer stats | |
+| `features.py` | Wide IDP table from FastSurfer stats; tissue volumes, intracranial volume and head-size adjustment from the segmentation image | |
 | `run.py` | Resumable T1 → IDP CLI | yes |
 | `labels.py` | DaTscan-deficit and SAA labels and covariates aligned to an MRI session | |
 | `batch.py` | Shared plumbing for the modality runners | |
-| `dwi.py`, `fba.py`, `dwi_refine.py` | Diffusion pipeline, tract measures, SyN refinement ([page](imaging_dwi.md)) | yes |
+| `dwi.py`, `fba.py`, `dwi_refine.py` | Diffusion pipeline, nigrostriatal and JHU tract measures, SyN refinement ([page](imaging_dwi.md)) | yes |
 | `dwi_tensor_qc.py`, `freewater_qc.py`, `dwi_acquisition.py`, `dwi_correction.py` | Opt-in DWI measurement and correction safeguards ([page](imaging_dwi.md#opt-in-measurement-apis)) | |
-| `nm.py`, `nm_template.py` | Neuromelanin MRI ([page](imaging_nm_datscan.md)) | yes |
+| `nm.py`, `nm_template.py` | Neuromelanin MRI: contrast ratios, volume and normalised intensity ([page](imaging_nm_datscan.md)) | yes |
 | `datscan.py` | DaTscan SPECT reconstruction and SBRs ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | yes |
-| `dwi_tracts.py`, `fmri_striatal.py`, `nm_volume.py`, `volumes.py` | JHU tract measures, striatal / basal-ganglia-network connectivity, neuromelanin volume, tissue volumes and head-size adjustment ([page](imaging_literature_parity.md)) | |
 | `flair.py` | White-matter hyperintensity burden | yes |
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
 | `qc.py` | Overlay montages and contact sheets for visual QC | yes |
@@ -165,9 +164,51 @@ message), `fastsurfer_idps.csv`.
 No eTIV: PIE runs FastSurfer segmentation-only and never passes `--tal_reg`. Do not normalise by
 `MaskVol` or `BrainSegVol` — the first is a dilated brain mask, not an intracranial measurement, and the
 second shrinks with atrophy, so dividing by it removes part of the effect you are trying to measure.
-Adjust with `volumes.adjust_for_head_size` and a true intracranial volume: FastSurfer's `--tal_reg` eTIV
-if you ran it that way, otherwise `volumes.tiv_from_registration` (a fallback, not yet validated against a
-reference TIV). See [Literature-parity measures](imaging_literature_parity.md).
+Adjust with `features.adjust_for_head_size` and a true intracranial volume: FastSurfer's `--tal_reg`
+eTIV if you ran it that way, otherwise `features.tiv_from_registration` (a fallback, not yet validated
+against a reference TIV).
+
+### Tissue volumes and head-size adjustment (`features.py`)
+
+`build_idp_table` above reads FastSurfer's `.stats` text. These functions work on the segmentation
+image itself, for the whole-tissue volumes the literature reports (CAT12-style grey and white matter
+totals adjusted for intracranial volume, e.g. Droby et al. 2025).
+
+```python
+import nibabel as nib, numpy as np
+from pie.imaging import features
+
+seg = np.zeros((10, 10, 10), np.int32)
+seg[0:2] = 3          # left cerebral cortex
+seg[3] = 2            # left cerebral white matter
+seg[5, 0, 0:3] = 11   # left caudate
+out = features.tissue_volumes(nib.Nifti1Image(seg, np.diag([2, 2, 2, 1])))   # 2 mm voxels = 8 mm^3
+
+out["cortical_gm"], out["white_matter"], out["caudate_l"]   # 1600.0, 800.0, 24.0 mm^3 (floats: 1599.99...)
+out["total_gm"]                                             # 1624.0 = cortical + subcortical + cerebellar
+```
+
+Bigger heads have bigger structures, so compare volumes only after adjusting for intracranial volume,
+and fit the adjustment on a reference group — controls, or the training fold — so that no evaluation
+row informs it:
+
+```python
+rng = np.random.default_rng(0)
+tiv = rng.normal(1.5e6, 1.2e5, 200)                     # mm^3
+putamen = 0.004 * tiv + rng.normal(0, 200, 200)         # scales with head size
+is_control = np.arange(200) < 100
+
+adjusted = features.adjust_for_head_size(putamen, tiv, method="residual", reference=is_control)
+np.corrcoef(putamen, tiv)[0, 1], np.corrcoef(adjusted, tiv)[0, 1]    # 0.91 -> -0.05
+```
+
+`features.tiv_from_registration(head_img, template_head, template_icv)` is the fallback when you have
+no eTIV: it warps the TemplateFlow intracranial map into subject space by an affine head-to-head
+registration and sums it, returning `qc_pass` beside the volume. The registration must be head to
+head, skull included — pass FastSurfer's conformed `orig.mgz` or the raw T1, never a skull-stripped
+image. It has not been validated against a reference TIV (FreeSurfer eTIV, SynthSeg or manual), so
+validate it on your data before using it in an analysis. `features.fetch_template(cache_dir)`
+downloads and sha256-checks the TemplateFlow maps it needs.
 
 ## Labels and covariates (`labels.py`)
 
@@ -491,6 +532,33 @@ bash misc/run_sienax.sh <dataset_dir> <output_dir> ["-f 0.2 -g 0.02"]  # -> <out
 `-f 0.2 -g 0.02`). Missing T1s and failed subjects are reported and skipped. Both are tested with stub FSL
 binaries in `tests/test_imaging_regressions.py`, not against real FSL runs.
 
+## Measures matched to the published literature
+
+PIE's imaging measures are meant to be comparable with what the multimodal literature on α-synuclein
+seed status reports, in particular Droby et al. 2025 (*npj Parkinson's Disease* 11:7), whose measures
+were DaTscan striatal binding ratios, CAT12 volumes adjusted for intracranial volume,
+basal-ganglia-network connectivity from group ICA, neuromelanin SN volume and intensity, and JHU tract
+FA, with an SVM classifier. Each measure is documented on its own modality page; this table is only
+the map between the two vocabularies.
+
+| Measure in the literature | PIE | Notes |
+|---|---|---|
+| DaTscan SBR, occipital reference, caudate and putamen | `datscan.py` ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | subject-space FastSurfer regions rather than template masks |
+| Whole-brain GM and WM, putamen, caudate, pallidum, brainstem volumes | `features.tissue_volumes` | from FastSurfer labels |
+| Intracranial-volume adjustment | `features.adjust_for_head_size`, `features.tiv_from_registration` | prefer FastSurfer `--tal_reg` eTIV; the registration estimate is a fallback still to be validated |
+| Basal ganglia network from group ICA, caudate and putamen weights | `fmri_connectivity.group_ica`, `select_component`, `dual_regression`, `roi_means` ([page](fmriprep.md)) | the template for BGN selection is the CIT168 striatum, independent of the patients |
+| Seed-based striatal connectivity | `fmri_connectivity.striatal_rois`, `roi_timeseries`, `seed_network_connectivity` ([page](fmriprep.md)) | BOLD must already be in MNI152NLin2009cAsym |
+| Neuromelanin SN volume and signal relative to white matter | `nm.hyperintense_volume`, `nm.mask_volume`, `nm.normalised_intensity` ([page](imaging_nm_datscan.md)) | the threshold volume depends several-fold on `k`; report it |
+| Tract FA on the 48-label JHU ICBM-DTI-81 atlas | `dwi.fetch_jhu`, `dwi.map_labels_to_subject`, `dwi.registration_qc`, `dwi.tract_features` ([page](imaging_dwi.md)) | the atlas FA template is registered to the subject FA, so no MNI variant is assumed; laterality is checked on load |
+| Partial correlations with bootstrap | `stats.small_sample.bootstrap_partial_correlation` ([page](stats.md#small_sample)) | no pingouin dependency |
+| SVM with feature-subset search and leave-one-out validation | `stats.small_sample.nested_subset_search`, `naive_subset_search`, `subset_search_null` ([page](stats.md#small_sample)) | the search runs inside each validation fold; the other two size the selection bias in a given sample |
+
+Real-data checks are recorded with each measure and in the module docstrings: JHU tract FA on a PPMI
+2 mm scan (template FA correlation 0.69 with SyN, 0.54 affine), neuromelanin volumes on 40 scans,
+striatal regions on the fMRIPrep grid, and intracranial volume on 8 FastSurfer subjects. Downloads
+(JHU from NeuroVault collection 264, TemplateFlow MNI152NLin2009cAsym res-02 maps) are cached and
+sha256-checked; nothing with an unstated licence is bundled.
+
 ## Measurement follow-up safeguards (September 2026)
 
 The September 2026 reassessment moved several safeguards into the package. The DWI ones (run concatenation keyed
@@ -540,7 +608,7 @@ acquisitions.
 
 - Segmentation-only FastSurfer: volumes, no cortical thickness or surface area (needs the surface stream and a
   FreeSurfer licence). PPMI's own `FS7_APARC_CTH` tables can supplement. No eTIV, because `--tal_reg` is
-  not passed; `volumes.tiv_from_registration` estimates intracranial volume instead.
+  not passed; `features.tiv_from_registration` estimates intracranial volume instead.
 - FastSurfer on CPU (`run --device cpu`) works but takes tens of minutes per scan.
 - DWI: eddy-current and slice-outlier correction are not in the default path; susceptibility correction only
   where a reverse-PE b0 exists (`--fsl`). Single-shell free water is ill-posed.

@@ -195,6 +195,57 @@ venv_imaging/bin/python -m pie.imaging.fba --work-dir <derived>/dwi [--patnos fi
 
 Python: `fba.from_saved(subject_dir, threads=2)`, `fba.write_preproc(ds, out_dir)`.
 
+## JHU tract measures (`dwi.fetch_jhu`, `dwi.tract_features`)
+
+Two different tract measurements live in `dwi.py`, and they answer different questions. The
+nigrostriatal fixel measures above (`--fba`) follow one tract PIE tracks itself, per hemisphere. The
+JHU measures here average a map over each of the 48 labelled white-matter tracts of the ICBM-DTI-81
+atlas (Mori 2005, Wakana 2007, Hua 2008), the atlas most tract-level FA studies report against.
+
+The atlas is fetched at run time from its NeuroVault release (collection 264) rather than bundled,
+because that release states no licence. Downloads are cached and sha256-checked, and the left/right
+labels are verified on load.
+
+Template space is never assumed. The atlas ships on a generic "MNI" grid whose exact flavour is
+undeclared, so labels reach each subject by registering the atlas's *own* FA template — which shares
+the label grid voxel for voxel — to the subject's FA map (affine, then SyN with cross-correlation). No
+MNI152 variant is involved at any step, which removes the class of error in which an atlas is read in
+the wrong template space.
+
+```python
+from pie.imaging import dwi
+
+len(dwi.LABELS), dwi.LABELS[5]        # 48, 'splenium_corpus_callosum'
+
+labels_img, atlas_fa, provenance = dwi.fetch_jhu(cache_dir)      # sha256 + laterality checked on load
+subject_labels, tf = dwi.map_labels_to_subject(subject_fa, atlas_fa, labels_img,
+                                               brain_mask=mask, max_resolution_mm=2.0)
+qc = dwi.registration_qc(subject_fa, tf["warped_template_fa"], subject_labels, labels_img, mask)
+qc["template_fa_correlation"], qc["qc_pass"]        # check this before you use the features
+```
+
+Then average any maps you like within the tracts. `fa_img`, `md_img` and the label image are your own,
+all on one grid:
+
+```python
+feat = dwi.tract_features({"fa": fa_img, "md": md_img}, subject_labels, min_voxels=3)
+
+feat["fa_superior_fronto_occipital_fasciculus_l"]   # mean FA in that tract
+feat["n_superior_fronto_occipital_fasciculus_l"]    # voxels behind it
+len(feat)                                           # 144 = 48 tracts x (fa, md, n)
+```
+
+Tracts with fewer than `min_voxels` usable voxels come back as `NaN`, never as a silently thin
+average. `fa_floor=0.2` (the TBSS convention) restricts every tract to voxels above that FA, which
+reduces partial volume with grey matter and CSF; a tract entirely below the floor becomes `NaN`.
+`max_resolution_mm` defaults to `None`, i.e. registration on the native grid; pass `2.0` to register
+finer reconstructions (e.g. 1 x 1 x 2 mm) on a 2 mm copy while still pulling labels onto the native
+grid.
+
+Read the QC before modelling. On PPMI 2 mm data SyN gave a template-FA correlation of 0.69 where
+affine alone gave 0.54, with correspondingly higher tract FA (posterior internal capsule 0.67,
+splenium 0.56). `dwi.write_provenance(path, provenance, qc)` records both beside the features.
+
 ## Deformable atlas refinement (`dwi_refine.py`)
 
 Optional pass over `--keep-nifti` outputs: ANTs rigid b0 → T1 and SyN T1 → MNI (1 mm nilearn template,
