@@ -3,7 +3,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
-from pie.imaging import volumes as vol
+from pie.imaging import features as vol
 
 
 def test_tissue_volumes_sum_label_groups():

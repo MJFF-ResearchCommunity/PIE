@@ -514,6 +514,51 @@ context exit release it, and `.loads` counts reads. It changes I/O only: results
 byte-identical with and without it (tested). The same cache can serve mean-image
 rendering via `cache.get(bold_path)`.
 
+## 5b. Striatal and basal-ganglia-network connectivity
+
+The same module also carries the two approaches the Parkinson's literature uses for the striatum. Both
+need BOLD already in MNI152NLin2009cAsym (`--output-spaces MNI152NLin2009cAsym`); grids are reconciled
+by nearest-neighbour resampling, never by registration. Outcome labels are never read here.
+
+**Region-based.** Mean BOLD in anatomical striatal regions from the bundled CIT168 atlas, correlated
+with cortical parcels and averaged within network:
+
+```python
+from pie.imaging import fmri_connectivity as fc
+
+roi_img, names = fc.striatal_rois(target_img=bold_img)     # resampled onto the BOLD grid
+names  # {1: 'caudate_l', 2: 'caudate_r', 3: 'putamen_l', 4: 'putamen_r', 5: 'accumbens_l', 6: 'accumbens_r'}
+
+series, labels, counts = fc.roi_timeseries(bold_img, roi_img, mask_img=brain_mask)
+z = fc.seed_network_connectivity(series, [names[k] for k in labels],
+                                 parcel_series, parcel_networks, design=nuisance)
+z["putamen_l__sensorimotor"]       # Fisher-z, averaged over that network's parcels
+```
+
+`design` is the nuisance matrix, applied identically to seeds and parcels — `nuisance_design` above
+builds one. Regions with fewer than `min_voxels` usable voxels give `NaN` rather than a mean over
+nothing. CIT168 at its 0.25 threshold is generous (each caudate borders the lateral ventricle), so
+erode the regions or intersect them with a grey-matter mask when partial volume with CSF matters.
+
+**Network-based**, as in Szewczyk-Krolikowski 2014, Rolinski 2016 and Droby 2025: spatial group ICA on
+temporally concatenated data, the basal ganglia network identified by overlap with an independent
+template, then back-projected to each subject by dual regression.
+
+```python
+maps, info = fc.group_ica(datasets, n_components=20, seed=0)   # datasets: list of (time x voxels)
+ranked = fc.select_component(maps, striatum_mask_1d)           # best Dice first
+bgn = ranked[0]["component"]
+
+timecourses, subject_maps = fc.dual_regression(one_subject, maps)
+fc.roi_means(subject_maps[bgn], roi_labels_1d, names)          # {'caudate_l': ..., 'putamen_l': ...}
+```
+
+The template used to pick the BGN must be independent of the patients analysed (Griffanti et al.
+2016); the CIT168 striatum qualifies. On a synthetic set of eight subjects whose striatal-network
+strength rose from 0.3 to 1.5, the selected component matched the template (Dice 1.0) and the
+per-subject weights rose monotonically with it. Inspect the chosen map visually regardless, as the
+published analyses did.
+
 ## 6. Table keyed on PATNO / EVENT_ID
 
 PIE has no fMRI table builder. `connectivity.json` is per scan and carries no PATNO or

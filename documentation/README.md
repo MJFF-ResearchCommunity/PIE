@@ -29,7 +29,6 @@ derived images        ──Brain Explorer──► interactive 3-D / slice revi
 | Imaging hub: T1/FastSurfer IDPs, FLAIR, manifests, QC, CNN/embeddings, setup | [imaging.md](imaging.md) | `pie/imaging/` |
 | Diffusion MRI: free water, tensors, FBA, correction | [imaging_dwi.md](imaging_dwi.md) | `pie/imaging/dwi*.py`, `fba.py` |
 | Neuromelanin MRI and DaTscan SPECT | [imaging_nm_datscan.md](imaging_nm_datscan.md) | `pie/imaging/nm*.py`, `datscan.py` |
-| Measures matched to the imaging literature: JHU tracts, neuromelanin volume, tissue volumes, basal ganglia network, small-sample statistics | [imaging_literature_parity.md](imaging_literature_parity.md) | `pie/imaging/dwi_tracts.py`, `nm_volume.py`, `volumes.py`, `fmri_striatal.py`, `pie/stats/small_sample.py` |
 | Resting-state fMRI: BIDS, fMRIPrep, QC, connectivity | [fmriprep.md](fmriprep.md) | `pie/imaging/fmri*.py` |
 | Brain Explorer viewer | [brain_viewer.md](brain_viewer.md) | `pie/imaging/viewer/`, `brain-viewer/` |
 | fMRI in the viewer | [fmri_viewer.md](fmri_viewer.md) | `pie/imaging/viewer/fmri.py` |
@@ -78,8 +77,10 @@ previous hand-written list had stopped covering `test_volumes.py`, `test_qc.py`,
 and eleven others.
 
 Tests that need the real download are marked `ppmi` and are skipped when `./PPMI` is missing.
-`pytest -m "not ppmi"` runs only the synthetic tests, which finish in minutes. `pytest -m ppmi`
-runs the real-data integration tests, which load the whole download and write under `output/`.
+`pytest -m "not ppmi"` runs only the synthetic tests. `pytest -m ppmi` runs the real-data
+integration tests, which load the whole download and write under `output/`. The imaging suite is
+slow even without `ppmi` — registration and decomposition on synthetic volumes — so while you are
+iterating, run the files for the modules you changed rather than the whole directory.
 
 ## Data in documentation and examples
 

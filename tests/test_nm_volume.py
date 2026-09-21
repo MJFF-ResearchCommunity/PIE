@@ -3,7 +3,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
-from pie.imaging import nm_volume as nv
+from pie.imaging import nm as nv
 
 
 def _phantom():
