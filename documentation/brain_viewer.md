@@ -58,7 +58,8 @@ venv_imaging/bin/python -m pie.imaging.viewer serve --manifest Imaging/examples/
 ```
 
 Everything lands in the gitignored `Imaging/examples/`, with `ATTRIBUTION.md` beside
-the data. Re-running skips files that already verify. `--no-dwi` skips the diffusion
+the data. Re-running skips files that already verify. `--dest` puts them somewhere
+other than `Imaging/examples`. `--no-dwi` skips the diffusion
 example (67 MB plus a few minutes of tensor fitting). Segmentation-only FastSurfer needs
 no FreeSurfer licence. If this checkout also holds PIE's PPMI outputs, they are indexed
 alongside the examples.

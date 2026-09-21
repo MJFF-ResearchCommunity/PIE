@@ -550,8 +550,9 @@ beyond `max_months`. Visual QC decisions are a separate caller-owned column; joi
 before modelling.
 
 `pie.experiment.prediction` residualises every feature on intracranial volume unless its
-prefix is in `NON_ICV_PREFIXES` (`nm_`, `dwi_`, `new_nm_`, `new_dti_`). `fmri_` is not in
-that list, so decide whether connectivity should carry that covariate.
+prefix is in `NON_ICV_PREFIXES` (`nm_`, `dwi_`, `new_nm_`, `new_dti_`, `fmri_`). `fmri_` is
+in that list, so connectivity features are not residualised on intracranial volume. If your
+analysis wants that covariate on them, change the constant or rename the columns.
 
 ## Viewer ingestion (`scripts/prepare_viewer_fmri.py`)
 

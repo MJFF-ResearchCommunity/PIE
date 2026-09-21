@@ -162,7 +162,12 @@ message), `fastsurfer_idps.csv`.
 | `sum_<S>`, `asym_<S>` | Left + right and (L − R) / (L + R) for `Putamen Caudate Pallidum Thalamus Hippocampus Amygdala Accumbens_area Lateral_Ventricle Cerebellum_Cortex Cerebellum_White_Matter VentralDC` |
 | `sum_Ventricles` | Lateral + inferior-lateral + 3rd + 4th ventricles |
 
-No eTIV (needs talairach registration); use `MaskVol` as the head-size normaliser.
+No eTIV: PIE runs FastSurfer segmentation-only and never passes `--tal_reg`. Do not normalise by
+`MaskVol` or `BrainSegVol` — the first is a dilated brain mask, not an intracranial measurement, and the
+second shrinks with atrophy, so dividing by it removes part of the effect you are trying to measure.
+Adjust with `volumes.adjust_for_head_size` and a true intracranial volume: FastSurfer's `--tal_reg` eTIV
+if you ran it that way, otherwise `volumes.tiv_from_registration` (a fallback, not yet validated against a
+reference TIV). See [Literature-parity measures](imaging_literature_parity.md).
 
 ## Labels and covariates (`labels.py`)
 
@@ -534,7 +539,8 @@ acquisitions.
 ## Limitations
 
 - Segmentation-only FastSurfer: volumes, no cortical thickness or surface area (needs the surface stream and a
-  FreeSurfer licence). PPMI's own `FS7_APARC_CTH` tables can supplement. No eTIV.
+  FreeSurfer licence). PPMI's own `FS7_APARC_CTH` tables can supplement. No eTIV, because `--tal_reg` is
+  not passed; `volumes.tiv_from_registration` estimates intracranial volume instead.
 - FastSurfer on CPU (`run --device cpu`) works but takes tens of minutes per scan.
 - DWI: eddy-current and slice-outlier correction are not in the default path; susceptibility correction only
   where a reverse-PE b0 exists (`--fsl`). Single-shell free water is ill-posed.
@@ -548,7 +554,8 @@ venv_imaging/bin/python -m pytest -q tests/test_imaging.py tests/test_imaging_au
     tests/test_atlas_space.py tests/test_batch.py tests/test_cnn.py tests/test_datscan.py tests/test_dicom_audit.py \
     tests/test_dwi.py tests/test_dwi_correction.py tests/test_embed.py tests/test_flair.py tests/test_freewater_qc.py \
     tests/test_manifest.py tests/test_nm.py tests/test_nm_template.py tests/test_qc.py tests/test_staging.py \
-    tests/test_staging_files.py tests/test_imaging_regressions.py
+    tests/test_staging_files.py tests/test_imaging_regressions.py \
+    tests/test_dwi_tracts.py tests/test_fmri_striatal.py tests/test_nm_volume.py tests/test_volumes.py
 ```
 
 `tests/test_imaging_regressions.py` holds one regression test per bug fixed after the September 2026 audit

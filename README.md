@@ -11,10 +11,10 @@ path from the raw PPMI download to a result you can defend.
 | Layer | What it does | Docs |
 |---|---|---|
 | **Tabular ML pipeline** | Loads and cleans every PPMI study table, drops low-value columns, merges, engineers and selects features, then compares, tunes and reports classifiers. One command runs it all. | [pipeline](documentation/pipeline.md) |
-| **Statistics** | Classical tests, regression, mixed models, survival analysis, multiple-testing correction, and PD helpers (LEDD, MDS-UPDRS totals, Hoehn & Yahr). Results come back as plain dictionaries. | [stats](documentation/stats.md) |
+| **Statistics** | Classical tests, regression, mixed models, survival analysis, multiple-testing correction, small-sample tools (bootstrap partial correlation, feature-subset search nested inside the validation folds), and PD helpers (LEDD, MDS-UPDRS totals, Hoehn & Yahr). Results come back as plain dictionaries. | [stats](documentation/stats.md) |
 | **Experiments** | Cohort rules for PPMI's encoding traps, nested model selection that never sees its test partition, and provenance manifests. | [experiment](documentation/experiment.md) |
-| **Imaging** | LONI DICOM → NIfTI → imaging-derived phenotypes: FastSurfer volumes, diffusion free water, neuromelanin contrast, DaTscan binding ratios and FLAIR lesions. Keyed by `PATNO`/`EVENT_ID`, so they join the tabular data. | [imaging](documentation/imaging.md) |
-| **fMRI** | BIDS export, fMRIPrep, motion QC and connectivity. | [fMRI](documentation/fmriprep.md) |
+| **Imaging** | LONI DICOM → NIfTI → imaging-derived phenotypes: FastSurfer volumes with head-size adjustment, diffusion free water, JHU tract FA and MD, neuromelanin contrast and volume, DaTscan binding ratios and FLAIR lesions. Keyed by `PATNO`/`EVENT_ID`, so they join the tabular data. | [imaging](documentation/imaging.md) |
+| **fMRI** | BIDS export, fMRIPrep, motion QC, parcel connectivity, striatal seeds, and the basal ganglia network from group ICA with dual regression. | [fMRI](documentation/fmriprep.md) |
 | **Brain Explorer** | A local browser viewer for MRI, DTI, SPECT, PET, CT and fMRI, with 3-D anatomy, linked slices and visit comparison. | [viewer](documentation/brain_viewer.md) |
 
 PIE contains no PPMI data. [Apply for access](https://www.ppmi-info.org/access-data-specimens/download-data)
@@ -157,7 +157,15 @@ python pie/pipeline.py --data-dir ./PPMI --imaging-features Imaging/derived/fast
 Diffusion, neuromelanin and DaTscan have their own runners, described in
 [Imaging](documentation/imaging.md), [DWI](documentation/imaging_dwi.md) and
 [NM and DaTscan](documentation/imaging_nm_datscan.md). For resting-state fMRI, see
-[fMRI processing](documentation/fmriprep.md).
+[fMRI processing](documentation/fmriprep.md). Tract, neuromelanin-volume, tissue-volume and
+basal-ganglia-network measures that match the published imaging literature are in
+[Literature-parity measures](documentation/imaging_literature_parity.md).
+
+Check a measure before you model with it. Look at the QC overlays (`pie.imaging.qc`)
+and registration checks, and test the measure against something it should track that is not your outcome, such as
+age or Parkinson's disease against controls. A feature can look plausible and still come from a
+mask in the wrong place. [Measurement safeguards](documentation/imaging.md#measurement-follow-up-safeguards-september-2026)
+lists the checks PIE runs for you and the ones it leaves to your study.
 
 Notebook: [`walkthroughs/imaging_features.ipynb`](walkthroughs/imaging_features.ipynb) walks the
 whole path, from the LONI download to IDPs joined to the pipeline.
@@ -201,6 +209,26 @@ PPMI data is released under a data use agreement. Never commit participant IDs (
 values), LONI image IDs or participant-level records, whether in code, docs, tests or
 screenshots. Summary statistics and PPMI file names are fine. Examples use synthetic data.
 
+## Publishing with PPMI data
+
+PPMI's [publication policy](https://www.ppmi-info.org/sites/default/files/docs/ppmi-publication-policy.pdf)
+applies to anything you publish from the data, whatever software you used. Manuscripts go to the
+PPMI Data and Publications Committee before journal submission, and must carry PPMI's
+acknowledgement text with your download date and `RRID:SCR_006431`. Record the download date when
+you download. `provenance.write_manifest(..., ppmi_download="2000-01-01")` keeps it with the run.
+
+## How to cite
+
+If PIE contributes to your work, please cite it, and give the commit or release you ran:
+
+> Hamilton, C. R., Catterson, V. & Michael J. Fox Foundation Research Community Data Modality and
+> Methodology Task Force. Parkinson's Insight Engine (PIE): an imaging and analysis library for the
+> Parkinson's Progression Markers Initiative. GitHub https://github.com/MJFF-ResearchCommunity/PIE (2026).
+
+GitHub's **Cite this repository** button gives the same entry in BibTeX and APA, from
+[`CITATION.cff`](CITATION.cff). PIE wraps other people's tools, including FastSurfer, fMRIPrep, ANTs
+and DIPY. Please cite the ones your analysis ran.
+
 ## Contributing
 
 1. Fork the repository and create a branch: `git checkout -b feature-name`.
@@ -211,6 +239,8 @@ screenshots. Summary statistics and PPMI file names are fine. Examples use synth
 ## Contributors
 - Cameron Hamilton
 - Victoria Catterson
+- Amgad Droby
+- Elizabeth Hutchins
 
 ## License
 MIT. See [LICENSE](LICENSE).
