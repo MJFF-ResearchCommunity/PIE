@@ -22,6 +22,7 @@ from pie.stats import welch_ttest, adjust_pvalues
 | `survive.py` | `kaplan_meier`, `logrank_test`, `cox_regression` |
 | `multitest.py` | `adjust_pvalues` |
 | `pd_helpers.py` | `compute_ledd`, `aggregate_updrs`, `hoehn_yahr_summary`, `LEDD_FACTORS`, `COMT_FACTORS`, `FLAT_LEDD_MG` |
+| `small_sample.py` | `bootstrap_partial_correlation`, `naive_subset_search`, `nested_subset_search`, `subset_search_null`. Not re-exported by `pie.stats`: import from `pie.stats.small_sample` |
 
 ## Conventions
 
@@ -555,6 +556,82 @@ Stages are keys cast to `float`. Every non-NaN value counts as a stage, so recod
 rate" codes to NaN first. H&Y is ordinal: report the median and counts. `mean_stage` is
 included only because some papers report it. On an empty or all-NaN series it returns
 `n = 0` and `None` stages.
+
+## small_sample
+
+Small imaging samples invite two mistakes: reading a correlation that a confound produced, and
+reporting a score from features that were chosen on the same participants that scored them. These four
+functions address both. They are the only `pie.stats` functions not re-exported at package level:
+
+```python
+from pie.stats import small_sample as ss         # not: from pie import stats
+```
+
+| Function | Returns |
+|---|---|
+| `bootstrap_partial_correlation(df, x, y, covars=(), method="pearson", n_boot=1000, seed=0, ci=0.95)` | `{r, p, n, covariates, method, ci_low, ci_high, n_boot}` |
+| `naive_subset_search(X, y, metric="precision", max_size=None)` | `{subset, <metric>, roc_auc, n_subsets_searched}` |
+| `nested_subset_search(X, y, metric="precision", max_size=None, inner_folds=5, seed=0)` | `{roc_auc, precision, selection_frequency, held_out_scores}` |
+| `subset_search_null(X, y, n_permutations=100, metric="precision", max_size=None, seed=0)` | `{observed, null_median, null_95th, p, n_permutations}` |
+
+### A correlation that is really age
+
+`bootstrap_partial_correlation` reports the partial correlation with an analytic p-value and a percentile
+bootstrap interval. Unlike `correlate.partial_correlation` it needs no `pingouin`.
+
+```python
+import numpy as np, pandas as pd
+from pie.stats import small_sample as ss
+
+rng = np.random.default_rng(0)
+age = rng.normal(65, 8, 120)
+df = pd.DataFrame({"age": age,
+                   "nm_contrast": -0.006 * age + rng.normal(0, 0.05, 120),   # both just track age
+                   "updrs_motor": 0.5 * age + rng.normal(0, 4, 120)})
+
+ss.bootstrap_partial_correlation(df, "nm_contrast", "updrs_motor")["r"]            # -0.53
+r = ss.bootstrap_partial_correlation(df, "nm_contrast", "updrs_motor", ["age"])
+r["r"], r["p"], (r["ci_low"], r["ci_high"])       # -0.10, 0.28, (-0.28, 0.09): the interval spans 0
+```
+
+Rows with a missing value in any named column are dropped, and `n` reports how many were used. Fewer than
+`len(covars) + 4` complete rows raises `ValueError`. Use `method="spearman"` for ranks.
+
+### Choosing features and scoring them on the same people
+
+Searching feature subsets and then reporting the winner's cross-validated score is optimistic: the search
+already saw every participant. `nested_subset_search` repeats the whole search inside each outer training
+fold, so the reported score comes from held-out participants only. The difference is not subtle — here five
+features are pure noise and cannot predict anything:
+
+```python
+import numpy as np
+from pie.stats import small_sample as ss
+
+rng = np.random.default_rng(3)
+X = rng.normal(size=(30, 5))                      # 5 features, no signal at all
+y = np.array([0] * 10 + [1] * 20)
+
+ss.naive_subset_search(X, y, metric="roc_auc")["roc_auc"]                     # 0.73  (searched 31 subsets)
+ss.nested_subset_search(X, y, metric="roc_auc", inner_folds=3)["roc_auc"]     # 0.44  (chance, correctly)
+```
+
+`0.73` from noise is what an honest-looking write-up can contain. To size that bias for your own sample,
+`subset_search_null` reruns the naive search on shuffled labels:
+
+```python
+null = ss.subset_search_null(X, y, n_permutations=20, metric="roc_auc")
+null["observed"], null["null_median"], null["p"]          # 0.73, 0.66, 0.24
+```
+
+The naive design scores 0.66 on labels that carry no information, so the observed 0.73 is unremarkable
+(`p = 0.24`). Report the nested number; use the other two to show what the naive one is worth.
+`nested_subset_search` also returns `selection_frequency`, the fraction of outer folds that kept each
+feature — a feature chosen in a third of folds is not a finding.
+
+The classifier is a linear SVM (`C=1.0`) on standardised features, with a leave-one-out outer loop. Both
+searches are exhaustive over subsets up to `max_size` (all sizes when `None`), so cost grows as 2^p: cap
+`max_size` beyond about 15 features.
 
 ## Tests
 

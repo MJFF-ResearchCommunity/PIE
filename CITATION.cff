@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If PIE contributes to your work, please cite it as below, with the commit or release you ran."
+type: software
+title: "Parkinson's Insight Engine (PIE): an imaging and analysis library for the Parkinson's Progression Markers Initiative"
+authors:
+  - family-names: Hamilton
+    given-names: Cameron R.
+    affiliation: Alliance AI
+  - family-names: Catterson
+    given-names: Victoria
+  - name: "Michael J. Fox Foundation Research Community Data Modality and Methodology Task Force"
+repository-code: "https://github.com/MJFF-ResearchCommunity/PIE"
+license: MIT

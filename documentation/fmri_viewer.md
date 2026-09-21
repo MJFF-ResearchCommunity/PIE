@@ -63,6 +63,14 @@ Scans (`bold-<IMAGE_ID>`) and their subjects (`collection: "PPMI"`) are merged i
 `prepare_viewer_followup.py`. Either script can run first; an existing ID with a
 different source fingerprint aborts the merge without writing.
 
+Both scripts build their entries from the same four `pie.imaging.viewer.catalog` helpers:
+`read_manifest(path)` returns the existing version-1 document, or `{"version": 1, "subjects":
+[], "scans": []}` when the file does not exist (invalid JSON, or any other version, raises);
+`iso_date(value)` keeps only day-precision dates, returning `None` for masked or month-only
+ones so the viewer never invents a date; `source_fingerprint(archive, members)` identifies
+which archive members a scan came from; and `merge_manifest(path, subjects, scans)` writes the
+result. Reuse them if you write your own ingestion script.
+
 `fmri_archive_inventory.json` reconciles the archives' central directories against the
 collection CSV: series per archive, overlaps, missing and extra IDs. That checks the
 inventory, not pixel QC. Selected members pass ZIP CRC checks during extraction.

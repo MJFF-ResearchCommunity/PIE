@@ -29,6 +29,7 @@ derived images        ──Brain Explorer──► interactive 3-D / slice revi
 | Imaging hub: T1/FastSurfer IDPs, FLAIR, manifests, QC, CNN/embeddings, setup | [imaging.md](imaging.md) | `pie/imaging/` |
 | Diffusion MRI: free water, tensors, FBA, correction | [imaging_dwi.md](imaging_dwi.md) | `pie/imaging/dwi*.py`, `fba.py` |
 | Neuromelanin MRI and DaTscan SPECT | [imaging_nm_datscan.md](imaging_nm_datscan.md) | `pie/imaging/nm*.py`, `datscan.py` |
+| Measures matched to the imaging literature: JHU tracts, neuromelanin volume, tissue volumes, basal ganglia network, small-sample statistics | [imaging_literature_parity.md](imaging_literature_parity.md) | `pie/imaging/dwi_tracts.py`, `nm_volume.py`, `volumes.py`, `fmri_striatal.py`, `pie/stats/small_sample.py` |
 | Resting-state fMRI: BIDS, fMRIPrep, QC, connectivity | [fmriprep.md](fmriprep.md) | `pie/imaging/fmri*.py` |
 | Brain Explorer viewer | [brain_viewer.md](brain_viewer.md) | `pie/imaging/viewer/`, `brain-viewer/` |
 | fMRI in the viewer | [fmri_viewer.md](fmri_viewer.md) | `pie/imaging/viewer/fmri.py` |
@@ -62,13 +63,19 @@ python -m pytest tests/test_pipeline.py tests/test_data_loader.py tests/test_pie
 # statistics
 python -m pytest tests/test_stats_*.py
 
-# imaging, fMRI, experiment, viewer backend
-venv_imaging/bin/python -m pytest tests/test_imaging*.py tests/test_dwi*.py tests/test_nm*.py \
-    tests/test_fmri*.py tests/test_experiment_*.py tests/test_viewer_*.py tests/test_brain_viewer.py -q
+# imaging, fMRI, experiment, viewer backend: everything the imaging venv can import
+venv_imaging/bin/python -m pytest tests -q \
+    --ignore=tests/test_pipeline.py --ignore=tests/test_data_loader.py \
+    --ignore=tests/test_data_reducer.py --ignore=tests/test_pie_clean.py --ignore=tests/test_from_fs.py
 
 # viewer frontend
 npm --prefix brain-viewer test
 ```
+
+The five ignored files import `pie_clean`, which the imaging environment does not have. Ignoring
+those rather than listing the files to run means a new test file is picked up automatically: the
+previous hand-written list had stopped covering `test_volumes.py`, `test_qc.py`, `test_datscan.py`
+and eleven others.
 
 Tests that need the real download are marked `ppmi` and are skipped when `./PPMI` is missing.
 `pytest -m "not ppmi"` runs only the synthetic tests, which finish in minutes. `pytest -m ppmi`
