@@ -516,22 +516,6 @@ idps = build_idp_table(sessions, "fs")
 idps[["PATNO", "MaskVol", "vol_Left_Putamen", "sum_Putamen", "asym_Putamen"]]   # 1, 1500000.0, 5000.0, 9800.0, 0.0204
 ```
 
-## FSL alternatives (`misc/`)
-
-Standalone FSL loops over a BIDS-like `sub-*/anat/sub-*_T1w.nii.gz` layout; not used by `pie.imaging` (FSL on
-`PATH`):
-
-```bash
-bash misc/run_first.sh  <dataset_dir> <output_dir>                    # -> <output_dir>/first_volumes.csv
-bash misc/run_sienax.sh <dataset_dir> <output_dir> ["-f 0.2 -g 0.02"]  # -> <output_dir>/<subject>/report.sienax
-```
-
-`run_first.sh` runs `run_first_all` per subject and reads each of its 15 structures from the combined segmentation
-`<prefix>_all_<method>_firstseg.nii.gz` with `fslstats -l <label-0.5> -u <label+0.5> -V`, writing
-`Subject,Structure,Label,Volume_mm3`. `run_sienax.sh` runs `sienax` with the given BET options (default
-`-f 0.2 -g 0.02`). Missing T1s and failed subjects are reported and skipped. Both are tested with stub FSL
-binaries in `tests/test_imaging_regressions.py`, not against real FSL runs.
-
 ## Measures matched to the published literature
 
 PIE's imaging measures are meant to be comparable with what the multimodal literature on α-synuclein
@@ -628,7 +612,7 @@ venv_imaging/bin/python -m pytest -q tests/test_imaging.py tests/test_imaging_au
 
 `tests/test_imaging_regressions.py` holds one regression test per bug fixed after the September 2026 audit
 (DaTscan header, T1 choice, manifest dates and DaTscan lineage, NM refeature, carrier coding, defaults, device
-budgets, tool-path overrides, the `misc/` scripts).
+budgets, tool-path overrides).
 
 All synthetic (phantoms and generated tables): no PPMI data, GPU, FastSurfer, FSL or MRtrix3 needed, but DIPY
 and nilearn must be installed. `tests/test_embed.py::test_real_weights_load` is skipped unless the weights are

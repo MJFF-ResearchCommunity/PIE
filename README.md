@@ -249,8 +249,6 @@ and DIPY. Please cite the ones your analysis ran.
 ## Contributors
 - Cameron Hamilton
 - Victoria Catterson
-- Amgad Droby
-- Elizabeth Hutchins
 
 ## License
 MIT. See [LICENSE](LICENSE).
