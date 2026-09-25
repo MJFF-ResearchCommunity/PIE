@@ -13,10 +13,12 @@ import pandas as pd
 
 
 def _load_mri_table(ppmi_dir):
-    files = sorted(Path(ppmi_dir, "Imaging").glob("Magnetic_Resonance_Imaging__MRI__*.csv"))
-    if not files:
+    from .viewer.catalog import latest_table
+
+    path = latest_table(Path(ppmi_dir, "Imaging"), "Magnetic_Resonance_Imaging__MRI_")
+    if path is None:
         raise FileNotFoundError("Magnetic_Resonance_Imaging__MRI_ table not found under PPMI/Imaging")
-    df = pd.read_csv(files[-1], usecols=["PATNO", "EVENT_ID", "INFODT", "MRICMPLT"])
+    df = pd.read_csv(path, usecols=["PATNO", "EVENT_ID", "INFODT", "MRICMPLT"])
     df = df[df["MRICMPLT"] == 1].dropna(subset=["INFODT"])
     df["visit_month"] = pd.to_datetime(df["INFODT"], format="%m/%Y", errors="coerce").dt.to_period("M")
     return df.dropna(subset=["visit_month"])

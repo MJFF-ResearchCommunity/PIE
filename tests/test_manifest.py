@@ -22,7 +22,7 @@ def test_manifest_and_assembly(tmp_path):
     man = build_manifest(d)
     assert len(man) == 3 and man.loc[man.PATNO == 1, "dwi_qc_pass"].item() and not man.loc[man.PATNO == 2, "dwi_qc_pass"].item()
     assert man.loc[man.PATNO == 1, "dwi_days_from_t1"].item() == 2 and man["dwi_batch"].nunique() == 2
-    f = assemble_features(d)
+    f = assemble_features(d, single_shell_fw=True)     # patient 1 is single-shell; the quarantine has its own test
     assert f.loc[f.PATNO == 1, "dwi_sn_posterior_mean_fw"].item() == 0.3
     assert np.isnan(f.loc[f.PATNO == 2, "dwi_sn_posterior_mean_fw"].item())     # QC-failed values blanked
     assert np.isnan(f.loc[f.PATNO == 3, "dwi_sn_posterior_mean_fw"].item())     # no DWI at all

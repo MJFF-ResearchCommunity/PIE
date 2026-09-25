@@ -172,6 +172,20 @@ def embed_sfcn(volume, net):
 EMBED = {"brainiac": embed_brainiac, "simclr": embed_simclr, "sfcn": embed_sfcn}
 
 
+def brain_age_gap(predicted, age, reference=None):
+    """Bias-corrected brain-age gap (de Lange & Cole 2020, doi:10.1016/j.nicl.2020.102229): regress predicted on chronological
+    age in the ``reference`` rows only (controls, or the training fold, so no evaluation row informs it), then
+    gap = predicted - (slope * age + intercept). The raw gap ``brainage_sfcn - age`` falls with age by regression to the
+    mean and would confound any age-related outcome. SFCN was trained on ages 42-82: treat younger subjects with care."""
+    p, a = np.asarray(predicted, float), np.asarray(age, float)
+    ref = np.ones(len(p), bool) if reference is None else np.asarray(reference, bool)
+    ok = ref & np.isfinite(p) & np.isfinite(a)
+    if ok.sum() < 3:
+        raise ValueError("too few reference rows to fit the age-bias correction")
+    slope, intercept = np.polyfit(a[ok], p[ok], 1)
+    return p - (slope * a + intercept)
+
+
 def columns(backend):
     cols = [f"emb_{backend}_{k}" for k in range(DIM[backend])]
     return cols + ["brainage_sfcn"] if backend == "sfcn" else cols

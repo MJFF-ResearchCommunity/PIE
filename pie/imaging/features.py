@@ -70,8 +70,9 @@ def build_idp_table(sessions, subjects_dir):
 # Preferred TIV source: FastSurfer run with ``--tal_reg`` writes FreeSurfer's eTIV (``EstimatedTotalIntraCranialVol``)
 # to the aseg stats, an established and validated measure. ``tiv_from_registration`` below is a fallback for runs
 # without it. Smoke test on 8 PPMI subjects (18 September 2026): 1,238 to 1,523 mL, a plausible adult range, but
-# correlation with MaskVol only 0.65 and 2 of 8 below the head-fit threshold. It has not been validated against a
-# reference TIV (FreeSurfer eTIV, SynthSeg or manual); validate it on your data before using it in an analysis.
+# correlation with MaskVol only 0.65 and 2 of 8 below the head-fit threshold. Against FreeSurfer 7.3.2 eTIV (PPMI's
+# FS7_ASEG_VOL table) on 40 baseline scans (25 September 2026): r = 0.81, 9 % low, where MaskVol gave r = 0.85. Prefer
+# eTIV; for PPMI baseline scans it is in FS7_ASEG_VOL_*.csv.
 #
 #     tissue_volumes(seg)                   total grey matter, white matter, brainstem, ventricles, subcortical grey (mm^3)
 #     fetch_template(cache_dir)             TemplateFlow MNI152NLin2009cAsym res-02 head T1w and GM/WM/CSF maps (sha256-checked)
@@ -119,6 +120,14 @@ def _to_ants(img):
     # registration inputs only: real FA and T1 maps carry NaN outside the brain, which ANTs rejects
     data = np.nan_to_num(np.asarray(img.dataobj, np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     return ants.from_nibabel_nifti(nib.Nifti1Image(data, img.affine))
+
+
+def _drop_transforms(*regs):
+    """Delete the transform files ``ants.registration`` writes to the temp directory. ANTsPy never removes them: a SyN
+    leaves ~140 MB, and a cohort run filled a 1.9 TB root disk with them (September 2026)."""
+    for reg in regs:
+        for f in {*reg["fwdtransforms"], *reg["invtransforms"]}:
+            Path(f).unlink(missing_ok=True)
 
 
 def _from_ants(ants_img, like):
@@ -177,6 +186,7 @@ def tiv_from_registration(head_img, template_head, template_icv, seed=0, min_cor
     warped_icv = ants.apply_transforms(fixed=fixed, moving=_to_ants(template_icv), transformlist=reg["fwdtransforms"],
                                        interpolator="linear")
     warped_head = ants.apply_transforms(fixed=fixed, moving=moving, transformlist=reg["fwdtransforms"], interpolator="linear")
+    _drop_transforms(reg)
     subject, template = np.asarray(head_img.dataobj, float), _from_ants(warped_head, head_img).astype(float)
     inside = ((subject > 0) | (template > 0)) & np.isfinite(template)   # union: a misplaced head lowers r
     r = float(np.corrcoef(subject[inside], template[inside])[0, 1]) if inside.sum() > 10 else float("nan")
