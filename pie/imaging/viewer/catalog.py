@@ -45,7 +45,9 @@ def table_date(stamp: str) -> date | None:
             return datetime.strptime(stamp, fmt).date()
         except ValueError:
             pass
-    return None
+    # a versioned table carries its own date before the release date: iu_genetic_consensus_20251025_08Sep2026
+    parts = [table_date(p) for p in stamp.split("_")] if "_" in stamp else [None]
+    return parts[-1] if all(parts) else None
 
 
 def latest_table(directory: Path, stem: str) -> Path | None:

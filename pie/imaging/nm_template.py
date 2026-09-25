@@ -8,7 +8,7 @@ Unlike the atlas pipeline in ``pie.imaging.nm`` (affine MNI mapping + a T1/T2-de
 neuromelanin band itself and the reference sits in the dark peduncle, both several millimetres from the band.
 
 Stages (each resumable, run in order):
-    syn        cache an ANTs SyN T1(brain) -> MNI152 1 mm warp per FastSurfer subject (~2 min each)
+    syn        cache an ANTs SyN T1(brain) -> MNI152NLin2009cAsym 1 mm warp per FastSurfer subject (~2 min each)
     normalize  slab -> T1 (rigid, SimpleITK) -> MNI midbrain box (SyN), saved as <work>/<patno>/nm_mni.nii.gz
     template   mean of the intensity-normalised slabs -> <work>/template/nm_template.nii.gz + sn / crus masks
     features   per subject: crus mode, CNR map, SN mean CNR (+ anterior/posterior/medial/lateral quadrants) ->
@@ -32,21 +32,16 @@ SYN_TYPE = "antsRegistrationSyNQuick[s]"
 
 
 def mni_brain_path():
-    """The nilearn MNI152 1 mm template, brain-masked, written once next to nilearn's data (ANTs wants a file)."""
-    p = Path.home() / "nilearn_data" / "mni152_brain_1mm.nii.gz"
-    if not p.exists():
-        from nilearn import datasets
+    """The brain-masked 1 mm MNI152NLin2009cAsym template (TemplateFlow, sha256-checked): the space of the CIT168 prior."""
+    from .atlases import mni2009c_brain_1mm
 
-        t = datasets.load_mni152_template(resolution=1)
-        m = datasets.load_mni152_brain_mask(resolution=1)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        nib.save(nib.Nifti1Image(np.asanyarray(t.dataobj).astype(np.float32) * (np.asanyarray(m.dataobj) > 0), t.affine), p)
-    return p
+    return mni2009c_brain_1mm()
 
 
 def syn_paths(fastsurfer_dir):
     tdir = Path(fastsurfer_dir) / "mri" / "transforms"
-    return {"fwd": [tdir / "t1_to_mni_syn_1Warp.nii.gz", tdir / "t1_to_mni_syn_0GenericAffine.mat"]}
+    # named after the target space: the legacy t1_to_mni_syn_* caches were fitted to nilearn's 2009a template
+    return {"fwd": [tdir / "t1_to_MNI152NLin2009cAsym_syn_1Warp.nii.gz", tdir / "t1_to_MNI152NLin2009cAsym_syn_0GenericAffine.mat"]}
 
 
 def crop_warp(path, margin_mm=20.0):
@@ -82,6 +77,8 @@ def syn_cache(fastsurfer_dir, syn_type=SYN_TYPE):
     paths["fwd"][0].parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(reg["fwdtransforms"][0], paths["fwd"][0])       # 1Warp
     shutil.copy(reg["fwdtransforms"][1], paths["fwd"][1])       # 0GenericAffine
+    from .features import _drop_transforms
+    _drop_transforms(reg)
     crop_warp(paths["fwd"][0])
     return {k: [str(p) for p in v] for k, v in paths.items()}
 

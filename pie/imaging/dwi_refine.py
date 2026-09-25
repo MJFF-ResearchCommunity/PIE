@@ -1,6 +1,6 @@
 """
 Refinement pass over `pie.imaging.dwi` outputs (run with --keep-nifti): re-map the CIT168 subcortical atlas with a
-deformable ANTs SyN T1 -> MNI registration instead of the affine one, and recompute the ROI features from the saved
+deformable ANTs SyN T1 -> MNI152NLin2009cAsym (1 mm) registration instead of the affine one, and recompute the ROI features from the saved
 FA/MD/FW/FAt maps. The affine-only mapping leaves the 2 mm nigral ROI contaminated by cerebral-peduncle fibres
 (posterior-SN FA ~0.45) and interpeduncular CSF; a deformable mapping places the small midbrain nuclei better.
 
@@ -15,27 +15,24 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from .dwi import PAULI_ROIS, _roi_masks, features, pauli_atlas
+from .dwi import METRICS, PAULI_ROIS, _roi_masks, features, pauli_atlas
 
 
 def refine_subject(subj_dir, fastsurfer_dir, syn_type="antsRegistrationSyNQuick[s]"):
     """SyN T1->MNI (ANTs) + rigid b0->T1 (ANTs), atlas -> DWI grid, features from the saved maps. Returns a row dict."""
     import ants
-    from nilearn import datasets
+
+    from .atlases import mni2009c_brain_1mm
 
     subj_dir = Path(subj_dir)
-    maps = {k: nib.load(subj_dir / f"{k}.nii.gz") for k in ("fa", "md", "fw", "fat")}
+    maps = {k: nib.load(subj_dir / f"{k}.nii.gz") for k in METRICS if (subj_dir / f"{k}.nii.gz").exists()}
     b0 = ants.image_read(str(subj_dir / "b0.nii.gz"))
     aseg_dwi = np.transpose(np.asanyarray(nib.load(subj_dir / "aseg_dwi.nii.gz").dataobj).astype(np.int32), (2, 1, 0))
     mri = Path(fastsurfer_dir) / "mri"
     t1 = ants.image_read(str(mri / "orig.mgz"))
     mask = ants.image_read(str(mri / "mask.mgz"))
     t1b = t1 * ants.threshold_image(mask, 0.5, 1e9)
-    mni_nib = datasets.load_mni152_template(resolution=1)
-    mni_mask = datasets.load_mni152_brain_mask(resolution=1)
-    mni_path = subj_dir / "_mni_brain.nii.gz"
-    nib.save(nib.Nifti1Image(np.asanyarray(mni_nib.dataobj).astype(np.float32) * (np.asanyarray(mni_mask.dataobj) > 0), mni_nib.affine), mni_path)
-    mni = ants.image_read(str(mni_path))
+    mni = ants.image_read(str(mni2009c_brain_1mm()))     # the atlas's own space (nilearn's 1 mm template is 2009a)
     atlas_nib = pauli_atlas()
     atlas_path = subj_dir / "_pauli.nii.gz"
     nib.save(nib.Nifti1Image(np.asanyarray(atlas_nib.dataobj).astype(np.float32), atlas_nib.affine), atlas_path)
@@ -46,6 +43,8 @@ def refine_subject(subj_dir, fastsurfer_dir, syn_type="antsRegistrationSyNQuick[
     tl = syn["invtransforms"] + rig["invtransforms"]
     inv = [t.endswith(".mat") for t in tl]
     warped = ants.apply_transforms(fixed=b0, moving=atlas, transformlist=tl, whichtoinvert=inv, interpolator="nearestNeighbor")
+    from .features import _drop_transforms
+    _drop_transforms(syn, rig)
     pauli_dwi = np.transpose(warped.numpy().astype(np.int32), (2, 1, 0))  # (z, y, x) of the b0 grid
     mask_np = {k: np.transpose(np.asanyarray(v.dataobj).astype(np.float32), (2, 1, 0)) for k, v in maps.items()}
     # physical y (LPS) of every voxel for the anterior/posterior split
@@ -61,8 +60,7 @@ def refine_subject(subj_dir, fastsurfer_dir, syn_type="antsRegistrationSyNQuick[
     row = {"reg_syn_mi": np.nan}
     row.update(features(mask_np, rois))
     nib.save(nib.Nifti1Image(np.transpose(pauli_dwi, (2, 1, 0)).astype(np.int16), aff), subj_dir / "pauli_dwi_syn.nii.gz")
-    for p in (mni_path, atlas_path):
-        p.unlink(missing_ok=True)
+    atlas_path.unlink(missing_ok=True)
     return row
 
 

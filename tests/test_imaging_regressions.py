@@ -243,11 +243,11 @@ def test_covariates_reads_float_coded_genotypes_as_non_carriers(tmp_path):
     sc = tmp_path / "_Subject_Characteristics"
     sc.mkdir()
     pd.DataFrame({"PATNO": [1, 2, 3], "COHORT_DEFINITION": ["Healthy Control"] * 3, "ENROLL_DATE": ["01/2000"] * 3,
-                  "ENROLL_AGE": [60.0] * 3}).to_csv(sc / "Participant_Status_2000.csv", index=False)
+                  "ENROLL_AGE": [60.0] * 3}).to_csv(sc / "Participant_Status_01Jan2000.csv", index=False)
     pd.DataFrame({"PATNO": [1, 2, 3], "LAST_UPDATE": ["2000-01-01"] * 3, "SEX": [0, 1, 0], "BIRTHDT": ["01/1940"] * 3,
-                  "HANDED": [1] * 3}).to_csv(sc / "Demographics_2000.csv", index=False)
+                  "HANDED": [1] * 3}).to_csv(sc / "Demographics_01Jan2000.csv", index=False)
     pd.DataFrame({"PATNO": [1, 2, 3], "LRRK2": [0, 1, None], "GBA": ["0", "N370S", "0"], "SNCA": [0, 0, 0],
-                  "APOE": ["E3/E4", "E3/E3", None], "PATHVAR_COUNT": [0, 1, 0]}).to_csv(sc / "iu_genetic_consensus_2000.csv", index=False)
+                  "APOE": ["E3/E4", "E3/E3", None], "PATHVAR_COUNT": [0, 1, 0]}).to_csv(sc / "iu_genetic_consensus_01Jan2000.csv", index=False)
     cov = labels.covariates(tmp_path).set_index("PATNO")
     assert cov.loc[1, "LRRK2_carrier"] == 0 and cov.loc[2, "LRRK2_carrier"] == 1 and np.isnan(cov.loc[3, "LRRK2_carrier"])
     assert cov["GBA_carrier"].tolist() == [0, 1, 0] and cov["SNCA_carrier"].tolist() == [0, 0, 0]
@@ -339,3 +339,126 @@ def test_tool_locations_can_be_overridden_by_environment():
     env = {k: v for k, v in os.environ.items() if not k.startswith("PIE_")}
     out = subprocess.run([sys.executable, "-c", code], env=env, cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
     assert out[0] == str(ROOT / "venv_imaging" / "bin" / "dcm2niix") and out[2] == str(ROOT / "third_party" / "FastSurfer")
+
+
+# ------------------------------------------------------------------------------------------ PPMI working-group audit
+def _ppmi(tmp_path, xing=True):
+    """Minimal PPMI download: 20 visually-negative controls whose putamen SBR falls with age, one PD, one TRODAT scan."""
+    sc, im = tmp_path / "PPMI/_Subject_Characteristics", tmp_path / "PPMI/Imaging"
+    sc.mkdir(parents=True), im.mkdir(parents=True)
+    n = 22
+    patno, age = np.arange(1, n + 1), np.r_[np.linspace(50, 80, 20), 60, 60]
+    pd.DataFrame({"PATNO": patno, "COHORT_DEFINITION": ["Healthy Control"] * 20 + ["Parkinson's Disease"] * 2,
+                  "ENROLL_DATE": "01/2011", "ENROLL_AGE": age}).to_csv(sc / "Participant_Status_01Jan2020.csv", index=False)
+    pd.DataFrame({"PATNO": patno, "SEX": np.arange(n) % 2, "BIRTHDT": [f"01/{2011 - int(a)}" for a in age], "HANDED": 1,
+                  "LAST_UPDATE": "2020-01-01"}).to_csv(sc / "Demographics_01Jan2020.csv", index=False)
+    pd.DataFrame({"PATNO": patno, "LRRK2": 0, "GBA": 0, "SNCA": 0, "APOE": "E3/E3", "PATHVAR_COUNT": 0})\
+        .to_csv(sc / "iu_genetic_consensus_20251025_01Jan2020.csv", index=False)
+    put = np.r_[3.0 - 0.02 * (age[:20] - 50), 0.9, 1.3]              # PD 21 at 0.9 / 2.4 = 38 %, PD 22 at 54 % of expected
+    rows = pd.DataFrame({"PATNO": patno, "EVENT_ID": "SC", "DATSCAN_DATE": "01/2011", "DATSCAN_ANALYZED": "Yes",
+                         "DATSCAN_LIGAND": [None] * 10 + ["123I-DaTscan"] * 11 + ["99mTc-TRODAT-1"]})   # PPMI-1 rows: blank
+    vis = pd.DataFrame({"PATNO": patno, "DATSCAN_DATE": "01/2011", "DATSCAN_VISINTRP": ["negative"] * 20 + ["positive"] * 2,
+                        "DATSCAN_LIGAND": "123I-DaTscan"})
+    if xing:
+        for r, v in (("PUTAMEN", put), ("CAUDATE", put + 0.5)):
+            rows[f"{r}_L_REF_CWM"], rows[f"{r}_R_REF_CWM"] = v, v * 1.1
+        rows.to_csv(im / "Xing_Core_Lab_-_Quant_SBR_01Jan2020.csv", index=False)
+        vis.to_csv(im / "Xing_Core_Lab_-_Visual_Read_01Jan2020.csv", index=False)
+    rows.assign(DATSCAN_PUTAMEN_L=put + 1, DATSCAN_PUTAMEN_R=put + 1, DATSCAN_CAUDATE_L=put + 2, DATSCAN_CAUDATE_R=put + 2)\
+        .to_csv(im / "DaTScan_SBR_Analysis_01Jan2019.csv", index=False)
+    vis.to_csv(im / "DaTScan_Visual_Interpretation_Results_01Jan2019.csv", index=False)
+    return tmp_path / "PPMI", pd.DataFrame({"patno": patno, "image_id": [f"I{p:06d}" for p in patno], "session_date": "2011-01-15"})
+
+
+def test_dat_labels_use_ppmi_primary_sbr_table_and_named_deficit_rules(tmp_path):
+    ppmi, sessions = _ppmi(tmp_path)
+    d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
+    assert set(d["sbr_source"]) == {"xing_cwm"} and 22 not in d.index and 1 in d.index   # TRODAT out, blank ligand in
+    assert d.loc[21, "dat_deficit_sbr"] == 1 and d.loc[21, "dat_d_nsdiss"] == 1
+    assert abs(d.loc[21, "sbr_pct_expected"] - 0.9 / 2.8) < 0.02 and d.loc[21, "sbr_putamen_min_z"] < -10
+    assert d.loc[1:20, "dat_deficit_sbr"].eq(0).all() and abs(d.loc[1, "sbr_ai_putamen"] - 0.3 / 3.15 * 100) < 1e-6
+    assert abs(d.loc[1, "sbr_pc_ratio_l"] - 3.0 / 3.5) < 1e-6
+    (ppmi / "Imaging" / "Xing_Core_Lab_-_Quant_SBR_01Jan2020.csv").unlink()
+    assert set(labels.dat_labels(ppmi, sessions)["sbr_source"]) == {"invicro_occipital"}   # archived table as fallback
+    with pytest.raises(FileNotFoundError):
+        labels.dat_labels(ppmi, sessions, source="xing")
+
+
+def test_dat_deficit_rule_includes_the_threshold_itself():
+    x = pd.Series([0.65, 0.6500001, 0.75, 0.76])
+    assert ((x <= 0.65).astype(float).tolist(), (x <= 0.75).astype(float).tolist()) == ([1, 0, 0, 0], [1, 1, 1, 0])
+
+
+def test_assembly_quarantines_single_shell_free_water_and_masked_dates(tmp_path):
+    pd.DataFrame({"PATNO": [1, 2], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2022-01-01", "9999-01-01"],
+                  "vol_Left_Putamen": [1., 1.]}).to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
+    (tmp_path / "dwi").mkdir()
+    pd.DataFrame({"patno": [1, 2], "motion_mm_max": [1., 1.], "n_sn_l": [4, 4], "n_sn_r": [4, 4], "fa_wm_median": [.4, .4],
+                  "manufacturer": ["Siemens"] * 2, "shells": ["1000", "700 1000 2000"], "fw_method": ["singleshell_prior", "multishell_nls"],
+                  "acquisition_date": ["2022-01-03"] * 2, "sn_l_fw": [.2, .3], "sn_l_fat": [.5, .6], "sn_l_fa": [.4, .4],
+                  "sn_l_ad": [1e-3, 1e-3], "sn_l_mk": [np.nan, .8]}).to_csv(tmp_path / "dwi" / "dwi_features.csv", index=False)
+    f = manifest.assemble_features(tmp_path).set_index("PATNO")
+    assert np.isnan(f.loc[1, "dwi_sn_l_fw"]) and np.isnan(f.loc[1, "dwi_sn_l_fat"]) and f.loc[1, "dwi_sn_l_fa"] == .4
+    assert f.loc[2, "dwi_sn_l_fw"] == .3 and f.loc[2, "dwi_sn_l_mk"] == .8 and f.loc[1, "dwi_sn_l_ad"] == 1e-3
+    assert f.loc[1, "dwi_days_from_t1"] == 2 and pd.isna(f.loc[2, "t1_date"]) and pd.isna(f.loc[2, "dwi_days_from_t1"])
+    assert manifest.assemble_features(tmp_path, single_shell_fw=True).set_index("PATNO").loc[1, "dwi_sn_l_fw"] == .2
+
+
+def test_assembled_dat_block_carries_both_references_and_indices(tmp_path):
+    _idps(tmp_path)
+    (tmp_path / "datscan_full").mkdir()
+    pd.DataFrame({"patno": [1], "image_id": ["I000021"], "error": [""], "reg_metric": [-0.6], "n_label_voxels": [500],
+                  "hdr_manufacturer": ["GE"], "hdr_model": ["synthetic"], "sbr_putamen_l": [1.0], "sbr_putamen_r": [2.0],
+                  "sbr_caudate_l": [2.0], "sbr_caudate_r": [2.0], "sbr_putamen_l_post": [0.8], "sbrwm_putamen_l": [0.5],
+                  "sbrwm_putamen_r": [1.0], "sbrwm_caudate_l": [1.0], "sbrwm_caudate_r": [-0.1], "mean_occipital": [10.]})\
+        .to_csv(tmp_path / "datscan_full" / "datscan_sbr.csv", index=False)
+    f = manifest.assemble_features(tmp_path).set_index("PATNO")
+    assert f.loc[1, "dat_sbr_pc_ratio_l"] == 0.5 and abs(f.loc[1, "dat_sbr_ai_putamen"] - 100 / 1.5) < 1e-9
+    assert f.loc[1, "dat_sbr_putamen_l_post"] == 0.8 and f.loc[1, "dat_sbrwm_pc_ratio_l"] == 0.5
+    assert np.isnan(f.loc[1, "dat_sbrwm_pc_ratio_r"]) and "dat_mean_occipital" not in f      # non-positive SBR -> NaN
+    assert "dat_sbrwm_ai_caudate" in manifest.feature_blocks(f.columns)["dat"]
+
+
+def test_tensor_fit_reports_axial_radial_and_multishell_kurtosis():
+    rng = np.random.default_rng(0)
+    g = rng.normal(size=(3, 30))
+    g /= np.linalg.norm(g, axis=0)
+    D = np.diag([1.5e-3, 0.4e-3, 0.4e-3])
+    for bvals in (np.r_[0, 0, np.full(30, 1000.)], np.r_[0, 0, np.full(30, 700.), np.full(30, 1000.), np.full(30, 2000.)]):
+        bvecs = np.c_[np.zeros((3, 2)), np.tile(g, len(bvals) // 30)]
+        sig = 1000 * (0.8 * np.exp(-bvals * np.einsum("in,ij,jn->n", bvecs, D, bvecs)) + 0.2 * np.exp(-bvals * dwi.D_WATER))
+        ds = {"bvals": bvals, "bvecs": bvecs, "data": np.tile(sig, (2, 2, 2, 1)).astype(np.float32), "mask": np.ones((2, 2, 2), bool)}
+        maps = dwi.fit_models(ds)
+        assert maps["ad"][0, 0, 0] > maps["md"][0, 0, 0] > maps["rd"][0, 0, 0] > 0
+        assert ("mk" in maps) == (len(bvals) > 32)
+    assert abs(maps["mdt"][0, 0, 0] - np.trace(D) / 3) < 2e-5 and 0 < maps["mk"][0, 0, 0] < 3
+
+
+def test_brain_age_gap_removes_regression_to_the_mean():
+    rng = np.random.default_rng(0)
+    age = rng.uniform(45, 80, 400)
+    predicted = 0.6 * age + 25 + rng.normal(0, 3, 400)          # a typically shrunk brain-age model
+    predicted[:50] += 5                                          # an older-looking group
+    raw, gap = predicted - age, embed.brain_age_gap(predicted, age, reference=np.arange(400) >= 50)
+    assert np.corrcoef(raw, age)[0, 1] < -0.5 and abs(np.corrcoef(gap[50:], age[50:])[0, 1]) < 0.1
+    assert abs(gap[:50].mean() - 5) < 1
+
+
+def test_templateflow_files_are_checked_against_pinned_hashes(tmp_path):
+    from pie.imaging import atlases
+    name = "tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
+    (tmp_path / name).write_bytes(b"not the template")
+    with pytest.raises(ValueError, match="checksum"):
+        atlases.templateflow_file(name, cache_dir=tmp_path)
+    assert "2009cAsym" in nm_template.syn_paths(tmp_path)["fwd"][0].name     # legacy 2009a SyN caches are never reused
+
+
+def test_ants_registrations_leave_no_transform_files_behind(tmp_path, monkeypatch):
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))            # where ANTsPy's mktemp() puts its transforms
+    base = np.zeros((32, 32, 32), np.float32)
+    base[8:24, 8:24, 8:24], base[12:20, 10:22, 10:22] = 0.3, 0.7
+    img = nib.Nifti1Image(base, np.eye(4))
+    _, tx = dwi.map_labels_to_subject(nib.Nifti1Image(np.roll(base, 2, axis=0), np.eye(4)), img,
+                                      nib.Nifti1Image((base > 0.5).astype(np.uint8), np.eye(4)), syn=False)
+    assert not list(tmp_path.iterdir()) and "fwdtransforms" not in tx

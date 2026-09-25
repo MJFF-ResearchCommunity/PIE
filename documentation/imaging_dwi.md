@@ -66,13 +66,16 @@ and PPMI-2 Siemens Prisma three-shell (b = 700/1000/2000, 64 directions each, re
    fixed→moving rotation. A missing per-volume rotation biases the fit; a single common reflection does not. Sheared
    affines raise. Returns `motion_mm_mean/max`, `rotation_deg_max`, `bvecs_rotated=True`. This is volume-to-b0
    alignment, not eddy-current or slice-outlier correction.
-6. **`fit_models(ds, fw_mask=None)`** — FA/MD from a DIPY WLS tensor on b <= 1050 over the brain mask. Free water
+6. **`fit_models(ds, fw_mask=None)`** — FA, MD, AD and RD from a DIPY WLS tensor on b <= 1050 over the brain mask. Free water
    `fw` and tissue FA `fat` only inside `fw_mask` (ROIs dilated by 2 voxels, cut to the brain): DIPY's
    `FreeWaterTensorModel` NLS (Hoy et al. 2014) on b <= 2050 when there are >= 2 non-zero shells
    (`fw_method="multishell_nls"`), else `_fw_single_shell`, a bounded voxel-wise bi-tensor fit (Cholesky tensor,
    f in [0, 0.95], `D_WATER=3e-3`) with a weak prior pulling tissue MD towards `MD_TISSUE=0.7e-3`
-   (`fw_method="singleshell_prior"`). Single-shell free water is ill-posed and behaves closer to MD. A failed
-   optimisation is NaN, never the prior value; `fw_fit_valid_fraction` records the fitted fraction.
+   (`fw_method="singleshell_prior"`). Single-shell free water is ill-posed ([below](#single-shell-free-water-is-not-assembled-by-default)). A failed
+   optimisation is NaN, never the prior value; `fw_fit_valid_fraction` records the fitted fraction. Multi-shell scans
+   also get the free-water-corrected MD `mdt` (tissue compartment of the same fit) and the DKI mean kurtosis `mk`
+   (DIPY WLS on b <= 2050, clipped to [0, 3]; kurtosis is noise-sensitive, so use `--denoise`), both inside
+   `fw_mask`; single-shell rows leave those columns empty.
 7. **`register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0)`** — rigid MI, mean b0 → brain-masked
    conformed T1 at 2 mm; returns (T1→b0 transform, metric). **`register_t1_to_mni(t1_img, t1_mask_img,
    cache_path=None, sampling_seed=0)`** — affine MI, brain-masked T1 → the bundled, checksummed
@@ -139,8 +142,8 @@ fibres and interpeduncular CSF.
 
 | Pattern | Meaning |
 |---|---|
-| `<roi>_{fa,md,fw,fat}` | ROI mean (e.g. `sn_posterior_l_fw`, `sn_t_r_fat`) |
-| `<base>_mean_{fa,md,fw,fat}` | Mean of left and right for `sn_posterior sn snc snr putamen caudate sn_posterior_t sn_t snc_t snr_t` |
+| `<roi>_{fa,md,ad,rd,fw,fat,mdt,mk}` | ROI mean (e.g. `sn_posterior_l_fw`, `sn_t_r_fat`); `mdt`, `mk` multi-shell only |
+| `<base>_mean_<metric>` | Mean of left and right for `sn_posterior sn snc snr putamen caudate sn_posterior_t sn_t snc_t snr_t` |
 | `n_<roi>` | Voxel count (QC; excluded from the assembled features) |
 | `nst_afd_{l,r}`, `nst_seed_success_{l,r}`, `nst_n_streamlines_{l,r}`, `nst_fa_{l,r}`, `nst_md_{l,r}`, `fba_multishell`, `fba_error` | `--fba` only, see below |
 | `motion_mm_mean`, `motion_mm_max`, `rotation_deg_max`, `bvecs_rotated` | Motion QC |
@@ -152,6 +155,27 @@ fibres and interpeduncular CSF.
 
 `processing_version` for new complete runs is `2026-09-09-acquisition-metadata-v3`. The manifest's QC rule
 (`manifest.QC["dwi"]`): `motion_mm_max < 6`, `n_sn_l >= 3`, `n_sn_r >= 3`, `fa_wm_median > 0.25`.
+
+### Single-shell free water is not assembled by default
+
+`manifest.assemble_features` blanks `*_fw` and `*_fat` of `fw_method == "singleshell_prior"` rows unless
+`single_shell_fw=True`. On the study's September 2026 run (762 QC-passing PPMI-1 scans, written before the 9–21 September
+fixes), the single-shell estimate failed checks that any free-water measure should pass:
+
+| Check | Single-shell (n = 762) | Multi-shell NLS (n = 68) |
+|---|---|---|
+| Brain-median FW vs age, r | +0.02 | +0.49 |
+| Cerebral WM FW vs age, r (WM MD vs age: +0.43 single-shell) | +0.02 | +0.47 |
+| Posterior-SN FW vs age, r | −0.16 | +0.28 |
+| Posterior-SN FW, PD vs HC AUROC | 0.50 (326 PD / 91 HC) | too few HC |
+| Posterior-SN FW vs SN MD, r | 0.12 | |
+
+A two-compartment fit on one shell is ill-posed: the answer is set by the prior and the initialisation (Golub et al.
+2021, MRM, doi:10.1002/mrm.28599). The PPMI free-water literature (Ofori et al. 2015, doi:10.1093/brain/awv136; Burciu et al. 2017,
+doi:10.1093/brain/awx146) used the regularised single-shell method of Pasternak et al. 2009, which PIE does not implement; the study
+itself excluded single-shell free water after three failed positive controls. Report FA/MD/AD/RD for single-shell
+scans, keep multi-shell free water a PPMI-2-only variable, and never pool the two in one longitudinal model (the
+protocol changed with PPMI 2.0).
 
 ## Nigrostriatal fixel measures (`fba.py`, `--fba`)
 
@@ -248,9 +272,10 @@ splenium 0.56). `dwi.write_provenance(path, provenance, qc)` records both beside
 
 ## Deformable atlas refinement (`dwi_refine.py`)
 
-Optional pass over `--keep-nifti` outputs: ANTs rigid b0 → T1 and SyN T1 → MNI (1 mm nilearn template,
-`antsRegistrationSyNQuick[s]`, ~2 min/subject), the CIT168 atlas warped onto the b0 grid, ROI features recomputed
-from the saved `fa md fw fat` maps (FastSurfer labels from the saved `aseg_dwi`). Writes
+Optional pass over `--keep-nifti` outputs: ANTs rigid b0 → T1 and SyN T1 → MNI152NLin2009cAsym (the 1 mm TemplateFlow
+template, `atlases.mni2009c_brain_1mm()`, sha256-pinned; nilearn's 1 mm template is the 2009a release and was the
+target until September 2026), `antsRegistrationSyNQuick[s]`, ~2 min/subject; the CIT168 atlas warped onto the b0 grid,
+ROI features recomputed from the saved metric maps (FastSurfer labels from the saved `aseg_dwi`). Writes
 `<work>/<patno>/pauli_dwi_syn.nii.gz` and appends to `<work>/dwi_features_syn.csv` (same column names as the
 feature part of `dwi_features.csv`, plus `reg_syn_mi`, which is always NaN). On a test subject it moved the nigral
 centroid by under a voxel, so it is not in the default path. The T1 is the one the DWI run used

@@ -197,6 +197,10 @@ def test_newest_dated_ppmi_table_is_used_and_gaps_are_reported(tmp_path):
         (status / name).write_text(f"PATNO,COHORT_DEFINITION\n1,{cohort}\n")
     assert latest_table(status, "Participant_Status").name == "Participant_Status_01Feb2001.csv"
     assert latest_table(tmp_path / "missing", "Participant_Status") is None
+    for name in ("iu_genetic_consensus_20251025_08Sep2026.csv", "iu_genetic_consensus_20240101_18Mar2025.csv",
+                 "iu_genetic_consensus_notes_08Sep2026.csv"):
+        (status / name).write_text("PATNO\n1\n")
+    assert latest_table(status, "iu_genetic_consensus").name == "iu_genetic_consensus_20251025_08Sep2026.csv"
     derived = tmp_path / "Imaging/derived"
     (derived / "fastsurfer/A/mri").mkdir(parents=True)
     (derived / "fastsurfer/A/mri/orig.mgz").write_bytes(b"")

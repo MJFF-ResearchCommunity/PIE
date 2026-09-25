@@ -49,7 +49,7 @@ Every step shares four properties:
 | FreeSurfer license | fMRIPrep | fMRIPrep 25.2.5 checks it even with `--fs-no-reconall`. Free from [FreeSurfer registration](https://surfer.nmr.mgh.harvard.edu/registration.html). |
 | FSL (`fsl_dir`) | pilot only | `motion_pilot`, `alignment_pilot` (`mcflirt`, `bet`, `flirt`). Not needed for the fMRIPrep path. |
 | `cairosvg` | `render_report_states` only | Optional; not installed in `venv_imaging`. |
-| Atlas + network table | connectivity | Supplied by the caller in the BOLD derivative's standard space. PIE ships no cortical network parcellation. |
+| Atlas + network table | connectivity | Any atlas in the BOLD derivative's standard space, or the default: Schaefer 2018 400 parcels / 7 networks in MNI152NLin2009cAsym (`atlases.schaefer400_mni2009c()`, fetched from TemplateFlow and sha256-pinned). |
 
 No external drive, mount point or machine path is assumed. Every path is a caller
 argument. Capacity limits and mount/recovery policy belong to the deployment.
@@ -426,9 +426,29 @@ primary["numerical_qc_pass"], primary["exclusion_reasons"], primary["network_fea
 # True, [], {'DMN__DMN': ..., 'DMN__SMN': ..., 'SMN__SMN': ...}
 ```
 
+With no study atlas, use the default cortical parcellation, already on fMRIPrep's `MNI152NLin2009cAsym` `res-2`
+grid (97 x 115 x 97): Schaefer et al. 2018, 400 parcels in 7 networks (`Vis SomMot DorsAttn SalVentAttn Limbic Cont
+Default`), the cortical part of XCP-D's "4S" atlas set. `striatal_rois` (5b) adds the CIT168 striatum in the same space.
+
+```python
+import nibabel as nib
+from pie.imaging.atlases import schaefer400_mni2009c
+
+atlas, label_networks = schaefer400_mni2009c()       # (label image, {1..400: network}); downloaded once, sha256-checked
+nib.save(atlas, "schaefer400_7net_MNI152NLin2009cAsym_res-2.nii.gz")   # pass this path as the atlas input above
+```
+
 ### `ConnectivityConfig` (frozen dataclass)
 
-The defaults are explicit so that they get justified per study; they are not universal.
+The defaults are explicit so that they get justified per study; they are not universal. They follow the
+benchmarks: 24 motion parameters + aCompCor + censoring is among the best-performing strategies on motion–connectivity
+(QC-FC) correlation and its distance dependence at a moderate loss of temporal degrees of freedom (Ciric et al. 2017,
+doi:10.1016/j.neuroimage.2017.03.020; Parkes et al. 2018, doi:10.1016/j.neuroimage.2017.12.073), and global signal regression is the variant that removes
+the most residual motion (Wang et al. 2024, doi:10.1371/journal.pcbi.1011942), so run it as the sensitivity analysis.
+ICA-AROMA left fMRIPrep in 23.1.0 and is not used. Before reporting, check QC-FC and lost degrees of freedom on
+your own data. PPMI 2.0 rs-fMRI is multiband (MB4, TR 1 s): respiration contaminates its motion parameters, so an
+FD threshold of 0.3 mm censors more there than on the legacy TR 2.4 s scans (Fair et al. 2020, doi:10.1016/j.neuroimage.2019.116400);
+treat protocol as a batch variable.
 
 | Field | Default | Why |
 |---|---|---|

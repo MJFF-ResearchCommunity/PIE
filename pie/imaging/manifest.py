@@ -28,14 +28,20 @@ QC = {
     & (d["nm_ref_l_sd"] < 0.4 * d["nm_ref_l_mean"]) & (d["nm_ref_r_sd"] < 0.4 * d["nm_ref_r_mean"]),   # reference ring partly outside the slab -> CV ~1, CNR garbage
     "flair": lambda d: (d["reg_flair_t1_mi"] < -0.2) & (d["wm_mm3"] > 200000) & (d["flair_wm_mad"] > 0),
 }
-DAT_COLS = ["sbr_caudate_l", "sbr_caudate_r", "sbr_putamen_l", "sbr_putamen_r", "reg_metric", "hdr_manufacturer", "hdr_model", "hdr_scale_fit", "image_id"]
+DWI_METRIC_SUFFIXES = ("_fa", "_md", "_ad", "_rd", "_fw", "_fat", "_mdt", "_mk")   # dwi.METRICS as column suffixes
 
 
 def is_dwi_feature(column):
     """ROI metrics use metric-last names; the optional tract pipeline uses side-last names."""
     c = column.removeprefix("dwi_")
-    return (not c.startswith("n_") and c.endswith(("_fa", "_md", "_fw", "_fat"))) or bool(
+    return (not c.startswith("n_") and c.endswith(DWI_METRIC_SUFFIXES)) or bool(
         re.fullmatch(r"nst_(?:afd|seed_success|fa|md)_[lr]", c))
+
+
+def _masked_dates(s):
+    """LONI masks some acquisition dates as 9999-...: a date, but not a day anything can be measured from."""
+    s = pd.to_datetime(s, errors="coerce")
+    return s.where(s.dt.year < 2100)
 
 
 DEFAULT_DIRS = {"dat": "datscan_full"}     # modality -> directory under the derived root when it is not the modality name
@@ -57,7 +63,7 @@ def _modality_metadata(d, mod, index_file, subjects, flag):
     dates = _dates_from_index(index_file, subjects, flag)
     inferred = pd.to_datetime(d["patno"].map(dates), errors="coerce")
     recorded = pd.to_datetime(d.get("acquisition_date", pd.Series(index=d.index, dtype=object)), errors="coerce")
-    d[f"{mod}_date"] = recorded.fillna(inferred)
+    d[f"{mod}_date"] = _masked_dates(recorded.fillna(inferred))
     d[f"{mod}_date_source"] = np.where(recorded.notna(), "recorded", "index_inferred")
     cols = [f"{mod}_date_source"]
     for c in ("fs_image_id", "processing_version", "source_image_ids", "fw_method", "topup", "denoised", "bvecs_rotated"):
@@ -99,7 +105,7 @@ def _dates_from_index(index_csv, subjects, flag_col=None):
 def build_manifest(derived_dir, modality_dirs=None):
     derived = Path(derived_dir)
     idps = _baseline_idps(derived)
-    man = pd.DataFrame({"PATNO": idps["PATNO"].astype(int), "t1_image_id": idps["IMAGEID"].astype(str), "t1_date": idps["SCAN_DATE"]})
+    man = pd.DataFrame({"PATNO": idps["PATNO"].astype(int), "t1_image_id": idps["IMAGEID"].astype(str), "t1_date": _masked_dates(idps["SCAN_DATE"])})
     subjects = set(man["PATNO"])
     # DaTscan (PIE SBRs): date from the SPECT index member path
     dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv")
@@ -111,7 +117,7 @@ def build_manifest(derived_dir, modality_dirs=None):
             si = pd.read_csv(spect_idx, dtype={"image_id": str})
             si["date"] = si["member"].str.split("/").str[3].str[:10]
             dates = si.drop_duplicates("image_id").set_index("image_id")["date"].to_dict()
-        dat["dat_date"] = pd.to_datetime(dat["image_id"].astype(str).map(dates), errors="coerce")
+        dat["dat_date"] = _masked_dates(dat["image_id"].astype(str).map(dates))
         dat["dat_batch"] = _vendor(dat["hdr_manufacturer"]) + "_" + dat["hdr_model"].astype(str).str[:12]
         extra = ["fs_image_id"] if "fs_image_id" in dat else []     # the T1 the stored SPECT transform refers to
         man = man.merge(dat[["patno", "image_id", "dat_date", "dat_batch", "dat_qc_pass"] + extra]
@@ -151,9 +157,17 @@ def build_manifest(derived_dir, modality_dirs=None):
     return man
 
 
-def assemble_features(derived_dir, modality_dirs=None):
-    """Manifest + features per subject: FastSurfer IDPs (as in fastsurfer_idps.csv), `dat_*` raw SBRs, `dwi_*`, `nm_*`
-    (ratios/volumes only), `flair_*`. Values of QC-failed modalities are blanked; the QC flags stay."""
+def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False):
+    """Manifest + features per subject: FastSurfer IDPs (as in fastsurfer_idps.csv), `dat_*` SBRs (occipital `sbr_*` and
+    cerebral-WM `sbrwm_*` references, their anterior/posterior halves, putamen/caudate ratios and asymmetry indices),
+    `dwi_*`, `nm_*` (ratios/volumes only), `flair_*`. Values of QC-failed modalities are blanked; the QC flags stay.
+
+    Single-shell free water (``fw_method == "singleshell_prior"``) and its tissue FA are blanked unless
+    ``single_shell_fw``: on 762 PPMI-1 scans its brain median did not rise with age (r = +0.02, against +0.43 for
+    white-matter MD and +0.49 for multi-shell free water), it tracked nigral MD at r = 0.12 and it did not separate
+    PD from controls. The estimator is ill-posed without a second shell (Golub et al. 2021, MRM, doi:10.1002/mrm.28599)."""
+    from .labels import sbr_indices
+
     derived = Path(derived_dir)
     man = build_manifest(derived, modality_dirs=modality_dirs)
     idps = _baseline_idps(derived).drop(columns=["SCAN_DATE"])
@@ -163,11 +177,17 @@ def assemble_features(derived_dir, modality_dirs=None):
     blocks = {}
     dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv")
     if dat is not None:
-        cols = [c for c in DAT_COLS if c in dat and c not in ("image_id", "hdr_manufacturer", "hdr_model", "hdr_scale_fit", "reg_metric")]
+        for ref in ("sbr", "sbrwm"):
+            if all(f"{ref}_{r}_{s}" in dat for r in ("caudate", "putamen") for s in "lr"):
+                idx = sbr_indices(*(dat[f"{ref}_{r}_{s}"] for r in ("caudate", "putamen") for s in "lr"))
+                dat[[f"{ref}_{c}" for c in idx]] = idx.to_numpy()
+        cols = [c for c in dat.columns if c.startswith(("sbr_", "sbrwm_"))]
         blocks["dat"] = dat[["patno"] + cols].rename(columns={c: f"dat_{c}" for c in cols})
     dwi = _read(_modality_dir(derived, "dwi", modality_dirs) / "dwi_features.csv")
     if dwi is not None:
         cols = [c for c in dwi.columns if is_dwi_feature(c)]
+        if not single_shell_fw and "fw_method" in dwi:
+            dwi.loc[dwi["fw_method"].eq("singleshell_prior"), [c for c in cols if c.endswith(("_fw", "_fat"))]] = np.nan
         blocks["dwi"] = dwi[["patno"] + cols].rename(columns={c: f"dwi_{c}" for c in cols})
     nmf = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_features.csv")
     if nmf is not None:

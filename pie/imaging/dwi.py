@@ -13,7 +13,8 @@ Prisma (b = 700/1000/2000, 64 directions each, plus reverse-phase b0s). Pipeline
 4. `fit`          DTI (weighted least squares, b <= 1000) for FA/MD over the brain; free-water bi-tensor model for
                   FW and tissue FA inside the ROI neighbourhood: DIPY's multi-shell NLS (Hoy et al. 2014) for the
                   PPMI-2 shells, a bounded voxel-wise fit with a tissue-diffusivity prior for single-shell PPMI-1
-                  data (`fw_method` records which; single-shell free-water is ill-posed and closer to MD).
+                  data (`fw_method` records which; single-shell free water is ill-posed, failed its PPMI validity checks and is
+                  left out of `manifest.assemble_features` by default).
 5. `register`     mean b0 -> conformed T1 (rigid, mutual information; susceptibility distortion is corrected only by
                   the optional topup step, `--fsl`); T1 -> MNI152NLin2009cAsym affine (brain-masked) to bring the
                   CIT168 subcortical atlas (Pauli et al. 2018, the authors' MNI2009c projection bundled in
@@ -56,7 +57,9 @@ FS_SINGLE = {"brainstem": (16,)}
 PAULI = ["Pu", "Ca", "NAC", "EXA", "GPe", "GPi", "SNc", "RN", "SNr", "PBP", "VTA", "VeP", "HN", "HTH", "MN", "STH"]
 PAULI_ROIS = {"snc": ("SNc",), "snr": ("SNr",), "sn": ("SNc", "SNr"), "red_nucleus": ("RN",), "stn": ("STH",), "vta": ("VTA",),
               "gpe": ("GPe",), "gpi": ("GPi",), "nac": ("NAC",)}
-METRICS = ("fa", "md", "fw", "fat")
+# fa md ad rd: WLS tensor (every scan). fw fat: free water and tissue FA. mdt (free-water-corrected MD) and mk (DKI
+# mean kurtosis): multi-shell scans only, so single-shell rows leave those columns empty
+METRICS = ("fa", "md", "fw", "fat", "ad", "rd", "mdt", "mk")
 
 
 # ------------------------------------------------------------------------------------------ index / convert
@@ -385,8 +388,10 @@ def _fw_single_shell(data, bvals, bvecs, mask, prior_weight=0.05):
 
 
 def fit_models(ds, fw_mask=None):
-    """FA/MD (WLS tensor, b <= 1000, brain mask) and free-water FW / tissue FA inside ``fw_mask`` (or the brain):
-    DIPY's multi-shell NLS (Hoy et al. 2014) when >= 2 non-zero shells, else the single-shell fit above."""
+    """FA/MD/AD/RD (WLS tensor, b <= 1000, brain mask) and free-water FW / tissue FA inside ``fw_mask`` (or the brain):
+    DIPY's multi-shell NLS (Hoy et al. 2014) when >= 2 non-zero shells, else the single-shell fit above. Multi-shell
+    scans also get the free-water-corrected MD (``mdt``) and the DKI mean kurtosis (``mk``, WLS on b <= 2000, clipped to
+    [0, 3]; noise-sensitive, so run with ``--denoise``) inside ``fw_mask``."""
     from dipy.core.gradients import gradient_table
     from dipy.reconst.dti import TensorModel
 
@@ -394,16 +399,20 @@ def fit_models(ds, fw_mask=None):
     sel = b <= 1050
     gt = gradient_table(b[sel], bvecs=v[:, sel], b0_threshold=50)
     tf = TensorModel(gt, fit_method="WLS").fit(data[..., sel], mask=mask)
-    out = {"fa": np.nan_to_num(tf.fa).astype(np.float32), "md": np.nan_to_num(tf.md).astype(np.float32)}
+    out = {k: np.nan_to_num(getattr(tf, k)).astype(np.float32) for k in ("fa", "md", "ad", "rd")}
     fmask = mask if fw_mask is None else (mask & fw_mask)
     shells = sorted(set(int(round(x / 100.0)) * 100 for x in b if x > 50))
     if len(shells) >= 2:
+        from dipy.reconst.dki import DiffusionKurtosisModel
         from dipy.reconst.fwdti import FreeWaterTensorModel
 
         sel2 = b <= 2050
         gt2 = gradient_table(b[sel2], bvecs=v[:, sel2], b0_threshold=50)
         fw = FreeWaterTensorModel(gt2).fit(data[..., sel2], mask=fmask)
         f, fat = np.nan_to_num(fw.f), np.nan_to_num(fw.fa)
+        out["mdt"] = np.where(fmask, fw.md, np.nan).astype(np.float32)
+        dk = DiffusionKurtosisModel(gt2, fit_method="WLS").fit(data[..., sel2], mask=fmask)
+        out["mk"] = np.where(fmask, dk.mk(min_kurtosis=0, max_kurtosis=3), np.nan).astype(np.float32)
         method = "multishell_nls"
     else:
         f, fat = _fw_single_shell(data[..., sel], b[sel], v[:, sel], fmask)
@@ -597,16 +606,17 @@ def _roi_masks(fs_lab, pauli_lab, y_index):
 
 def features(maps, rois, min_voxels=3):
     out = {}
+    metrics = [k for k in METRICS if k in maps]      # mdt / mk exist for multi-shell scans only
     for name, m in rois.items():
         n = int(m.sum())
         out[f"n_{name}"] = n
-        for k in METRICS:
+        for k in metrics:
             vals = maps[k][m]
             vals = vals[np.isfinite(vals)]
             out[f"{name}_{k}"] = float(vals.mean()) if len(vals) >= min_voxels else np.nan
     # bilateral means for the headline measures
     for base in ("sn_posterior", "sn", "snc", "snr", "putamen", "caudate", "sn_posterior_t", "sn_t", "snc_t", "snr_t"):
-        for k in METRICS:
+        for k in metrics:
             l, r = out.get(f"{base}_l_{k}", np.nan), out.get(f"{base}_r_{k}", np.nan)
             out[f"{base}_mean_{k}"] = float(np.nanmean([l, r])) if not (np.isnan(l) and np.isnan(r)) else np.nan
     return out
@@ -866,7 +876,8 @@ def map_labels_to_subject(subject_fa, atlas_fa, atlas_labels, brain_mask=None, s
     ``max_resolution_mm`` (e.g. 2.0): when the subject grid is finer than this, registration runs on a copy
     resampled to that isotropic spacing, and the labels are still pulled onto the native grid (transforms live in
     physical space). Scans reconstructed at 1 x 1 x 2 mm then register as fast as native 2 mm scans, and at the
-    resolution the diffusion data actually carry. Returns (labels_img on the subject FA grid, transforms dict).
+    resolution the diffusion data actually carry. Returns (labels_img on the subject FA grid, {"warped_template_fa",
+    "type", "registration_spacing_mm"}); the transform files are deleted, since ANTsPy leaves them in the temp directory.
     Labels use ``genericLabel`` interpolation.
     """
     import ants
@@ -886,7 +897,9 @@ def map_labels_to_subject(subject_fa, atlas_fa, atlas_labels, brain_mask=None, s
                                    interpolator="genericLabel")
     out = nib.Nifti1Image(np.rint(_from_ants(warped, subject_fa)).astype(np.int16), subject_fa.affine)
     warped_fa = ants.apply_transforms(fixed=native, moving=moving, transformlist=reg["fwdtransforms"], interpolator="linear")
-    return out, {"fwdtransforms": reg["fwdtransforms"], "warped_template_fa": _from_ants(warped_fa, subject_fa), "type": kind,
+    from .features import _drop_transforms
+    _drop_transforms(reg)
+    return out, {"warped_template_fa": _from_ants(warped_fa, subject_fa), "type": kind,
                  "registration_spacing_mm": [float(v) for v in fixed.spacing]}
 
 

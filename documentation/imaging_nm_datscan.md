@@ -6,7 +6,7 @@ Part of the [imaging layer](imaging.md). Both read the subject's FastSurfer T1 (
 | Module | Output | External tools |
 |---|---|---|
 | `nm.py` | `nm_features.csv`: nigral contrast ratios on the native NM slab | dcm2niix, SimpleITK (the MNI target is bundled with PIE) |
-| `nm_template.py` | `nm_template_features.csv`: contrast in a study NM template | + ANTsPy (`ants`), scikit-image, nilearn (its own 1 mm template) |
+| `nm_template.py` | `nm_template_features.csv`: contrast in a study NM template | + ANTsPy (`ants`), scikit-image, nilearn; the 1 mm MNI152NLin2009cAsym target is fetched from TemplateFlow once |
 | `datscan.py` | `datscan_sbr.csv`: striatal binding ratios from raw projections | pydicom, scikit-image, SimpleITK |
 
 ## Neuromelanin-sensitive MRI (`nm.py`)
@@ -161,7 +161,7 @@ Every averaged slab goes into a 0.5 mm MNI midbrain box (`BOX_ORIGIN_RAS=(-30, -
 
 | Stage | Function(s) | Writes |
 |---|---|---|
-| `syn` | `syn_cache(fastsurfer_dir, syn_type=SYN_TYPE)` (`antsRegistrationSyNQuick[s]`, ~2 min/subject), `crop_warp` | `<fastsurfer>/<IMAGE_ID>/mri/transforms/t1_to_mni_syn_1Warp.nii.gz` (cropped to the box + 20 mm) and `…_0GenericAffine.mat` |
+| `syn` | `syn_cache(fastsurfer_dir, syn_type=SYN_TYPE)` (`antsRegistrationSyNQuick[s]` to the brain-masked 1 mm MNI152NLin2009cAsym, `atlases.mni2009c_brain_1mm()`; ~7 CPU-minutes per subject), `crop_warp` | `<fastsurfer>/<IMAGE_ID>/mri/transforms/t1_to_MNI152NLin2009cAsym_syn_1Warp.nii.gz` (cropped to the box + 20 mm) and `…_0GenericAffine.mat`. Caches named `t1_to_mni_syn_*` were fitted to nilearn's 2009a template before 25 September 2026 and are not reused |
 | `normalize` | `normalize_subject(work_dir, patno, fastsurfer_dir)`, `slab_in_t1` | `<work>/<patno>/nm_mni.nii.gz`, `nm_normalize_log.csv` (`mni_nonzero_frac`) |
 | `template` | `build_template(work_dir, patnos, min_frac=0.5)` → `(template, count, n)`; `template_masks(template, crus_mm=(4.0, 9.0), sn_mm=3.0, cnr_min=0.06)`; `save_template`; `template_figure` | `<work>/template/nm_template.nii.gz`, `nm_template_count.nii.gz`, `nm_template_masks.nii.gz` (1 sn_l, 2 sn_r, 3 crus_l, 4 crus_r), `template_info.txt`, `template_qc.png` |
 | `features` | `load_masks(work_dir)`, `template_features(nm_mni, masks, prefix="nmt_")` | `<work>/nm_template_features.csv` |
@@ -236,6 +236,34 @@ segmentation as the ROI atlas.
    transporter first), and `sbrwm_*` uses cerebral WM >= `WM_MARGIN_MM` (15 mm) from the striatum as reference
    (after the MJFF Research Community DaT pipeline, which references the superior longitudinal fasciculus).
    Minimum voxels: 20 per striatal ROI (10 per half), 50 per reference; otherwise NaN.
+
+**PPMI's own SBRs.** Since 1 December 2024 PPMI's primary SBRs come from the XingImaging core lab, which re-analysed
+every earlier scan (`Xing_Core_Lab_-_Quant_SBR_*.csv`; README_SPECT_Quantitative_Analysis_Results, 2025): HERMES HOSEM
+reconstruction without attenuation correction or filter, then in MIAKAT a zero-order Chang correction with
+scanner-specific μ, a 6 mm Gaussian, a 12-parameter affine to a DaT template in MNI152 and CIC-atlas regions with the
+**cerebral white matter** as reference (striatum, caudate, putamen and pre/post-commissural, dorsal/ventral
+sub-regions). The Invicro occipital-reference table (`DaTScan_SBR_Analysis_*.csv`) is archived and gets no scans after
+that date. `labels.dat_sbr_table` reads the Xing table first; PIE's `sbrwm_*` columns are the ones on its reference.
+
+Agreement of PIE's own SBRs with PPMI's (study run of 8 September 2026, QC-passing scans matched on month):
+
+| PIE | PPMI | Scans | Putamen r (L / R) | Caudate r (L / R) |
+|---|---|---|---|---|
+| `sbrwm_*` (distant cerebral WM) | Xing, cerebral WM | 1,160 | 0.79 / 0.79 (95 % CI 0.76–0.82) | 0.61 / 0.63 |
+| `sbr_*` (occipital) | Invicro, occipital | 880 | 0.81 / 0.81 | 0.66 / 0.65 |
+| `sbrwm_putamen_*_post` | Xing post-commissural putamen | 1,160 | 0.79 / 0.78 | |
+
+For scale, PPMI's two core labs agree with each other at r = 0.88 on the putamen (2,963 scans). Lowest-putamen SBR
+separated PD from controls with AUROC 0.959 (PIE, WM reference; 474 PD / 126 HC) against 0.990 for Xing on the same
+scans, and 0.946 against 0.992 for Invicro (654 / 176). The caudate is PIE's weak region. Use PPMI's SBRs as the label
+and reference standard wherever they exist; PIE's reconstruction is for scans PPMI has not quantified and for
+analyses that need the subject's own anatomy. Never apply PPMI's percentage cut-offs to PIE SBRs.
+
+The ±2-voxel placement search earns its place: re-quantifying 300 of those scans from the saved reconstructions and
+transforms with fixed placement (`search_vox=0`) lowered agreement with Xing from r 0.80 to 0.70–0.72 on the putamen
+and from 0.60–0.64 to 0.51–0.55 on the caudate, because the search absorbs residual registration error. It also raises
+every SBR (putamen by ~0.15 on the WM scale), part of which is the upward bias of taking a maximum over noisy positions,
+largest on low-count scans.
 
 No attenuation correction by default: a Chang implementation exists (`--attenuation`) but lowered agreement with
 PPMI's values. Absolute SBRs therefore sit below PPMI's; calibrating them per vendor against PPMI's published SBRs
