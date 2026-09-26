@@ -158,3 +158,43 @@ def test_scanner_clipped_repeats_are_measured_and_fail_nm_qc(tmp_path):
            "nm_ref_l_sd": 10, "nm_ref_l_mean": 100, "nm_ref_r_sd": 10, "nm_ref_r_mean": 100}
     d = pd.DataFrame([{**row, "nm_clipped_fraction": ok}, {**row, "nm_clipped_fraction": bad}, row])   # last: legacy table
     assert QC["nm"](d).tolist() == [True, False, True]
+
+
+def test_process_subject_reads_nifti_series_without_a_zip(tmp_path, monkeypatch):
+    import pytest
+
+    seen = {}
+
+    def stop(niis, **kw):
+        seen["niis"] = niis
+        raise RuntimeError("stop after the inputs")
+
+    monkeypatch.setattr(nm, "average_repeats", stop)
+    monkeypatch.setattr(nm, "convert", lambda *a: pytest.fail("a NIfTI series must not be converted"))
+    with pytest.raises(RuntimeError, match="stop after the inputs"):
+        nm.process_subject(1, [{"nifti": "/data/sub-01_mt-GRE.nii.gz", "date": "2000-01-01", "desc": "mt-GRE"}], tmp_path / "fs", tmp_path)
+    assert seen["niis"] == ["/data/sub-01_mt-GRE.nii.gz"]
+
+
+def test_a_subjects_series_read_the_zip_index_once(tmp_path, monkeypatch):
+    import zipfile
+
+    import pytest
+
+    zp = tmp_path / "loni.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        for i in (1, 2):                    # PPMI stores each NM repeat as its own series
+            z.writestr(f"PPMI/1/NM/2000-01-01_09_00_00.0/I00000{i}/a.dcm", b"x")
+    real, opened = zipfile.ZipFile, []
+
+    def counting(*a, **k):
+        if a[0] == zp or str(a[0]) == str(zp):
+            opened.append(a[0])
+        return real(*a, **k)
+
+    monkeypatch.setattr(zipfile, "ZipFile", counting)
+    monkeypatch.setattr(nm, "average_repeats", lambda niis, **kw: (_ for _ in ()).throw(RuntimeError("stop after conversion")))
+    rows = [{"zip": str(zp), "prefix": f"PPMI/1/NM/2000-01-01_09_00_00.0/I00000{i}/", "date": "2000-01-01", "desc": "NM"} for i in (1, 2)]
+    with pytest.raises(RuntimeError, match="stop after conversion"):
+        nm.process_subject(1, rows, tmp_path / "fs", tmp_path / "work")
+    assert len(opened) == 1

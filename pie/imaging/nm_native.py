@@ -207,7 +207,8 @@ def tse_subject(patno, series_rows, fastsurfer_dir, work_dir, echo=1):
 
     d = Path(work_dir) / str(patno)
     d.mkdir(parents=True, exist_ok=True)
-    niis = [f for r in series_rows for f in _nm.convert(r["zip"], r["prefix"], d / "nii")]
+    with _nm.ZipArchiveCache() as zips:
+        niis = [f for r in series_rows for f in _nm.convert(r["zip"], r["prefix"], d / "nii", archive_cache=zips)]
     metas = [json.loads(Path(f[:-7] + ".json").read_text()) for f in niis]
     tes = sorted({m["EchoTime"] for m in metas if "EchoTime" in m})
     if len(tes) < echo:
@@ -289,6 +290,7 @@ def main(argv=None):
     ap.add_argument("--limit", type=int)
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
+    work.mkdir(parents=True, exist_ok=True)
     if a.prepare_tse:
         from .batch import fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows
 

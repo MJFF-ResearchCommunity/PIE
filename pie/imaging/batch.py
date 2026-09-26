@@ -7,6 +7,7 @@ pattern-matching process lists.
 
 import csv
 import os
+from contextlib import nullcontext
 import subprocess
 import tempfile
 import zipfile
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .archives import ZipArchiveCache
 from .convert import DCM2NIIX
 
 
@@ -46,12 +48,15 @@ def load_index(index_file, zips, flag_fn):
     return idx
 
 
-def convert_series(zip_path, prefix, out_dir):
-    """Extract one series from the zip and run dcm2niix into out_dir. Returns the NIfTI paths written (sorted)."""
+def convert_series(zip_path, prefix, out_dir, archive_cache=None):
+    """Extract one series from the zip and run dcm2niix into out_dir. Returns the NIfTI paths written (sorted).
+    ``archive_cache`` (``archives.ZipArchiveCache``) keeps the zip's index between the series of one subject: a LONI
+    zip with millions of members takes ~13 s and ~3 GB to index, and PPMI stores each NM repeat as its own series."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     tag = prefix.rstrip("/").split("/")[-1]
-    with tempfile.TemporaryDirectory(dir=out_dir) as tmp, zipfile.ZipFile(zip_path) as z:
+    with (tempfile.TemporaryDirectory(dir=out_dir) as tmp, (ZipArchiveCache() if archive_cache is None else nullcontext(archive_cache)) as cache,
+          cache.open(zip_path) as z):
         for n in z.namelist():
             if n.startswith(prefix) and n.endswith(".dcm"):
                 with open(Path(tmp) / Path(n).name, "wb") as f:

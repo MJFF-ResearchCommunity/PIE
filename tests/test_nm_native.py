@@ -186,7 +186,7 @@ def test_tse_ingestion_keeps_the_requested_echo_and_its_rigid_transform(tmp_path
     import SimpleITK as sitk
     from pie.imaging import nm
 
-    def fake_convert(zip_path, prefix, out_dir):              # PPMI stores the two echoes as separate images
+    def fake_convert(zip_path, prefix, out_dir, **kw):              # PPMI stores the two echoes as separate images
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         te = {"a/": 0.101, "b/": 0.012}[prefix]
@@ -204,3 +204,16 @@ def test_tse_ingestion_keeps_the_requested_echo_and_its_rigid_transform(tmp_path
     N.tse_subject(8, rows, str(tmp_path / "fs"), tmp_path, echo=2)
     assert np.asarray(nib.load(tmp_path / "8" / "nm_mean.nii.gz").dataobj).mean() == pytest.approx(101)
     assert N.flag_tse(pd.DataFrame({"desc": ["Axial_PD-T2_TSE_FS", "AX_DUAL_TSE", "3D_T2_FLAIR", "2D_GRE-MT"]})).tolist() == [True, True, False, False]
+
+
+def test_prepare_tse_creates_its_work_dir(tmp_path):
+    import zipfile
+
+    zp = tmp_path / "loni.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("PPMI/1/MPRAGE/2000-01-01_09_00_00.0/I000001/a.dcm", b"x")    # no TSE series: nothing to process
+    pd.DataFrame({"patno": [1], "image_id": ["I000001"], "session_date": ["2000-01-01"]}).to_csv(tmp_path / "s.csv", index=False)
+    work = tmp_path / "new" / "tse"
+    N.main(["--prepare-tse", "--zips", str(zp), "--sessions", str(tmp_path / "s.csv"), "--fastsurfer-dir", str(tmp_path / "fs"),
+            "--work-dir", str(work)])
+    assert (work / "tse_index.csv").exists()

@@ -43,6 +43,7 @@ import numpy as np
 import pandas as pd
 from scipy import ndimage
 
+from .archives import ZipArchiveCache
 from .convert import DCM2NIIX
 from .datscan import _sitk_from_nib
 
@@ -72,12 +73,12 @@ def index_dwi(zips):
     return idx
 
 
-def convert(zip_path, prefix, out_dir):
+def convert(zip_path, prefix, out_dir, archive_cache=None):
     """dcm2niix on one series; returns (nii, bval, bvec, json) tuples, vendor-derived maps dropped."""
     from .batch import convert_series
 
     runs = []
-    for nii in convert_series(zip_path, prefix, out_dir):
+    for nii in convert_series(zip_path, prefix, out_dir, archive_cache=archive_cache):
         base = nii[:-7]
         if base.endswith(DERIVED_SUFFIXES) or not Path(base + ".bval").exists():
             continue
@@ -767,8 +768,9 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     work = Path(work_dir) / str(patno)
     work.mkdir(parents=True, exist_ok=True)
     runs = []
-    for r in series_rows:
-        runs += convert(r["zip"], r["prefix"], work / "nii")
+    with ZipArchiveCache() as zips:     # a session's DWI runs usually share a zip: index it once
+        for r in series_rows:
+            runs += convert(r["zip"], r["prefix"], work / "nii", archive_cache=zips)
     ds = assemble(runs)
     if denoise:
         ds = denoise_dwi(ds, work)

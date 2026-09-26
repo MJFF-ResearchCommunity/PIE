@@ -325,7 +325,7 @@ def test_cpu_segmentation_gets_a_longer_time_budget(tmp_path, monkeypatch):
         fastsurfer.segment_batch([tmp_path / "S2_T1w.nii.gz"], tmp_path / "fs", device=device)
         budgets[device] = list(calls)
     (gpu_seg, gpu_batch), (cpu_seg, cpu_batch) = budgets["cuda"], budgets["cpu"]
-    assert gpu_seg[0] == 900 and gpu_batch == (90 + 300, fastsurfer.STALL_SECONDS)       # GPU budgets unchanged
+    assert gpu_seg[0] == 900 and gpu_batch == (fastsurfer.STALL_SECONDS + 300, fastsurfer.STALL_SECONDS)   # batch cap = stall budget per scan
     assert cpu_seg[0] > gpu_seg[0] and cpu_batch[0] > gpu_batch[0] and cpu_batch[1] > gpu_batch[1]
 
 
@@ -1144,3 +1144,14 @@ def test_ida_metadata_reads_namespaced_records_and_skips_phantoms(tmp_path):
     d = read_ida_metadata(zp)
     assert d["image_id"].tolist() == ["I000001"]
     assert d[["patno", "ida_visit", "ida_manufacturer"]].iloc[0].tolist() == [1, "Baseline", "SIEMENS"]
+
+
+def test_a_progressing_gpu_batch_is_not_cut_off_by_a_per_scan_budget(tmp_path, monkeypatch):
+    # A thermally throttled laptop GPU (95 C, 300 MHz) took ~4 min per scan; the old cap of 90 s per scan killed
+    # batches that were still producing segmentations. Only a stall (no new segmentation) should stop one early.
+    from pie.imaging import fastsurfer
+    calls = []
+    monkeypatch.setattr(fastsurfer, "_run", lambda cmd, log, cwd, timeout=1800, stall=None, stall_seconds=0: calls.append((timeout, stall_seconds)))
+    fastsurfer.segment_batch([tmp_path / f"S{i}_T1w.nii.gz" for i in range(20)], tmp_path / "fs", device="cuda")
+    timeout, stall_seconds = calls[0]
+    assert stall_seconds == fastsurfer.STALL_SECONDS and timeout >= 20 * stall_seconds

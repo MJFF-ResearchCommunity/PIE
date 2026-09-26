@@ -136,7 +136,9 @@ def segment_batch(niftis, subjects_dir, threads=4, device="cuda", batch=4, fasts
                   "--brainmask_name", "mri/mask.mgz", "--aseg_name", "mri/aseg.auto_noCCseg.mgz",
                   "--vox_size", "1", "--batch_size", batch,
                   "--viewagg_device", "auto", "--device", device, "--threads", threads], sd / f".{tag}.log", fs,
-                 timeout=per_scan * len(todo) + 300, stall=progress, stall_seconds=stall_seconds)
+                 # the stall guard catches a hang; the wall cap is only a backstop, so a slow but progressing batch (a
+                 # thermally throttled laptop GPU took ~4 min per scan) is not killed mid-scan
+                 timeout=max(per_scan, stall_seconds) * len(todo) + 300, stall=progress, stall_seconds=stall_seconds)
         except RuntimeError:
             pass  # stragglers are retried one by one by the caller
     listing.unlink(missing_ok=True)

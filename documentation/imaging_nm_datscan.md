@@ -42,9 +42,9 @@ Neuromelanin-sensitive MRI shows the pigmented dopaminergic neurons of the subst
 
 | | Published | Target | PIE result |
 |---|---|---|---|
-| R1 [Langley 2025] | PPMI Siemens GRE-MT, SNc volume, d ≈ 0.83 | p < 0.05 and PIE's d CI contains 0.83 | **Pilot: not reproduced.** 21 HC and 82 de novo PD, Siemens. HC 706 ± 290 vs PD 706 ± 218 mm³; adjusted d 0.01 [−0.63, 0.60]; AUROC 0.48. The full run follows the missing-NM download. See the note below |
-| R1b [Hwang 2023] | Emory Siemens, AUROC 0.756 / 0.749 | CI contains the published AUROC | pending (Dryad doi:10.6086/D1709N, CC0; browser download) |
-| R2 [Lillebostad 2025] | PPMI Siemens TSE-FS, snceg CR vs crus, AUROC 0.743 | CI contains 0.743, lower bound > 0.5 | pending (needs the PPMI-1 `Axial PD-T2 TSE FS` series) |
+| R1 [Langley 2025] | PPMI Siemens GRE-MT, SNc volume, d ≈ 0.83 | p < 0.05 and PIE's d CI contains 0.83 | **Pilot: not reproduced.** 21 HC and 82 de novo PD, Siemens. HC 706 ± 290 vs PD 706 ± 218 mm³; adjusted d 0.01 [−0.63, 0.60]; AUROC 0.48. The full run is in progress on the 25 Sep download: 590 HC/PD with NM, all processed afresh. See the note below |
+| R1b [Hwang 2023] | Emory Siemens, AUROC 0.756 / 0.749 | CI contains the published AUROC | running: 52 HC and 61 PD from the Dryad release (doi:10.6086/D1709N, CC0), NIfTI with 7 repeats per NM scan |
+| R2 [Lillebostad 2025] | PPMI Siemens TSE-FS, snceg CR vs crus, AUROC 0.743 | CI contains 0.743, lower bound > 0.5 | running: TSE-FS at all visits, earliest TSE-FS session per participant (199 PD, 35 HC, 34 SWEDD), same-day T1 |
 
 **Why the R1 pilot differs from Langley 2025** (diagnosed across all scans, without group labels).
 - PIE's search region is the Biondetti nigra plus a 1 mm ring: about 1,600 mm³ on the native slab.
@@ -414,6 +414,12 @@ venv_imaging/bin/python -m pie.imaging.nm --zips … --sessions … --fastsurfer
 venv_imaging/bin/python -m pie.imaging.nm_template syn --sessions … --fastsurfer-dir … --work-dir <w>
 venv_imaging/bin/python -m pie.imaging.nm_native --sessions … --fastsurfer-dir … --work-dir <w> --workers 6 --snceg
 ```
+
+**Other inputs.**
+- **Dual-echo TSE:** `nm_native --prepare-tse --zips … --echo 1|2` converts the session's TSE, keeps the chosen echo as `nm_mean.nii.gz` and registers it rigidly to the T1 that `--sessions` gives for the participant (`batch.fastsurfer_by_patno`: the earliest finished session).
+  - To register a later-visit TSE to the T1 from its own day, pass a sessions table holding that T1 only. The Lillebostad reproduction does this (earliest TSE-FS session, same-day T1).
+- **NIfTI instead of LONI zips:** `nm.process_subject` reads a series row that carries `"nifti"` as is. A 4D file counts as its repeats.
+  - This is how the Emory release of Hwang et al. 2023 (7 repeats per scan) goes through the same `--denoise` → `syn` → `nm_native` chain.
 
 `manifest.assemble_features` keeps `nml_sn_volume*_mm3` and `nms_sn*_{mm3,cr,cnr}`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`. Tests are in `tests/test_nm_native.py`:
 - a real ANTs SyN between synthetic volumes;

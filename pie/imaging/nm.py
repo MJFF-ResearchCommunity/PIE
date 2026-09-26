@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 from scipy import ndimage
 
+from .archives import ZipArchiveCache
 from .convert import DCM2NIIX
 from .dwi import PAULI, _brain, _register_volume, _sitk_from_nib, _sitk_native, labels_to_dwi, mni_cache_path, pauli_atlas, register_t1_to_mni
 
@@ -472,8 +473,9 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     work = Path(work_dir) / str(patno)
     work.mkdir(parents=True, exist_ok=True)
     niis = []
-    for r in series_rows:
-        niis += convert(r["zip"], r["prefix"], work / "nii")
+    with ZipArchiveCache() as zips:  # LONI zip rows are converted; a row with "nifti" (e.g. the Emory Dryad release) is read as is
+        for r in series_rows:
+            niis += [r["nifti"]] if r.get("nifti") else convert(r["zip"], r["prefix"], work / "nii", archive_cache=zips)
     nm_img, meta, n_rep, motion = average_repeats(niis, sampling_seed=sampling_seed, denoise=denoise,
                                                 transforms_dir=work / 'repeat_transforms' if keep_nifti else None)
     (work / 'repeat_selection.json').write_text(json.dumps(meta['PIERepeatSelection'], indent=2))

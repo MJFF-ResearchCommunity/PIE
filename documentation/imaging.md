@@ -135,8 +135,13 @@ What happens:
    the sidecar fields in `SIDECAR_FIELDS` (vendor, model, field strength, TR/TE/TI, flip angle, …). Volumes that
    are not 3D, have a dimension < 40 or a voxel > 2.5 mm are rejected before they can abort a GPU batch.
 5. **Segment** — `segment_batch(niftis, subjects_dir, threads=4, device="cuda", batch=4)` runs FastSurferVINN on a
-   chunk in one process behind a file lock (`.gpu.lock`: one inference on the GPU at a time). On CUDA a chunk gets
-   90 s per scan + 300 s and is killed after `STALL_SECONDS` (420 s) without a new segmentation; a single-scan
+   chunk in one process behind a file lock (`.gpu.lock`: one inference on the GPU at a time). On CUDA a chunk is
+   killed after `STALL_SECONDS` (420 s) without a new segmentation. Its wall cap is only a backstop:
+   `STALL_SECONDS` per scan + 300 s.
+   - A thermally throttled laptop GPU (95 °C, 300 MHz) took about 4 min per scan.
+   - The earlier cap of 90 s per scan killed such batches mid-scan while they were still progressing.
+
+   A single-scan
    `segment` gets 900 s. Any other device gets `CPU_SCAN_SECONDS` per scan and as the stall limit (3600 s, override
    with `PIE_FASTSURFER_CPU_SECONDS`), because CPU inference takes tens of minutes. Scans the batch skipped are retried alone
    (`segment`, via `run_fastsurfer`). `complete_segmentation` rebuilds `mask.mgz` / `aseg.auto_noCCseg.mgz`,
@@ -475,8 +480,14 @@ subject as it finishes, so a killed run loses at most the subjects in flight; `j
 `error` string rather than raise; when a later row brings new columns the file is rewritten with the union
 header. `done_subjects(out_csv, retry_errors=False)`, `filter_jobs(jobs, patnos_file=None, limit=None)` and
 `add_common_args(ap)` (the shared CLI flags) complete it. `datscan`, `qc --modality datscan` and `dwi_refine` use
-the same `fastsurfer_by_patno` rule, and `datscan` writes its table through `run_batch`. `batch.convert_series(zip_path, prefix, out_dir)`
-extracts only `.dcm` members and returns every NIfTI dcm2niix wrote. Tests: `tests/test_batch.py`.
+the same `fastsurfer_by_patno` rule, and `datscan` writes its table through `run_batch`. `batch.convert_series(zip_path, prefix, out_dir, archive_cache=None)`
+extracts only `.dcm` members and returns every NIfTI dcm2niix wrote.
+- `nm`, `nm_native --prepare-tse` and `dwi` hold one `ZipArchiveCache` per subject job, so a session's series read the zip index once.
+  - PPMI stores each NM repeat as its own series.
+  - A LONI zip with 2.8 million members takes about 13 s and 2.8 GB to index.
+- The cache is not kept per worker process: eight resident indexes of that size would exceed a 24 GB memory cap.
+
+Tests: `tests/test_batch.py`, `tests/test_nm.py`.
 
 ### Bundled atlas (`atlases.py`)
 
