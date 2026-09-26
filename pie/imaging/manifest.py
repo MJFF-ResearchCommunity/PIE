@@ -34,13 +34,16 @@ QC = {
                       & (_col(d, "sn_physical_fraction") >= 0.8) & (_col(d, "motion_mm_mean") <= 2)
                       & np.isfinite(_col(d, "sn_posterior_l_fa")) & np.isfinite(_col(d, "sn_posterior_r_fa")) & (d["fa_wm_median"] > 0.25)),
     "nm": lambda d: (d["n_sn_l"] >= 20) & (d["n_sn_r"] >= 20) & (d["sn_slab_coverage"] >= 0.5) & (d["repeat_motion_mm_max"] < 3)
-    & (d["nm_ref_l_sd"] < 0.4 * d["nm_ref_l_mean"]) & (d["nm_ref_r_sd"] < 0.4 * d["nm_ref_r_mean"]),   # reference ring partly outside the slab -> CV ~1, CNR garbage
+    & (d["nm_ref_l_sd"] < 0.4 * d["nm_ref_l_mean"]) & (d["nm_ref_r_sd"] < 0.4 * d["nm_ref_r_mean"])   # reference ring partly outside the slab -> CV ~1, CNR garbage
+    & ~(_col(d, "nm_clipped_fraction") > 0.01),   # scanner-clipped repeats (tables before 26 Sep 2026 lack the column: pass)
     "flair": lambda d: (d["reg_flair_t1_mi"] < -0.2) & (d["wm_mm3"] > 200000) & (d["flair_wm_mad"] > 0),
     # nm_template: the template SN mask has data on both sides and the crus reference is homogeneous
     "nmt": lambda d: (d["nmt_sn_cov_l"] >= 0.9) & (d["nmt_sn_cov_r"] >= 0.9) & (d["nmt_crus_cv_l"] < 0.3) & (d["nmt_crus_cv_r"] < 0.3),
 }
-# Neither NM measure passed its pre-registered PD-vs-HC gate (AUROC >= 0.70, CI lower bound > 0.55) on 45 HC + 45 PD
-# (26 September 2026: nm_template 0.58 [0.46, 0.70], nm.py 0.54 [0.42, 0.67]); assembled NM columns are exploratory.
+# No NM measure has passed a pre-registered PD-vs-HC gate (AUROC >= 0.70, CI lower bound > 0.55; 26 September 2026):
+# 45 HC + 45 PD: nm_template 0.58 [0.46, 0.70], nm.py 0.54 [0.42, 0.67]. Re-test with the published Biondetti
+# territories on 106 held-out PD + the 39 usable HC: sensorimotor contrast 0.62 [0.53, 0.72], rho with putamen SBR
+# 0.18; 8-territory model 0.67 [97.5 % CI 0.55, 0.78], rho 0.20 (both fail). Assembled NM columns are exploratory.
 NM_VALIDATED = False
 DWI_METRIC_SUFFIXES = ("_fa", "_md", "_ad", "_rd", "_fw", "_fat", "_mdt", "_mk")   # dwi.METRICS as column suffixes
 
@@ -232,6 +235,10 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
     if nmb is not None:      # published Biondetti territories vs background; coverage already blanks a region
         cols = [c for c in nmb.columns if c.startswith("nmb_") and c.endswith("_cnr")]
         df = df.merge(nmb[["patno"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+    nat = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_native_features.csv")
+    if nat is not None:      # native-space published measures (nm_native): Langley SNc volume, snceg volume and contrast
+        cols = [c for c in nat.columns if c.startswith(("nml_sn_volume", "nms_sn")) and c.endswith(("_mm3", "_cr", "_cnr"))]
+        df = df.merge(nat[["patno"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     fl = _read(_modality_dir(derived, "flair", modality_dirs) / "flair_features.csv")
     if fl is not None:
         cols = ["wmh_log_mm3", "wmh_pv_mm3", "wmh_deep_mm3", "wmh_frac_wm", "wmh_n_lesions", "wmh_mm3"]
@@ -244,7 +251,8 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
             bad = ~df[f"{mod}_qc_pass"].fillna(False).astype(bool)
             df.loc[bad, feat_cols] = np.nan
     if "nm_qc_pass" in df:   # the slab's own QC (motion, coverage) holds for every NM method read from it
-        df.loc[~df["nm_qc_pass"].fillna(False).astype(bool), [c for c in df if c.startswith(("nmt_", "nmb_")) and c.endswith("_cnr")]] = np.nan
+        df.loc[~df["nm_qc_pass"].fillna(False).astype(bool),
+               [c for c in df if c.startswith(("nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_cr", "_mm3"))]] = np.nan
     # one intracranial volume for head-size adjustment: PIE's FreeSurfer eTIV (same T1 as the volumes), else PPMI's
     # FreeSurfer 7 eTIV of the same visit; never MaskVol or BrainSegVol
     nan = pd.Series(np.nan, index=df.index)
@@ -259,5 +267,5 @@ def feature_blocks(columns):
     cols = list(columns)
     return {"dat": [c for c in cols if c.startswith("dat_sbr")],
             "dwi": [c for c in cols if c.startswith("dwi_") and is_dwi_feature(c)],
-            "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_")) and c.endswith(("_cnr", "_voxels"))],
+            "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_voxels", "_cr", "_mm3"))],
             "flair": [c for c in cols if c.startswith("flair_wmh")]}

@@ -36,7 +36,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `batch.py` | Shared plumbing for the modality runners | |
 | `dwi.py`, `fba.py`, `dwi_refine.py` | Diffusion pipeline, nigrostriatal and JHU tract measures, SyN refinement ([page](imaging_dwi.md)) | yes |
 | `dwi_tensor_qc.py`, `freewater_qc.py`, `dwi_acquisition.py`, `dwi_correction.py` | Opt-in DWI measurement and correction safeguards ([page](imaging_dwi.md#opt-in-measurement-apis)) | |
-| `nm.py`, `nm_template.py` | Neuromelanin MRI: contrast ratios, volume and normalised intensity ([page](imaging_nm_datscan.md)) | yes |
+| `nm.py`, `nm_template.py`, `nm_native.py` | Neuromelanin MRI: contrast ratios, template and territory contrasts, native-space SNc volume (Langley method) and snceg segmentation ([page](imaging_nm_datscan.md)) | yes |
 | `datscan.py` | DaTscan SPECT reconstruction and SBRs ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | yes |
 | `flair.py` | White-matter hyperintensity burden | yes |
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
@@ -647,9 +647,12 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Free-water-corrected FA / MD; DKI mean kurtosis | SOTA | FAt all scans; MDt and MK multi-shell |
 | | Nigrostriatal tractography, fixel AFD | SOTA | Yes (`--fba`) |
 | | TBSS skeleton; NODDI | ENIGMA standard; SOTA | No (b ≤ 2000 limits NODDI) |
-| NM-MRI | SN contrast vs a reference | Gold | Yes (atlas ROI, `nm.py`) |
+| NM-MRI | SNc volume by reference-based threshold, native space | Gold (most replicated; Cho 2021, Langley 2025 on PPMI) | Implemented: `nm_native` (`nml_*`), MP-PCA-denoised repeats (`nm --denoise`). With the public Biondetti ROIs in place of Langley's unpublished atlas, the Siemens pilot did **not** reproduce the published PPMI effect (d 0.01 vs 0.83) |
+| | SN contrast vs a crus/tegmental reference | Gold | Yes (`nm.py` atlas ROI; `nm_template`; `nm_native` snceg CR/CNR) |
 | | Voxel-wise CNR vs crus in template space (Cassidy 2019, Wengler 2020) | SOTA; cited by the PPMI 2.0 MRI manual | Yes (`nm_template.py`) |
-| | NM SN volume and its loss rate | SOTA progression marker | Threshold volume helper only; no validated segmenter |
+| | Deep-learning SN segmentation (snceg, Lillebostad 2025) | SOTA | Yes: `nm_native --snceg` (pinned public weights, separate environment); reproduction pending |
+| | Voxelwise template CNR, functional territories, multi-site harmonisation | SOTA (Wengler 2020/2021, Biondetti 2020) | Yes: `nm_template`, `published` stage, `nm_acquisition_batch` |
+| | NM SN volume loss rate (longitudinal) | SOTA progression marker | Cross-sectional volume only; no longitudinal pipeline |
 | | Locus coeruleus | SOTA in prodromal work | Not in PPMI's 24 mm slab |
 | Iron | QSM, R2*, nigrosome-1 on SWI | SOTA | Not acquired by PPMI-1 or PPMI 2.0 (no multi-echo GRE or SWI) |
 | FLAIR | WMH volume | Gold (vascular covariate) | Threshold method; deep-learning segmenters not wrapped. Prefer FastSurfer's `vol_WM_hypointensities` (below) |
@@ -678,6 +681,7 @@ before quoting their values), with PPMI cohort labels:
 | DWI nigral FA / MD | vs PPMI's hand-drawn SN ROIs (248 scans) | FA ρ 0.39 (PIE reads higher: 0.43 vs 0.32, peduncle partial volume), MD ρ −0.01 |
 | NM atlas ROI CNR | PD vs HC (166 / 45) | AUROC 0.54 overall, 0.60 posterior half |
 | NM, pre-registered gate (AUROC ≥ 0.70, CI lower bound > 0.55), 45 HC + 45 PD, 26 Sep 2026 | PD vs HC | template CNR (`nmt_sn_mean_cnr`) 0.58 [0.46, 0.70], posterior 0.61; atlas CNR re-run with current `nm.py` (`nm_sn_mean_cnr`) 0.54 [0.42, 0.67]. **Neither passes: NM measures are exploratory** (`manifest.NM_VALIDATED = False`, column `nm_validated`). The template's crus reference sits mostly above the SN (median 7 mm), a defect to fix before any re-test on new subjects |
+| NM re-test, published Biondetti territories, pre-registered (same gate plus ρ ≥ 0.20 with the lowest putamen SBR); 106 held-out PD + the 39 usable HC (reused), GE/Siemens/Toshiba | PD vs HC | sensorimotor contrast (`nmb_sensorimotor_mean_cnr`, vendor/age/sex-adjusted) 0.62 [0.53, 0.72], ρ 0.18; 8-territory model (cross-validated) 0.67 [97.5 % CI 0.55, 0.78], ρ 0.20. Both fail; NM stays exploratory. Sensorimotor NM is lower and limbic NM higher in PD in both samples. Unadjusted sensorimotor AUROC by vendor: GE 0.53, Siemens 0.70, Toshiba 0.97 (6 HC / 5 PD) |
 | FLAIR registration | 30 scans that failed QC + 10 that passed, re-run 25 Sep 2026 | 21 / 30 now pass, 10 / 10 still pass; former failures' median WMH 11.1 → 2.5 mL |
 | FLAIR WMH (threshold) | Age; vs FastSurfer WM-hypointensities | ρ +0.18 (3D FLAIR +0.24); ρ 0.52 with the T1 measure, which itself tracks age at ρ +0.46 |
 
