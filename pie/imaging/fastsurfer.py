@@ -20,6 +20,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import freesurfer
+
 PIE_ROOT = Path(__file__).resolve().parents[2]
 FASTSURFER_HOME = Path(os.environ.get("PIE_FASTSURFER_HOME") or PIE_ROOT / "third_party" / "FastSurfer")
 PYTHON = Path(os.environ.get("PIE_FASTSURFER_PYTHON") or PIE_ROOT / "venv_imaging" / "bin" / "python")
@@ -201,6 +203,111 @@ def run_fastsurfer(nifti, subjects_dir, sid, threads=4, device="cuda", batch=4,
     if not (Path(subjects_dir).resolve() / sid / STATS_FILE).exists():
         segment(nifti, subjects_dir, sid, threads, device, batch, fastsurfer_home, python)
     return finish_stats(subjects_dir, sid, threads, fastsurfer_home, python)
+
+
+ETIV_SCALE = 1948106.0   # FreeSurfer's atlas scale factor: eTIV = scale / det(talairach.xfm), as mri_segstats --etiv
+
+
+def etiv_from_xfm(xfm_path):
+    """eTIV (mm^3) from an MNI305 ``talairach.xfm``: 1948106 / det of its linear part (Buckner et al. 2004 atlas
+    scaling, FreeSurfer's definition)."""
+    import numpy as np
+
+    values = Path(xfm_path).read_text().split("Linear_Transform =", 1)[1].replace(";", " ").split()
+    return float(ETIV_SCALE / np.linalg.det(np.array([float(v) for v in values[:12]]).reshape(3, 4)[:, :3]))
+
+
+def talairach_etiv(subjects_dir, sid, three_t=False, env=None, fastsurfer_home=FASTSURFER_HOME, python=PYTHON):
+    """FastSurfer's talairach registration (FreeSurfer talairach_avi on orig_nu, the step ``--tal_reg`` runs) for one
+    segmented subject, then FreeSurfer's failure check ``talairach_afd -T 0.005`` (as recon-all runs it); returns eTIV,
+    NaN when the check rejects the registration. Needs PIE_FREESURFER_HOME, PIE_FS_LICENSE and /bin/tcsh. Idempotent:
+    ``mri/transforms/talairach.xfm`` and its check result ``talairach.afd`` are reused. Runs inside the subject's mri
+    directory; the 7 MB ``mri/nu.mgz`` talairach-reg.sh leaves behind is deleted (PIE does not use it)."""
+    mri = Path(subjects_dir).resolve() / sid / "mri"
+    xfm = mri / "transforms" / "talairach.xfm"
+    scripts = mri.parent / "scripts"
+    scripts.mkdir(exist_ok=True)
+    log = scripts / "pie_talairach.log"
+    log.touch()                                     # talairach-reg.sh refuses a log path that does not exist yet
+    env = env if env is not None else freesurfer.fs_env()
+    if not xfm.exists():
+        cmd = [Path(fastsurfer_home) / "recon_surf" / "talairach-reg.sh", log, "--py", python,
+               "--asegdkt_segfile", mri / "aparc.DKTatlas+aseg.deep.mgz", "--dir", mri, "--conformed_name", mri / "orig.mgz",
+               "--norm_name", mri / "orig_nu.mgz"] + (["--3T"] if three_t else [])
+        freesurfer.run(cmd, log, mri, env=env, timeout=1800)
+        (mri / "nu.mgz").unlink(missing_ok=True)
+    afd = xfm.with_suffix(".afd")
+    if not afd.exists():
+        try:
+            freesurfer.run(["talairach_afd", "-T", "0.005", "-xfm", xfm], log, mri, env=env, timeout=300)
+            afd.write_text("pass\n")
+        except RuntimeError:
+            afd.write_text("fail\n")
+    return etiv_from_xfm(xfm) if afd.read_text().strip() == "pass" else float("nan")
+
+
+def valid_etiv(mri_dir):
+    """eTIV of a subject whose talairach registration passed ``talairach_afd``; NaN if absent, failed or unreadable."""
+    xfm = Path(mri_dir) / "transforms" / "talairach.xfm"
+    try:
+        if xfm.with_suffix(".afd").read_text().strip() == "pass":
+            return etiv_from_xfm(xfm)
+    except (OSError, IndexError, ValueError):
+        pass
+    return float("nan")
+
+
+def surfaces(subjects_dir, sid, threads=4, env=None, ignore_fs_version=False, fastsurfer_home=FASTSURFER_HOME, python=PYTHON):
+    """FastSurfer's surface stream on a segmented subject: white/pial surfaces, cortical thickness and the DK ``aparc``
+    (``--fsaparc``), comparable with PPMI's FS7 tables. PIE segments without FastSurfer's corpus-callosum module, so its
+    two steps (``fastsurfer_cc.py``, ``paint_cc_into_pred.py``, as run_fastsurfer.sh runs them) come first: recon-surf
+    requires the ``aseg.auto.mgz`` they write. Needs FreeSurfer (7.4.1 for FastSurfer 2.6; ``ignore_fs_version`` for
+    anything else, unvalidated) and its license. About an hour per scan. Completion = scripts/recon-surf.done; files a
+    killed recon-surf leaves (``wm.mgz``, ``aparc.DKTatlas+aseg.orig.mgz``) make the next call refuse, so they go first."""
+    sd = Path(subjects_dir).resolve()
+    subj, fs = sd / sid, Path(fastsurfer_home)
+    mri = subj / "mri"
+    if (subj / "scripts" / "recon-surf.done").exists():
+        return subj
+    env = dict(env if env is not None else freesurfer.fs_env(), PYTHONPATH=str(fs))   # recon-surf imports FastSurferCNN
+    (subj / "scripts").mkdir(parents=True, exist_ok=True)
+    log = subj / "scripts" / "pie_recon_surf.log"
+    if not (mri / "aseg.auto.mgz").exists():
+        freesurfer.run([python, fs / "CorpusCallosum" / "fastsurfer_cc.py", "--sd", sd, "--sid", sid, "--threads", threads,
+                        "--conformed_name", mri / "orig.mgz", "--aseg_name", mri / "aseg.auto_noCCseg.mgz",
+                        "--segmentation_in_orig", mri / "callosum.CC.orig.mgz"], log, fs, env=env, timeout=3600)
+        freesurfer.run([python, fs / "CorpusCallosum" / "paint_cc_into_pred.py", "-in_cc", mri / "callosum.CC.orig.mgz",
+                        "-in_pred", mri / "aparc.DKTatlas+aseg.deep.mgz", "-out", mri / "aparc.DKTatlas+aseg.deep.withCC.mgz",
+                        "-aseg", mri / "aseg.auto.mgz"], log, fs, env=env, timeout=600)
+    for leftover in ("wm.mgz", "aparc.DKTatlas+aseg.orig.mgz"):
+        (mri / leftover).unlink(missing_ok=True)
+    cmd = [fs / "recon_surf" / "recon-surf.sh", "--sid", sid, "--sd", sd, "--t1", mri / "orig.mgz", "--mask_name", mri / "mask.mgz",
+           "--asegdkt_segfile", mri / "aparc.DKTatlas+aseg.deep.mgz", "--fs_license", env["FS_LICENSE"], "--threads", threads,
+           "--parallel", "--fsaparc", "--py", python] + (["--ignore_fs_version"] if ignore_fs_version else [])
+    freesurfer.run(cmd, log, fs / "recon_surf", env=env, timeout=6 * 3600)
+    return subj
+
+
+def longitudinal(tid, t1s, tpids, subjects_dir, device="cuda", threads=4, env=None, fastsurfer_home=FASTSURFER_HOME, python=PYTHON):
+    """FastSurfer's longitudinal stream (``long_fastsurfer.sh``: within-subject template, then every time point
+    initialised from it; segmentation + surfaces, so FreeSurfer 7.4.1 and its license are needed) for one subject.
+    ``t1s`` are the raw T1 NIfTIs in date order, ``tpids`` their IDs. Completion = every time point's
+    scripts/recon-surf.done (aseg.stats is rewritten mid-run). A killed run's template and time-point folders make
+    FastSurfer refuse to start, so they are removed before a retry. The license reaches FastSurfer through FS_LICENSE:
+    long_fastsurfer.sh lowercases the values of options it passes on, which breaks ``--fs_license <path>``."""
+    import shutil
+
+    sd = Path(subjects_dir).resolve()
+    if all((sd / tp / "scripts" / "recon-surf.done").exists() for tp in tpids):
+        return [sd / tp for tp in tpids]
+    env = env if env is not None else freesurfer.fs_env()
+    for d in (sd / tid, *(sd / tp for tp in tpids)):          # PIE-created outputs of this subject only
+        shutil.rmtree(d, ignore_errors=True)
+    sd.mkdir(parents=True, exist_ok=True)
+    cmd = [Path(fastsurfer_home) / "long_fastsurfer.sh", "--tid", tid, "--t1s", *t1s, "--tpids", *tpids, "--sd", sd,
+           "--py", python, "--device", device, "--threads", threads]
+    freesurfer.run(cmd, sd / f"pie_long_{tid}.log", sd, env=dict(env, PYTHONPATH=str(fastsurfer_home)), timeout=24 * 3600)
+    return [sd / tp for tp in tpids]
 
 
 def parse_stats(stats_path):

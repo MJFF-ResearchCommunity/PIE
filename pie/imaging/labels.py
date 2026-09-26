@@ -66,7 +66,7 @@ def covariates(ppmi_dir):
 
 def _age_at(cov, patnos, dates):
     birth = cov.set_index("PATNO")["BIRTHDT"].reindex(patnos).to_numpy()
-    return (pd.to_datetime(dates).to_numpy() - birth) / np.timedelta64(365, "D")
+    return (pd.to_datetime(dates).to_numpy() - birth) / np.timedelta64(1, "D") / 365.25
 
 
 def _ioflupane(t):
@@ -119,7 +119,21 @@ def sbr_indices(caudate_l, caudate_r, putamen_l, putamen_r):
 def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto"):
     """Return PATNO, IMAGEID, DATSCAN_DATE, months_to_datscan, sbr_* columns, dat_visual, dat_deficit_sbr, sbr_source.
     ``source``: see ``dat_sbr_table``; the age/sex expectation is fitted within the chosen table, so the 65 % rule
-    is on the scale of whichever reference region that table uses."""
+    is on the scale of whichever reference region that table uses. ``auto``: Xing for every session it has a scan for,
+    else the Invicro match (the September 2026 Xing release lacks ~716 PPMI-1 participants Invicro analysed); each
+    row's ``sbr_source`` says which, and raw SBRs of the two sources must not be pooled (percent-of-expected, deficit
+    and visual labels are each on their own table's norm)."""
+    if source == "auto":
+        parts = []
+        for s in ("xing", "invicro"):
+            try:
+                parts.append(dat_labels(ppmi_dir, sessions, threshold, max_months, source=s))
+            except FileNotFoundError:
+                pass
+        if not parts:
+            raise FileNotFoundError("no PPMI DaTscan SBR table")
+        parts = [x for x in parts if len(x)] or parts[:1]          # a table with no match has no columns
+        return pd.concat(parts, ignore_index=True).drop_duplicates("IMAGEID", keep="first").reset_index(drop=True) if len(parts[0]) else parts[0]
     cov = covariates(ppmi_dir)
     sbr, vis = dat_sbr_table(ppmi_dir, source)
     vis["dat_visual"] = vis["DATSCAN_VISINTRP"].str.lower().map({"positive": 1.0, "negative": 0.0})
@@ -135,6 +149,7 @@ def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")
 
     # expected lowest-putamen SBR from visually-negative healthy controls: linear in age + sex
     hc = sbr[(sbr["COHORT"] == "Healthy Control") & (sbr["dat_visual"] == 0)].dropna(subset=["age_at_datscan", "SEX", "sbr_putamen_min"])
+    hc = hc.sort_values("DATSCAN_DATE").drop_duplicates("PATNO")      # one scan per control: repeat visits are not new people
     X = np.column_stack([np.ones(len(hc)), hc["age_at_datscan"], hc["SEX"]])
     beta, *_ = np.linalg.lstsq(X, hc["sbr_putamen_min"].to_numpy(), rcond=None)
     ok = sbr[["age_at_datscan", "SEX"]].notna().all(axis=1)
@@ -165,6 +180,25 @@ def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")
         row.update({k: cand.loc[i, k] for k in keep})
         out.append(row)
     return pd.DataFrame(out).rename(columns={"EVENT_ID": "DATSCAN_EVENT_ID"})
+
+
+def ppmi_dti_roi_table(ppmi_dir):
+    """PPMI's hand-drawn nigral DTI ROIs (CIND; Schuff et al. 2015, doi:10.1002/mds.26325; three ROIs per side: I rostral,
+    II middle, III caudal; two cerebral-peduncle references), one row per PATNO and scan month: a reference for
+    validating automated nigral values. Columns: PATNO, DTI_DATE, sn_fa, sn_rostral_fa, sn_caudal_fa, sn_md (mean of
+    the three eigenvalues), peduncle_fa, n_rows. A scan month read more than once (33 of 263 in September 2026, SN FA
+    differing by up to 0.07) is averaged over its readings, each measure over the same rows; n_rows counts them."""
+    t = _latest(ppmi_dir, "Imaging", "DTI_Regions_of_Interest")
+    roi, ref = [f"ROI{i}" for i in range(1, 7)], ["REF1", "REF2"]
+    t[roi + ref] = t[roi + ref].apply(pd.to_numeric, errors="coerce")
+    t["DTI_DATE"] = _month(t["INFODT"])
+    w = t.pivot_table(index=["PATNO", "DTI_DATE"], columns="Measure", values=roi + ref, aggfunc="mean")
+    fa = w.xs("FA", axis=1, level=1)
+    out = pd.DataFrame({"sn_fa": fa[roi].mean(axis=1), "sn_rostral_fa": fa[["ROI1", "ROI4"]].mean(axis=1),
+                        "sn_caudal_fa": fa[["ROI3", "ROI6"]].mean(axis=1), "peduncle_fa": fa[ref].mean(axis=1),
+                        "sn_md": sum(w.xs(e, axis=1, level=1)[roi].mean(axis=1) for e in ("E1", "E2", "E3")) / 3,
+                        "n_rows": t[t["Measure"] == "FA"].groupby(["PATNO", "DTI_DATE"]).size()})
+    return out.reset_index()
 
 
 def saa_labels(ppmi_dir, sessions, allow_unmatched=False):

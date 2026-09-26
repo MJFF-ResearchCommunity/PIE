@@ -16,7 +16,7 @@ DTI zip(s) ──index/convert (dcm2niix)──► assemble runs ──[denoise]
 | `fba.py` | MRtrix3 nigrostriatal fixel measures (`--fba`), standalone re-run CLI | opt-in |
 | `mrtrix_shim/imp.py` | Stand-in for the `imp` module MRtrix3 3.0.x scripts need on Python 3.12 | used by `fba` |
 | `dwi_refine.py` | Re-maps the atlas with ANTs SyN and recomputes ROI features from saved maps | opt-in |
-| `dwi_tensor_qc.py` | WLS tensor with explicit pre-clipping physicality QC | opt-in API |
+| `dwi_tensor_qc.py` | WLS tensor with explicit pre-clipping physicality QC | used by `fit_models` |
 | `freewater_qc.py` | Multi-shell free water with solver-status and raw-tensor rejection | opt-in API |
 | `dwi_acquisition.py` | Acquisition-aware run grouping/regridding, instrumented DIPY NLS | development only |
 | `dwi_correction.py` | Single-acquisition selection, eddy command builder, geometry checks | opt-in API |
@@ -66,7 +66,10 @@ and PPMI-2 Siemens Prisma three-shell (b = 700/1000/2000, 64 directions each, re
    fixed→moving rotation. A missing per-volume rotation biases the fit; a single common reflection does not. Sheared
    affines raise. Returns `motion_mm_mean/max`, `rotation_deg_max`, `bvecs_rotated=True`. This is volume-to-b0
    alignment, not eddy-current or slice-outlier correction.
-6. **`fit_models(ds, fw_mask=None)`** — FA, MD, AD and RD from a DIPY WLS tensor on b <= 1050 over the brain mask. Free water
+6. **`fit_models(ds, fw_mask=None)`** — FA, MD, AD and RD from a WLS tensor on b <= 1050 over the brain mask (`dwi_tensor_qc.tensor_measurements`).
+   - A voxel counts only if all its signals are finite and positive and no raw eigenvalue is negative. Otherwise its maps are NaN and `tensor_physical` is False.
+   - DIPY's `TensorModel` instead clips a negative eigenvalue to about 0 and reports the fit. A tensor with a −0.4 × 10⁻³ mm²/s eigenvalue then reads as FA 0.90.
+   - This is the study's rule. Free water
    `fw` and tissue FA `fat` only inside `fw_mask` (ROIs dilated by 2 voxels, cut to the brain): DIPY's
    `FreeWaterTensorModel` NLS (Hoy et al. 2014) on b <= 2050 when there are >= 2 non-zero shells
    (`fw_method="multishell_nls"`), else `_fw_single_shell`, a bounded voxel-wise bi-tensor fit (Cholesky tensor,
@@ -127,6 +130,8 @@ venv_imaging/bin/python -m pie.imaging.dwi --zips <DTI zips> --sessions <derived
 | `--fba` | off | Add the MRtrix3 nigrostriatal measures (`nst_*`) |
 | `--keep-preproc` | off | Keep `<work>/<patno>/fba/preproc.{nii.gz,bval,bvec}` + `mask.nii.gz` |
 | `--priority` | none | Text file of PATNOs to run first |
+| `--eddy` | off | topup + FSL eddy (outlier replacement, eddy-rotated gradients) for scans with a reverse-PE b0 whose PE direction and readout time are recorded; replaces the rigid motion correction for those scans (`dwi.correct`, `dwi.eddy_correct`). Rows record `eddy` and `eddy_outlier_fraction`; `dwi_batch` gains `_eddy` |
+| `--eddy-cpu` | off | `eddy_cpu` instead of `eddy_cuda` (hours per three-shell scan instead of ~26 min on the GPU) |
 
 One session per subject: among selected series, the acquisition date with the most DICOM files
 (`batch.session_rows`). The run is resumable: rows are appended as subjects finish and finished PATNOs are
@@ -153,8 +158,21 @@ fibres and interpeduncular CSF.
 | `manufacturer`, `model`, `pe_direction`, `readout_s`, `series_desc` | Scanner metadata |
 | `patno`, `acquisition_date`, `fs_image_id`, `source_image_ids`, `processing_version`, `error` | Lineage; `fs_image_id` lets `manifest` flag a T1 mismatch |
 
-`processing_version` for new complete runs is `2026-09-09-acquisition-metadata-v3`. The manifest's QC rule
-(`manifest.QC["dwi"]`): `motion_mm_max < 6`, `n_sn_l >= 3`, `n_sn_r >= 3`, `fa_wm_median > 0.25`.
+`processing_version` for new complete runs is `2026-09-09-acquisition-metadata-v3`.
+
+The manifest's QC rule (`manifest.QC["dwi"]`) is the study's nigral diffusion rule; under it, split-half ICC was FA 0.88 and MD 0.97 on 204 pairs. It requires:
+- `n_sn_l + n_sn_r >= 20`;
+- `sn_brain_mask_fraction >= 0.95`;
+- `sn_physical_fraction >= 0.8`;
+- `motion_mm_mean <= 2`;
+- both `sn_posterior_{l,r}_fa` finite;
+- `fa_wm_median > 0.25`, kept as a gross check.
+
+Rows also carry:
+- `motion_metric`: `eddy_rms_mm` or `rigid_translation_mm`;
+- `eddy_slice_timing`.
+
+Tables written before 26 September 2026 lack the new columns and fail the rule; re-run them.
 
 ### Single-shell free water is not assembled by default
 
@@ -218,6 +236,18 @@ venv_imaging/bin/python -m pie.imaging.fba --work-dir <derived>/dwi [--patnos fi
 | `--threads` | 2 | MRtrix threads per subject |
 
 Python: `fba.from_saved(subject_dir, threads=2)`, `fba.write_preproc(ds, out_dir)`.
+
+## Distortion correction without a reverse-PE b0, and the manual-ROI reference
+
+`dwi.register_b0_to_t1_sdc(b0_img, t1_img, t1_mask_img, pe_axis)` is fieldmap-less susceptibility correction for
+PPMI-1 scans (after fMRIPrep's SyN-SDC): a rigid T1 → b0 registration, then an ANTs SyN restricted to the physical axis
+closest to the phase-encoding direction. It returns a function that pulls T1-space labels onto the b0 grid, and `info`
+(`sdc_max_displacement_mm`, `sdc_offaxis_max_mm`, which must stay ~0, and `transform_dir`, which the caller deletes).
+It is not yet in the default path: the evaluation against PPMI's hand-drawn nigral ROIs decides that.
+
+`labels.ppmi_dti_roi_table(ppmi_dir)` reads that reference (`DTI_Regions_of_Interest_*.csv`, CIND, Schuff et al. 2015;
+263 scans on the September 2026 download): `sn_fa`, `sn_rostral_fa`, `sn_caudal_fa`, `sn_md`, `peduncle_fa` per PATNO
+and scan month. Use it to check any change to nigral ROI placement.
 
 ## JHU tract measures (`dwi.fetch_jhu`, `dwi.tract_features`)
 

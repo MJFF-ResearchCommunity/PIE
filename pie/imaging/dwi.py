@@ -233,6 +233,63 @@ def susceptibility_correct(ds, work_dir, threads=2):
     return dict(ds, data=data, topup=True)
 
 
+def eddy_correct(ds, work_dir, cuda=True, timeout=None, threads=8):
+    """topup + FSL eddy (outlier replacement, eddy-rotated gradients) on the RAW data of a scan with a reverse-PE b0,
+    replacing both ``susceptibility_correct`` and ``preprocess``'s rigid motion correction: gradients are rotated once,
+    by eddy. Command and slice-timing decisions come from ``dwi_correction.build_eddy_command``; PE direction and readout
+    time must be recorded for both acquisitions (``pe_row`` raises otherwise). ``timeout`` defaults to 2 h on the GPU and
+    24 h for eddy_cpu, which runs on ``threads`` threads. The working directory is removed, also when a step fails."""
+    from .dwi_acquisition import pe_row
+
+    rows = [pe_row(ds["meta"]), pe_row(ds.get("rev_meta") or {})]
+    if ds.get("rev_b0") is None or not FSLDIR:
+        raise ValueError("eddy needs a reverse-PE b0 and FSL")
+    timeout = timeout or (7200 if cuda else 86400)
+    work = Path(work_dir) / "eddy"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        return _eddy_in(work, ds, rows, cuda, timeout, threads)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _eddy_in(work, ds, rows, cuda, timeout, threads):
+    from dipy.segment.mask import median_otsu
+
+    from .dwi_correction import build_eddy_command, topup_config, validate_corrected_geometry
+
+    env = dict(os.environ, FSLDIR=FSLDIR, PATH=f"{FSLDIR}/bin:" + os.environ.get("PATH", ""), FSLOUTPUTTYPE="NIFTI_GZ")
+    b, data, aff = ds["bvals"], ds["data"], ds["affine"]
+    b0 = data[..., b <= 50].mean(axis=3)
+    nib.save(nib.Nifti1Image(data, aff), work / "raw.nii.gz")
+    nib.save(nib.Nifti1Image(np.stack([b0, ds["rev_b0"].mean(axis=3)], axis=3), aff), work / "b0_pair.nii.gz")
+    _, mask = median_otsu(b0, median_radius=3, numpass=2)
+    nib.save(nib.Nifti1Image(mask.astype(np.uint8), aff), work / "eddy_mask.nii.gz")
+    (work / "acqparams.txt").write_text("".join(" ".join(f"{int(v)}" for v in r[:3]) + f" {r[3]}\n" for r in rows))
+    (work / "index.txt").write_text(" ".join(["1"] * len(b)) + "\n")
+    np.savetxt(work / "bvals", b[None], fmt="%.0f")
+    np.savetxt(work / "bvecs", ds["bvecs"], fmt="%.6f")
+    (work / "metadata.json").write_text(json.dumps(ds["meta"]))
+    r = subprocess.run([f"{FSLDIR}/bin/topup", "--imain=b0_pair.nii.gz", "--datain=acqparams.txt", f"--config={topup_config(data.shape)}",
+                        "--out=topup"], cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
+    if r.returncode:
+        raise RuntimeError(f"topup failed: {(r.stderr or r.stdout)[-300:]}")
+    cmd, record = build_eddy_command(f"{FSLDIR}/bin", ds["meta"], int(data.shape[2]), use_topup=True, raw_is_uncorrected=True,
+                                     cuda=cuda, nthr=1 if cuda else threads)
+    r = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
+    if r.returncode:
+        raise RuntimeError(f"eddy failed: {(r.stderr or r.stdout)[-300:]}")
+    corrected = nib.load(work / "eddy.nii.gz")
+    bvecs = np.loadtxt(work / "eddy.eddy_rotated_bvecs").reshape(3, -1)
+    validate_corrected_geometry(nib.Nifti1Image(data, aff), corrected, b, bvecs)
+    outliers = np.loadtxt(work / "eddy.eddy_outlier_map", skiprows=1, ndmin=2)
+    rms = np.loadtxt(work / "eddy.eddy_movement_rms", ndmin=2)[:, 0]          # RMS displacement from the first volume, mm
+    out = dict(ds, data=np.clip(np.asanyarray(corrected.dataobj).astype(np.float32), 0, None), bvecs=bvecs, bvecs_rotated=True,
+               eddy=True, topup=True, eddy_outlier_fraction=float(outliers.mean()), motion_mm_max=float(rms.max()),
+               motion_mm_mean=float(rms.mean()), eddy_record=record)
+    return out
+
+
 def _sitk_native(arr, affine):
     """SimpleITK image from an (x, y, z) array with a NIfTI affine, keeping the stored voxel order (no reorientation),
     so arrays read back with GetArrayFromImage are simply (z, y, x) of the same grid."""
@@ -320,6 +377,23 @@ def preprocess(ds, sampling_seed=0):
                 motion_mm_mean=float(np.mean(fd)), motion_mm_max=float(np.max(fd)), rotation_deg_max=float(np.max(rot)))
 
 
+def correct(ds, work_dir, fsl=False, eddy=False, cuda=True):
+    """Distortion and motion correction. With ``eddy`` and a reverse-PE b0: topup + eddy (``eddy_correct``), then the
+    brain mask and mean b0 of the corrected data. Otherwise: optional topup (``fsl``) and rigid volume-to-b0 alignment
+    (``preprocess``). The returned dataset records which path ran (``eddy``, ``topup``)."""
+    if eddy and ds.get("rev_b0") is not None:
+        from dipy.segment.mask import median_otsu
+
+        ds = eddy_correct(ds, work_dir, cuda=cuda)
+        b0 = ds["data"][..., ds["bvals"] <= 50].mean(axis=3)
+        _, mask = median_otsu(b0, median_radius=3, numpass=2)
+        mask = ndimage.binary_fill_holes(ndimage.binary_dilation(mask, iterations=2))
+        return dict(ds, b0=b0, mask=mask, rotation_deg_max=np.nan, motion_metric="eddy_rms_mm")
+    if fsl:
+        ds = susceptibility_correct(ds, work_dir)
+    return dict(preprocess(ds), motion_metric="rigid_translation_mm")
+
+
 D_WATER = 3.0e-3  # mm^2/s at 37 C
 MD_TISSUE = 0.7e-3
 
@@ -393,13 +467,19 @@ def fit_models(ds, fw_mask=None):
     scans also get the free-water-corrected MD (``mdt``) and the DKI mean kurtosis (``mk``, WLS on b <= 2000, clipped to
     [0, 3]; noise-sensitive, so run with ``--denoise``) inside ``fw_mask``."""
     from dipy.core.gradients import gradient_table
-    from dipy.reconst.dti import TensorModel
+
+    from .dwi_tensor_qc import tensor_measurements
 
     b, v, data, mask = ds["bvals"], ds["bvecs"], ds["data"], ds["mask"]
     sel = b <= 1050
-    gt = gradient_table(b[sel], bvecs=v[:, sel], b0_threshold=50)
-    tf = TensorModel(gt, fit_method="WLS").fit(data[..., sel], mask=mask)
-    out = {k: np.nan_to_num(getattr(tf, k)).astype(np.float32) for k in ("fa", "md", "ad", "rd")}
+    # the study's physicality rule: DIPY's TensorModel clips a negative eigenvalue to ~0 and reports the fit (a
+    # non-physical tensor then reads as high FA); here such voxels are NaN and tensor_physical is False
+    t = tensor_measurements(data[mask][:, sel], b[sel], v[:, sel])
+    t["tensor_physical"] = t["accepted"]
+    out = {}
+    for k in ("fa", "md", "ad", "rd", "tensor_physical"):
+        out[k] = np.zeros(mask.shape, bool if k == "tensor_physical" else np.float32)
+        out[k][mask] = t[k]
     fmask = mask if fw_mask is None else (mask & fw_mask)
     shells = sorted(set(int(round(x / 100.0)) * 100 for x in b if x > 50))
     if len(shells) >= 2:
@@ -458,6 +538,60 @@ def register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0):
     reg.SetInitialTransform(sitk.Euler3DTransform(init), inPlace=False)
     tx = reg.Execute(fixed, moving)
     return tx, float(reg.GetMetricValue())
+
+
+def register_b0_to_t1_sdc(b0_img, t1_img, t1_mask_img, pe_axis, seed=0, work_dir=None):
+    """Fieldmap-less susceptibility correction for scans without a reverse-PE b0 (PPMI-1): rigid b0 <- T1, then a SyN
+    restricted to the phase-encoding direction (after fMRIPrep's SyN-SDC, Wang et al. 2017). ``pe_axis``: 'i', 'j' or
+    'k' of the b0 grid (sign irrelevant). Returns (labels_fn, info): ``labels_fn(label_img)`` pulls a T1-space label image
+    onto the b0 grid as a (z, y, x) array; ``info`` has the largest displacement along and off the PE axis (mm) and
+    ``transform_dir`` (inside ``work_dir``, e.g. the subject's work folder; the system temp directory if None), which
+    holds the ANTs transforms and which the caller deletes when done. On any failure it is deleted here."""
+    import tempfile
+
+    import ants
+
+    from .features import _to_ants
+
+    tdir = tempfile.mkdtemp(prefix="pie_sdc_", dir=work_dir)    # every ANTs output lands here, never loose in /tmp
+    try:
+        return _sdc(ants, _to_ants, tdir, b0_img, t1_img, t1_mask_img, pe_axis, seed)
+    except BaseException:
+        shutil.rmtree(tdir, ignore_errors=True)
+        raise
+
+
+def _pe_physical_axis(affine, pe_axis):
+    """(physical axis closest to the phase-encoding voxel axis, angle between them in degrees). The SDC warp is
+    restricted to that physical axis, so an oblique acquisition's distortion is only partly modelled."""
+    col = np.asarray(affine, float)[:3, {"i": 0, "j": 1, "k": 2}[pe_axis[0]]]
+    axis = int(np.argmax(np.abs(col)))
+    return axis, float(np.degrees(np.arccos(min(1.0, abs(col[axis]) / np.linalg.norm(col)))))
+
+
+def _sdc(ants, _to_ants, tdir, b0_img, t1_img, t1_mask_img, pe_axis, seed):
+    fixed = _to_ants(b0_img)
+    t1 = np.asarray(t1_img.dataobj, np.float32) * (np.asarray(t1_mask_img.dataobj) > 0)
+    moving = _to_ants(nib.Nifti1Image(t1, t1_img.affine))
+    from .features import _seed_ants
+    _seed_ants(seed)
+    rigid = ants.registration(fixed=fixed, moving=moving, type_of_transform="Rigid", aff_metric="mattes", outprefix=f"{tdir}/rigid_")
+    pe_phys, obliquity = _pe_physical_axis(b0_img.affine, pe_axis)
+    restrict = tuple(float(i == pe_phys) for i in range(3))
+    syn = ants.registration(fixed=fixed, moving=moving, type_of_transform="SyNOnly", initial_transform=rigid["fwdtransforms"][0],
+                            syn_metric="mattes", restrict_transformation=restrict, flow_sigma=4, total_sigma=0,
+                            reg_iterations=(100, 50, 20), outprefix=f"{tdir}/syn_")
+    transforms = syn["fwdtransforms"]
+    field = ants.image_read(transforms[0]).numpy()                                  # (x, y, z, 3) displacement, mm
+    off_axis = [i for i in range(3) if i != pe_phys]
+    info = {"sdc_max_displacement_mm": float(np.abs(field[..., pe_phys]).max()),
+            "sdc_offaxis_max_mm": float(np.abs(field[..., off_axis]).max()), "sdc_obliquity_deg": obliquity, "transform_dir": tdir}
+
+    def labels_fn(label_img):
+        out = ants.apply_transforms(fixed=fixed, moving=_to_ants(label_img), transformlist=transforms, interpolator="genericLabel")
+        return np.transpose(np.rint(out.numpy()).astype(np.int32), (2, 1, 0))
+
+    return labels_fn, info
 
 
 def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None, sampling_seed=0):
@@ -623,7 +757,8 @@ def features(maps, rois, min_voxels=3):
 
 
 # ------------------------------------------------------------------------------------------ per-subject driver
-def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False, fba=False, keep_preproc=False):
+def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False, fba=False, keep_preproc=False,
+                    eddy=False, cuda=True):
     """All steps for one subject. Returns a flat dict (features + QC). ``fba`` adds the MRtrix3 nigrostriatal fixel measures
     (pie.imaging.fba); ``keep_preproc`` keeps the preprocessed DWI + gradients under <work>/<patno>/fba/."""
     import SimpleITK as sitk
@@ -642,11 +777,12 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
            "manufacturer": str(ds["meta"].get("Manufacturer", "")), "model": str(ds["meta"].get("ManufacturerModelName", "")),
            "pe_direction": str(ds["meta"].get("PhaseEncodingDirection", "")), "readout_s": ds["meta"].get("TotalReadoutTime", np.nan),
            "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
-    if fsl:
-        ds = susceptibility_correct(ds, work)
-    row["topup"] = bool(ds.get("topup", False))
     row["n_rev_b0"] = int(ds["rev_b0"].shape[3]) if ds.get("rev_b0") is not None else 0
-    ds = preprocess(ds)
+    ds = correct(ds, work, fsl=fsl, eddy=eddy, cuda=cuda)
+    row["topup"], row["eddy"] = bool(ds.get("topup", False)), bool(ds.get("eddy", False))
+    row["eddy_outlier_fraction"] = ds.get("eddy_outlier_fraction", np.nan)
+    row["motion_metric"] = ds["motion_metric"]                 # eddy RMS displacement and rigid translation differ in meaning
+    row["eddy_slice_timing"] = ds.get("eddy_record", {}).get("slice_timing", "")
     row.update({"motion_mm_mean": ds["motion_mm_mean"], "motion_mm_max": ds["motion_mm_max"], "rotation_deg_max": ds["rotation_deg_max"],
                 "bvecs_rotated": ds["bvecs_rotated"], "processing_version": "2026-09-09-acquisition-metadata-v3",
                 "fs_image_id": Path(fastsurfer_dir).name, "acquisition_date": series_rows[0]["date"],
@@ -673,6 +809,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     fitted_mask = fw_mask_xyz & ds["mask"]
     row["fw_fit_valid_fraction"] = float(np.isfinite(maps["fw"][fitted_mask]).mean()) if fitted_mask.any() else np.nan
     maps = {k: np.transpose(v, (2, 1, 0)) for k, v in maps.items()}
+    physical = maps.pop("tensor_physical")
+    sn = rois["sn_l"] | rois["sn_r"]
+    row["sn_brain_mask_fraction"] = float(np.transpose(ds["mask"], (2, 1, 0))[sn].mean()) if sn.any() else np.nan
+    row["sn_physical_fraction"] = float(physical[sn].mean()) if sn.any() else np.nan
     # tissue-restricted nigral variants (suffix _t): the affine-mapped atlas SN at 2 mm takes in cerebral-peduncle
     # fibres (FA ~0.45) and interpeduncular CSF; keep voxels with FA < 0.5 and free water < 0.7
     tissue = (maps["fa"] < 0.5) & ~(np.nan_to_num(maps["fw"], nan=1.0) >= 0.7)
@@ -681,7 +821,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
         rois[f"{base}_t_{side}"] = rois[name] & tissue
     row.update(features(maps, rois))
     row["fw_brain_median"] = float(np.median(maps["fw"][np.transpose(ds["mask"], (2, 1, 0)) & (maps["fw"] > 0)])) if (maps["fw"] > 0).any() else np.nan
-    row["fa_wm_median"] = float(np.median(maps["fa"][rois["cerebral_wm_l"] | rois["cerebral_wm_r"]])) if (rois["cerebral_wm_l"] | rois["cerebral_wm_r"]).any() else np.nan
+    row["fa_wm_median"] = float(np.nanmedian(maps["fa"][rois["cerebral_wm_l"] | rois["cerebral_wm_r"]])) if (rois["cerebral_wm_l"] | rois["cerebral_wm_r"]).any() else np.nan
     if fba or keep_preproc:
         from .fba import nigrostriatal, write_preproc
         (work / "fba").mkdir(exist_ok=True)
@@ -707,9 +847,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep, fsl, denoise, fba, keep_preproc = args
+    patno, rows, fs_dir, work_dir, keep, fsl, denoise, fba, keep_preproc, eddy, cuda = args
     try:
-        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl, denoise=denoise, fba=fba, keep_preproc=keep_preproc)
+        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl, denoise=denoise, fba=fba, keep_preproc=keep_preproc,
+                              eddy=eddy, cuda=cuda)
         out["error"] = ""
     except Exception as e:  # keep the batch going
         out = {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -731,6 +872,9 @@ def main(argv=None):
     ap.add_argument("--fba", action="store_true", help="MRtrix3 nigrostriatal fixel measures (FOD, iFOD2 tractography SN -> striatum, AFD along the tract)")
     ap.add_argument("--keep-preproc", action="store_true", help="keep the preprocessed DWI + gradients under <work>/<patno>/fba/")
     ap.add_argument("--priority", help="text file of PATNOs to process first")
+    ap.add_argument("--eddy", action="store_true", help="topup + FSL eddy (outlier replacement, eddy-rotated gradients) where a reverse-PE b0 "
+                    "with recorded PE direction and readout time exists; replaces the rigid motion correction for those scans")
+    ap.add_argument("--eddy-cpu", action="store_true", help="use eddy_cpu instead of eddy_cuda (hours per three-shell scan)")
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -739,7 +883,7 @@ def main(argv=None):
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
     out_csv = work / "dwi_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc)
+    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
     if a.priority:
         order = {int(p): i for i, p in enumerate(Path(a.priority).read_text().split())}
@@ -891,8 +1035,9 @@ def map_labels_to_subject(subject_fa, atlas_fa, atlas_labels, brain_mask=None, s
         fixed = ants.resample_image(native, (max_resolution_mm,) * 3, use_voxels=False, interp_type=0)
     moving = _to_ants(atlas_fa)
     kind = "SyN" if syn else "Affine"
-    reg = ants.registration(fixed=fixed, moving=moving, type_of_transform=kind, random_seed=int(seed),
-                            syn_metric="CC", syn_sampling=4)
+    from .features import _seed_ants
+    _seed_ants(seed)
+    reg = ants.registration(fixed=fixed, moving=moving, type_of_transform=kind, syn_metric="CC", syn_sampling=4)
     warped = ants.apply_transforms(fixed=native, moving=_to_ants(atlas_labels), transformlist=reg["fwdtransforms"],
                                    interpolator="genericLabel")
     out = nib.Nifti1Image(np.rint(_from_ants(warped, subject_fa)).astype(np.int16), subject_fa.affine)

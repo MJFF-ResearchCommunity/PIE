@@ -534,6 +534,20 @@ context exit release it, and `.loads` counts reads. It changes I/O only: results
 byte-identical with and without it (tested). The same cache can serve mean-image
 rendering via `cache.get(bold_path)`.
 
+### Local measures: ALFF, fALFF, ReHo
+
+`local_measures(bold, brain_mask, confounds_tsv, confounds_json, atlas, *, tr, config=ConnectivityConfig(),
+band=(0.01, 0.08))` returns parcel means of voxel-wise ALFF (mean amplitude in `band`, divided by its brain-wide mean: mALFF, since raw amplitude
+is in scanner intensity units; Zang et al. 2007), fALFF (band
+over whole-spectrum amplitude; Zou et al. 2008) and ReHo (Kendall's W over each voxel's 27-voxel neighbourhood; Zang
+et al. 2004) as `alff_<id>`, `falff_<id>`, `reho_<id>`, plus the same `temporal` audit as `extract_connectivity`: the
+censoring and nuisance regressors are identical. The spectrum is the Lomb-Scargle periodogram of the retained frames:
+interpolating censored frames instead inflated fALFF with the censored fraction (0.14 → 0.22 on white noise at 35 %
+censored), i.e. with motion. ReHo uses the unsmoothed residuals of the retained frames. The building blocks are `alff_falff(series, tr,
+keep, band)` and `reho(data, mask, keep)`. Memory: several GB for a 2 mm brain and 600 frames (the BOLD, the residuals
+and the ReHo rank array are all held). On 4 PPMI fMRIPrep scans (16–40 s each) fALFF and ReHo were lowest in the limbic
+network (susceptibility dropout) and highest in control, attention and default networks.
+
 ## 5b. Striatal and basal-ganglia-network connectivity
 
 The same module also carries the two approaches the Parkinson's literature uses for the striatum. Both

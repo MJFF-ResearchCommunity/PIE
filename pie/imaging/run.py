@@ -5,7 +5,7 @@ run.py — resumable CLI: LONI zips -> NIfTI -> FastSurfer -> IDP table.
     venv_imaging/bin/python -m pie.imaging.run \
         --zips Imaging/MRI_First_Study.zip Imaging/MRI_First_Study_dataset.zip \
         --ppmi-dir PPMI --work-dir Imaging/derived --workers 4 --threads 4 \
-        [--priority patnos.txt] [--limit N] [--features-only] [--device cpu]
+        [--priority patnos.txt] [--limit N] [--features-only] [--device cpu] [--etiv]
 
 Work dir layout: index.csv (all series), sessions.csv (chosen T1 per session + EVENT_ID +
 scanner metadata), nifti/<PATNO>/<IMAGEID>_T1w.nii.gz, fastsurfer/<IMAGEID>/..., failures.csv,
@@ -23,7 +23,8 @@ from pathlib import Path
 import pandas as pd
 
 from pie.imaging.convert import convert_series
-from pie.imaging.fastsurfer import STATS_FILE, complete_segmentation, finish_stats, run_fastsurfer, segment_batch
+from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, longitudinal, run_fastsurfer, segment_batch,
+                                    talairach_etiv)
 from pie.imaging.features import build_idp_table
 from pie.imaging.index import IDA_VISIT_TO_EVENT, LONI_VISIT_TO_EVENT, index_zips, read_ida_metadata, read_loni_collection_csv, select_t1_series
 from pie.imaging.link import link_sessions_to_events
@@ -171,6 +172,36 @@ def _record(fut, row, meta, meta_csv, log_ok, log_fail, requeue):
     log_ok(image_id)
 
 
+def long_timepoints(sessions, subjects_dir):
+    """PATNO -> finished FastSurfer image IDs, oldest first, for subjects with at least two real-dated sessions (LONI's
+    9999 masked dates cannot be ordered, so they are left out)."""
+    s = sessions.assign(_d=pd.to_datetime(sessions["session_date"], errors="coerce"))
+    s = s[s["_d"].dt.year.lt(2100) & s["image_id"].map(lambda i: (Path(subjects_dir) / str(i) / STATS_FILE).exists())]
+    out = {int(p): g.sort_values("_d")["image_id"].astype(str).tolist() for p, g in s.groupby("patno")}
+    return {p: ids for p, ids in out.items() if len(ids) >= 2}
+
+
+def _freesurfer_ready(tcsh=False):
+    """Stop the whole run once, with one message, when FreeSurfer, its license or tcsh (talairach_avi) is missing;
+    otherwise every subject would fail on its own and the table would be rewritten with an empty column."""
+    from pie.imaging import freesurfer
+    try:
+        freesurfer.fs_env()
+    except RuntimeError as e:
+        raise SystemExit(str(e))
+    if tcsh and not Path("/bin/tcsh").exists():
+        raise SystemExit("FreeSurfer's talairach_avi needs /bin/tcsh: sudo apt install tcsh")
+
+
+def _etiv_job(args):
+    """FreeSurfer eTIV for one finished subject; a failure is reported and left missing (module level: pickled by name)."""
+    fs_dir, sid = args
+    try:
+        return sid, talairach_etiv(fs_dir, sid), ""
+    except Exception as e:
+        return sid, float("nan"), f"{type(e).__name__}: {str(e)[:200]}"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--zips", nargs="+", required=True)
@@ -185,6 +216,10 @@ def main(argv=None):
     ap.add_argument("--priority", help="text file of PATNOs to process first")
     ap.add_argument("--limit", type=int, help="process at most N sessions this call")
     ap.add_argument("--features-only", action="store_true", help="only rebuild fastsurfer_idps.csv")
+    ap.add_argument("--long", action="store_true", help="FastSurfer longitudinal stream for every subject with >= 2 finished sessions "
+                    "into <work-dir>/fastsurfer_long (needs PIE_FREESURFER_HOME = FreeSurfer 7.4.1 and PIE_FS_LICENSE; hours per subject)")
+    ap.add_argument("--etiv", action="store_true", help="add FreeSurfer eTIV (talairach registration) to every finished subject, then "
+                    "rebuild the table; needs PIE_FREESURFER_HOME, PIE_FS_LICENSE and /bin/tcsh")
     a = ap.parse_args(argv)
 
     work = Path(a.work_dir).resolve()
@@ -192,6 +227,26 @@ def main(argv=None):
     sessions = prepare_sessions(a.zips, a.ppmi_dir, work, a.ida_metadata, a.loni_csv)
     meta_csv = work / "scan_metadata.csv"
     done = {p.parent.parent.name for p in (work / "fastsurfer").glob(f"*/{STATS_FILE}")}
+
+    if a.long:
+        _freesurfer_ready()
+        for patno, ids in sorted(long_timepoints(sessions, work / "fastsurfer").items())[:a.limit]:
+            t1s = [work / "nifti" / str(patno) / f"{i}_T1w.nii.gz" for i in ids]
+            try:
+                longitudinal(str(patno), t1s, ids, work / "fastsurfer_long", device=a.device, threads=a.threads)
+                log.info("longitudinal %s: %d time points", patno, len(ids))
+            except Exception as e:
+                log.error("longitudinal %s failed: %s", patno, str(e)[:300])
+        return
+
+    if a.etiv:
+        _freesurfer_ready(tcsh=True)
+        sids = sorted(done)
+        with ProcessPoolExecutor(max_workers=a.workers) as ex:
+            for i, (sid, v, err) in enumerate(ex.map(_etiv_job, [(work / "fastsurfer", s) for s in sids]), start=1):
+                if err or i % 50 == 0:
+                    log.info("eTIV %d/%d %s %s", i, len(sids), sid, err or round(v))
+        a.features_only = True                     # rebuild fastsurfer_idps.csv with the eTIV column
 
     if not a.features_only:
         todo = sessions[~sessions["image_id"].isin(done)]
@@ -220,7 +275,12 @@ def main(argv=None):
         meta = pd.read_csv(meta_csv, dtype={"image_id": str}).drop_duplicates("image_id", keep="last")
         sessions = sessions.merge(meta, on="image_id", how="left")
     idps = build_idp_table(sessions, work / "fastsurfer")
-    idps.to_csv(work / "fastsurfer_idps.csv", index=False)
+    tmp = work / "fastsurfer_idps.csv.partial"
+    try:
+        idps.to_csv(tmp, index=False)
+        tmp.replace(work / "fastsurfer_idps.csv")   # a failed write (disk full, kill) keeps the previous table
+    finally:
+        tmp.unlink(missing_ok=True)
     log.info("IDP table: %s -> %s", idps.shape, work / "fastsurfer_idps.csv")
 
 

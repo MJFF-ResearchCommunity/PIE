@@ -155,3 +155,88 @@ def test_nonstring_network_names_rejected_clearly():
     rng = np.random.default_rng(0)
     with pytest.raises(ValueError, match='strings'):
         residual_connectivity(rng.normal(size=(50, 4)), np.ones((50, 1)), [0, 0, 1, 1])
+
+
+def test_alff_falff_prefer_the_slow_band_and_survive_censoring():
+    from pie.imaging.fmri_connectivity import alff_falff
+    tr, n = 1.0, 600
+    t = np.arange(n) * tr
+    rng = np.random.default_rng(0)
+    y = np.column_stack([np.sin(2 * np.pi * 0.05 * t), np.sin(2 * np.pi * 0.2 * t)]) + 0.1 * rng.normal(size=(n, 2))
+    keep = np.ones(n, bool)
+    a, f = alff_falff(y, tr, keep)
+    assert a[0] > 3 * a[1] and f[0] > 3 * f[1]           # one sine vs broadband noise over ~300 bins
+    for spike in rng.choice(np.arange(5, n - 5), 30, replace=False):      # PIE's pattern: spike, 1 frame before, 2 after
+        keep[spike - 1:spike + 3] = False
+    a2, f2 = alff_falff(np.where(keep[:, None], y, 1e6), tr, keep)       # censored values must not leak in
+    assert np.all(a2 < 1) and a2[0] > 2 * a2[1] and f2[0] > 2 * f2[1]
+
+
+def test_reho_is_high_for_coherent_neighbourhoods_and_low_for_noise():
+    from pie.imaging.fmri_connectivity import reho
+    rng = np.random.default_rng(0)
+    n, shape = 200, (6, 6, 6)
+    common = rng.normal(size=n)
+    data = rng.normal(size=shape + (n,))
+    data[:3] = common + 0.05 * rng.normal(size=(3, 6, 6, n))      # coherent half
+    keep = np.ones(n, bool)
+    keep[::10] = False
+    w = reho(data, np.ones(shape, bool), keep)
+    assert w[1, 3, 3] > 0.9 and w[4, 3, 3] < 0.2 and np.isfinite(w).all()
+
+
+def test_local_measures_use_the_same_censoring_and_find_the_coherent_slow_parcel(tmp_path):
+    from pie.imaging.fmri_connectivity import local_measures
+    paths = synthetic_inputs(tmp_path)
+    rng = np.random.default_rng(3)
+    t = np.arange(240) * 2.5
+    data = rng.normal(100, 1, (4, 4, 4, 240)).astype(np.float32)
+    data[:2] += 5 * np.sin(2 * np.pi * 0.03 * t).astype(np.float32)          # parcel 1: coherent, in the ALFF band
+    image = nib.Nifti1Image(data, np.eye(4))
+    image.header.set_xyzt_units('mm', 'sec')
+    nib.save(image, paths[0])
+    out = local_measures(*paths, tr=2.5)
+    ref = extract_connectivity(*paths, {1: 'network', 2: 'network'}, tmp_path / 'fc', tr=2.5)
+    assert out['temporal']['retained_frames'] == ref['temporal']['retained_frames']
+    assert out['alff_1'] > 2 * out['alff_2'] and out['falff_1'] > out['falff_2'] and out['reho_1'] > out['reho_2']
+    assert set(out) >= {'alff_1', 'alff_2', 'falff_1', 'falff_2', 'reho_1', 'reho_2', 'temporal'}
+
+
+def test_local_alff_is_normalised_to_the_brain_mean_so_intensity_scale_does_not_matter(tmp_path):
+    from pie.imaging.fmri_connectivity import local_measures
+    paths = synthetic_inputs(tmp_path)
+    a = local_measures(*paths, tr=2.5)
+    img = nib.load(paths[0])
+    scaled = nib.Nifti1Image(np.asarray(img.dataobj) * 10, img.affine)
+    scaled.header.set_xyzt_units('mm', 'sec')
+    nib.save(scaled, paths[0])
+    b = local_measures(*paths, tr=2.5)
+    assert abs(a['alff_1'] / b['alff_1'] - 1) < 1e-6 and abs(a['falff_1'] / b['falff_1'] - 1) < 1e-6
+
+
+def test_falff_is_not_inflated_by_censoring_white_noise():
+    from pie.imaging.fmri_connectivity import alff_falff
+    rng = np.random.default_rng(1)
+    n, tr = 600, 1.0
+    y = rng.normal(size=(n, 200))
+    keep = np.ones(n, bool)
+    a0, f0 = alff_falff(y, tr, keep)
+    for spike in rng.choice(np.arange(5, n - 5), 60, replace=False):   # PIE's pattern: spike, 1 frame before, 2 after
+        keep[spike - 1:spike + 3] = False
+    assert 0.25 < 1 - keep.mean() < 0.45
+    a1, f1 = alff_falff(y, tr, keep)
+    assert abs(f1.mean() - f0.mean()) < 0.01                             # interpolation gave 0.14 -> 0.22
+    # raw ALFF of noise scales with 1/sqrt(retained frames), the same for every voxel of a scan: mALFF cancels it
+    assert abs(a1.mean() / a0.mean() - np.sqrt(n / keep.sum())) < 0.03
+
+
+def test_local_measures_blank_parcels_the_brain_mask_mostly_misses(tmp_path):
+    from pie.imaging.fmri_connectivity import local_measures
+    paths = synthetic_inputs(tmp_path)
+    mask = np.ones((4, 4, 4), np.uint8)
+    mask[2:, :2] = 0                                                         # half of parcel 2 outside the brain
+    image = nib.Nifti1Image(mask, np.eye(4))
+    nib.save(image, paths[1])
+    out = local_measures(*paths, tr=2.5)
+    assert np.isfinite(out['alff_1']) and np.isfinite(out['reho_1'])
+    assert np.isnan(out['alff_2']) and np.isnan(out['falff_2']) and np.isnan(out['reho_2'])   # 50 % < minimum_parcel_coverage

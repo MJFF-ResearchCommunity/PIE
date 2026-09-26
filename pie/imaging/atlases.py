@@ -5,6 +5,7 @@ Never substitute it for this atlas or infer template identity from coordinates.
 """
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import nibabel as nib
@@ -76,18 +77,23 @@ TEMPLATEFLOW_FILES = {
 CACHE_DIR = Path.home() / '.cache' / 'pie' / 'templateflow'
 
 
-def templateflow_file(name, cache_dir=CACHE_DIR):
-    """Local path of a pinned TemplateFlow file, downloaded once; raises if its bytes differ from the pinned hash."""
+def _pinned(url, path, sha256):
+    """``path``, downloaded from ``url`` once; raises if its bytes differ from the pinned hash."""
     from .features import _download
 
-    path = Path(cache_dir) / name
+    path = Path(path)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        _download(TEMPLATEFLOW + name, path.with_suffix('.part'))
+        _download(url, path.with_suffix('.part'))
         path.with_suffix('.part').replace(path)
-    if hashlib.sha256(path.read_bytes()).hexdigest() != TEMPLATEFLOW_FILES[name]:
-        raise ValueError(f'{name}: checksum differs from the pinned TemplateFlow release')
+    if hashlib.sha256(path.read_bytes()).hexdigest() != sha256:
+        raise ValueError(f'{path.name}: checksum differs from the pinned release')
     return path
+
+
+def templateflow_file(name, cache_dir=CACHE_DIR):
+    """Local path of a pinned TemplateFlow file, downloaded once and sha256-checked."""
+    return _pinned(TEMPLATEFLOW + name, Path(cache_dir) / name, TEMPLATEFLOW_FILES[name])
 
 
 def mni2009c_brain_1mm(cache_dir=CACHE_DIR):
@@ -114,3 +120,101 @@ def schaefer400_mni2009c(cache_dir=CACHE_DIR):
     if set(np.unique(np.asarray(img.dataobj))) - {0} != set(networks):
         raise ValueError('Schaefer label image and table differ')
     return img, networks
+
+
+# Biondetti et al. 2020 (Brain 143:2757, doi:10.1093/brain/awaa216) neuromelanin atlas: their brain-extracted study
+# T1 template, the nigral mask split into associative (1), limbic (2) and sensorimotor (3) territories, and the
+# background reference (BND) of their SNR = 100 * mean(SN) / mean(BND). The repository declares no licence, so the
+# files are fetched at run time and never bundled (verified 26 September 2026).
+BIONDETTI = 'https://raw.githubusercontent.com/emmabiondetti/substantia-nigra-neuromelanin/e34cbd55054f22483e85b008f99c3448b978b871/'
+BIONDETTI_FILES = {
+    'average_nonlin_10.nii.gz': '43ed9ad681af3a106280c81cfe6a0e4e5ccbe69a84321d76e713d4dbdcc1ccf4',
+    'SN_ROI_symmetric_three_subdivisions.nii.gz': '54bd3df09f326b868d4dd72701b1d78b83f33e0f2ba2da5731cd0a6d45c3037c',
+    'BND_ROI.nii.gz': 'e9b742b222ab6bbd5e43c8558a5c7b0cd699682b1761e3255992fce1b458de6c',
+}
+BIONDETTI_DIR = Path.home() / '.cache' / 'pie' / 'biondetti'
+BIONDETTI_TERRITORIES = {1: 'associative', 2: 'limbic', 3: 'sensorimotor'}
+BIONDETTI_BND = 4   # label of the background ROI in the combined MNI image
+
+
+def biondetti_file(name, cache_dir=BIONDETTI_DIR):
+    return _pinned(BIONDETTI + name, Path(cache_dir) / name, BIONDETTI_FILES[name])
+
+
+def nigral_bridge_qc(label_img, max_mm=4.0):
+    """Outcome-blind check of nigral labels (territories 1-3, background 4) mapped to MNI152NLin2009cAsym against the
+    CIT168 SNc, the part of the nigra neuromelanin MRI shows (the SNr lies ventrolateral; the study's registration of
+    the same atlas put the Biondetti SN 1.0-1.4 mm from the SNc but 3.6-3.7 mm from SNc + SNr): per side, the labelled
+    SN's centroid within ``max_mm`` of the SNc's, and no background voxel in the SNc."""
+    from nilearn.image import resample_to_img
+
+    cit = resample_to_img(cit168_mni2009c(), label_img, interpolation='nearest', force_resample=True, copy_header=True)
+    cit_sn = np.asarray(cit.dataobj) == 7
+    lab = np.asarray(label_img.dataobj)
+    ijk = np.indices(lab.shape).reshape(3, -1).T
+    x = nib.affines.apply_affine(label_img.affine, ijk)[:, 0].reshape(lab.shape)
+    out = {}
+    for side, half in (('l', x < 0), ('r', x > 0)):
+        a = nib.affines.apply_affine(label_img.affine, np.argwhere(np.isin(lab, [1, 2, 3]) & half)).mean(axis=0)
+        b = nib.affines.apply_affine(label_img.affine, np.argwhere(cit_sn & half)).mean(axis=0)
+        out[f'centroid_mm_{side}'] = float(np.linalg.norm(a - b))
+    out['bnd_in_sn'] = int((cit_sn & (lab == BIONDETTI_BND)).sum())
+    out['pass'] = bool(out['centroid_mm_l'] <= max_mm and out['centroid_mm_r'] <= max_mm and out['bnd_in_sn'] == 0)
+    return out
+
+
+def _biondetti_transforms(cache_dir=BIONDETTI_DIR, seed=0):
+    """Forward transforms, Biondetti template -> MNI152NLin2009cAsym 1 mm brain: their template (negative background
+    clipped) registered once with antsRegistrationSyN[s], cached with its ``nigral_bridge_qc`` result; raises while
+    that QC fails."""
+
+    import ants
+
+    from .features import _drop_transforms, _seed_ants
+
+    d = Path(cache_dir) / 'to_MNI152NLin2009cAsym'
+    fwd, qc_file = [d / '1Warp.nii.gz', d / '0GenericAffine.mat'], d / 'qc.json'
+    if not qc_file.exists():
+        src = nib.load(biondetti_file('average_nonlin_10.nii.gz', cache_dir))
+        moving = ants.from_nibabel_nifti(nib.Nifti1Image(np.clip(np.asarray(src.dataobj, np.float32), 0, None), src.affine))
+        _seed_ants(seed)
+        reg = ants.registration(ants.image_read(str(mni2009c_brain_1mm())), moving, type_of_transform='antsRegistrationSyN[s]')
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            for f, dst in zip(reg['fwdtransforms'], fwd):
+                shutil.copy(f, dst)
+            ants.image_write(reg['warpedmovout'], str(d / 'template_warped.nii.gz'))
+        finally:
+            _drop_transforms(reg)
+        qc = nigral_bridge_qc(_biondetti_labels(fwd, mni2009c_brain_1mm(), cache_dir))
+        qc_file.write_text(json.dumps({'qc': qc, 'seed': seed, 'source': BIONDETTI, 'type': 'antsRegistrationSyN[s]',
+                                       'target': 'tpl-MNI152NLin2009cAsym_res-01 T1w x brain mask'}, indent=2))
+    qc = json.loads(qc_file.read_text())['qc']
+    if not qc['pass']:
+        raise ValueError(f'Biondetti -> MNI152NLin2009cAsym bridge failed its QC ({qc_file}): {qc}')
+    return [str(p) for p in fwd]
+
+
+def _biondetti_labels(fwd, reference, cache_dir=BIONDETTI_DIR):
+    """Territories 1-3 and background 4 pulled once (genericLabel) from Biondetti space onto ``reference``'s grid;
+    the nigra wins where the two touch."""
+    import ants
+
+    ref = ants.image_read(str(reference))
+    sn, bnd = (ants.apply_transforms(ref, ants.image_read(str(biondetti_file(n, cache_dir))), [str(f) for f in fwd],
+                                     interpolator='genericLabel').numpy()
+               for n in ('SN_ROI_symmetric_three_subdivisions.nii.gz', 'BND_ROI.nii.gz'))
+    lab = np.where(sn > 0, np.rint(sn), np.where(bnd > 0, BIONDETTI_BND, 0)).astype(np.int16)
+    return nib.Nifti1Image(lab, nib.load(reference).affine)
+
+
+def biondetti_mni2009c(reference=None, cache_dir=BIONDETTI_DIR, seed=0):
+    """Path of the Biondetti territories (1-3) and background (4) in MNI152NLin2009cAsym on ``reference``'s grid (an
+    image path; default the 1 mm template), resampled once from the authors' space, not via a second grid."""
+    ref = Path(reference) if reference else mni2009c_brain_1mm()
+    img = nib.load(ref)
+    tag = hashlib.sha256(np.asarray(img.affine, float).tobytes() + repr(img.shape[:3]).encode()).hexdigest()[:10]
+    out = Path(cache_dir) / f'biondetti_space-MNI152NLin2009cAsym_grid-{tag}_dseg.nii.gz'
+    if not out.exists():
+        nib.save(_biondetti_labels(_biondetti_transforms(cache_dir, seed), ref, cache_dir), out)
+    return out

@@ -16,7 +16,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from pie.imaging.fastsurfer import STATS_FILE, parse_stats
+from pie.imaging.fastsurfer import STATS_FILE, parse_stats, valid_etiv
 
 BILATERAL = ["Putamen", "Caudate", "Pallidum", "Thalamus", "Hippocampus", "Amygdala", "Accumbens-area",
              "Lateral-Ventricle", "Cerebellum-Cortex", "Cerebellum-White-Matter", "VentralDC"]
@@ -41,6 +41,7 @@ def build_idp_table(sessions, subjects_dir):
         row.update({c: getattr(s, c, None) for c in META_COLS})
         measures = {k: v for k, v in d.items() if k.endswith("Vol")}
         row.update(measures)
+        row["eTIV"] = valid_etiv(Path(subjects_dir) / s.image_id / "mri")     # FreeSurfer eTIV, see fastsurfer.talairach_etiv
         for k, v in d.items():
             if k not in measures:
                 row[f"vol_{_clean(k)}"] = v
@@ -54,6 +55,26 @@ def build_idp_table(sessions, subjects_dir):
         row["sum_Ventricles"] = sum(vent)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+FS7_TABLES = {"FS7_APARC_CTH": "fs7_cth_", "FS7_APARC_SA": "fs7_sa_", "FS7_ASEG_VOL": "fs7_", "MRIQC": "mriqc_"}
+
+
+def fs7_tables(ppmi_dir):
+    """PPMI's own FreeSurfer 7.3.2 tables (DK-atlas thickness and area, aseg volumes with eTIV) and MRIQC image-quality
+    metrics, one row per PATNO + EVENT_ID, columns prefixed by source. The 2025 McGill/Nipoppy release covers baseline
+    scans only; its T1 is PPMI's choice for that visit, which need not be the series PIE segmented."""
+    from .viewer.catalog import latest_table
+
+    out = None
+    for stem, prefix in FS7_TABLES.items():
+        path = latest_table(Path(ppmi_dir, "Imaging"), stem)
+        if path is None:
+            continue
+        t = pd.read_csv(path, low_memory=False).drop_duplicates(["PATNO", "EVENT_ID"])
+        t = t.rename(columns={c: prefix + c for c in t.columns if c not in ("PATNO", "EVENT_ID")})
+        out = t if out is None else out.merge(t, on=["PATNO", "EVENT_ID"], how="outer")
+    return out if out is not None else pd.DataFrame(columns=["PATNO", "EVENT_ID"])
 
 
 # ====================================================================================================
@@ -130,6 +151,16 @@ def _drop_transforms(*regs):
             Path(f).unlink(missing_ok=True)
 
 
+def _seed_ants(seed):
+    """Seed antsRegistration (``--random-seed``) for every later call in this process. ANTsPy 0.6 swallows a
+    ``random_seed=`` keyword (it lands in **kwargs unused); the seed reaches antsRegistration only through
+    ``ants.config``. on=False keeps ITK multithreaded: even seeded and single-threaded, Mattes/MI registrations are not
+    bit-reproducible in ANTsPy 0.6.3 (translations differ by ~0.01 mm between runs; ANTs' Repro mode, GC metric, would be)."""
+    import ants
+
+    ants.config.set_ants_deterministic(False, seed_value=int(seed))
+
+
 def _from_ants(ants_img, like):
     """Back to nibabel on the grid of ``like``; refuses any output whose geometry differs from ``like``."""
     import ants
@@ -181,8 +212,8 @@ def tiv_from_registration(head_img, template_head, template_icv, seed=0, min_cor
     import ants
 
     fixed, moving = _to_ants(head_img), _to_ants(template_head)
-    reg = ants.registration(fixed=fixed, moving=moving, type_of_transform="Affine", random_seed=int(seed),
-                            aff_metric="mattes")
+    _seed_ants(seed)
+    reg = ants.registration(fixed=fixed, moving=moving, type_of_transform="Affine", aff_metric="mattes")
     warped_icv = ants.apply_transforms(fixed=fixed, moving=_to_ants(template_icv), transformlist=reg["fwdtransforms"],
                                        interpolator="linear")
     warped_head = ants.apply_transforms(fixed=fixed, moving=moving, transformlist=reg["fwdtransforms"], interpolator="linear")

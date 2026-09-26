@@ -40,6 +40,8 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `datscan.py` | DaTscan SPECT reconstruction and SBRs ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | yes |
 | `flair.py` | White-matter hyperintensity burden | yes |
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
+| `freesurfer.py` | Environment and runner for FreeSurfer tools that FastSurfer's eTIV, surface and longitudinal stages call | |
+| `normative.py` | Deviation (z) scores against a reference group, e.g. PPMI controls | |
 | `qc.py` | Overlay montages and contact sheets for visual QC | yes |
 | `cnn.py` | Whole-image 3D CNN baseline (SFCN) with grouped out-of-fold predictions | yes |
 | `embed.py` | Embeddings from pretrained open-weight T1 models | yes |
@@ -74,6 +76,8 @@ bundled with PIE, so no template is downloaded.
 | FSL `topup`/`applytopup` | `dwi --fsl` | `$FSLDIR`, else `~/fsl` |
 | MRtrix3 3.0.x | `dwi --fba`, `fba`; `dwidenoise`/`mrdegibbs` for `--denoise` if present | `PATH` |
 | ANTsPy | `dwi_refine`, `nm_template` | Python import `ants` |
+| FreeSurfer 7.4.1 + license (optional) | `run --etiv`, `run --long`, `fastsurfer.surfaces` | `$PIE_FREESURFER_HOME` (a path without spaces: FreeSurfer's scripts break on them, so link an install on a drive like "Seagate Portable Drive" to e.g. `~/freesurfer-7.4.1`), `$PIE_FS_LICENSE` (else `$FS_LICENSE`); `talairach_avi` also needs `/bin/tcsh` |
+| TrUE-Net (optional) | FLAIR WMH segmentation (installed; the PIE wrapper is not written yet) | `truenet` 2.0.2 in `venv_imaging` (Apache-2.0); weights in `third_party/weights/truenet/` (FSL non-commercial), `TRUENET_PRETRAINED_MODEL_PATH` |
 | Pretrained weights | `embed`, `cnn --pretrained` | `$PIE_WEIGHTS_DIR`, else `<repo>/third_party/weights`, then `<backend>/`; sources and checksums in `third_party/weights/WEIGHTS.md` |
 
 The defaults are relative to the source tree; set the `PIE_*` environment variables (read at import) to run from an
@@ -146,6 +150,15 @@ What happens:
 Resumable: sessions with `stats/aseg+DKT.stats` are skipped. Throughput is GPU-bound, roughly one scan per
 30-60 s on an RTX 2080.
 
+Three optional stages use FreeSurfer tools through FastSurfer (FastSurfer stays the segmentation engine; FreeSurfer's
+own `recon-all` is never run):
+
+| Stage | What it adds | Cost |
+|---|---|---|
+| `run --etiv` | FreeSurfer eTIV for every finished subject: FastSurfer's talairach registration (`talairach_avi` on `orig_nu`, the `--tal_reg` step; `fastsurfer.talairach_etiv`), eTIV = 1948106 / det(`talairach.xfm`); then the table is rebuilt with an `eTIV` column | ~2 CPU-min per scan |
+| `fastsurfer.surfaces(subjects_dir, sid)` | FastSurfer's surface stream with `--fsaparc`: DK `aparc` thickness and area, comparable with PPMI's FS7 tables | ~1 CPU-hour per scan |
+| `run --long` | FastSurfer's longitudinal stream (within-subject template) for every subject with >= 2 finished, real-dated sessions, into `<work>/fastsurfer_long/` (`run.long_timepoints`, `fastsurfer.longitudinal`) | hours per subject, GPU |
+
 Work dir: `index.csv`, `sessions.csv`, `scan_metadata.csv` (`image_id`, `nifti`, `sidecar` + `SIDECAR_FIELDS`),
 `nifti/<PATNO>/`, `fastsurfer/<IMAGE_ID>/{mri,stats,scripts}`, `failures.csv` (headerless: patno, image_id,
 message), `fastsurfer_idps.csv`.
@@ -160,8 +173,9 @@ message), `fastsurfer_idps.csv`.
 | `vol_<Structure>` | Regional volume in mm^3, name with non-alphanumerics replaced by `_` (`vol_Left_Putamen`, `vol_ctx_lh_precuneus`, `vol_WM_hypointensities`) |
 | `sum_<S>`, `asym_<S>` | Left + right and (L − R) / (L + R) for `Putamen Caudate Pallidum Thalamus Hippocampus Amygdala Accumbens_area Lateral_Ventricle Cerebellum_Cortex Cerebellum_White_Matter VentralDC` |
 | `sum_Ventricles` | Lateral + inferior-lateral + 3rd + 4th ventricles |
+| `eTIV` | FreeSurfer eTIV from `mri/transforms/talairach.xfm` when `run --etiv` has made it, else NaN |
 
-No eTIV: PIE runs FastSurfer segmentation-only and never passes `--tal_reg`. Do not normalise by
+eTIV is optional: the default segmentation-only run does not compute it; `run --etiv` adds it afterwards (below). Do not normalise by
 `MaskVol` or `BrainSegVol` — the first is a dilated brain mask, not an intracranial measurement, and the
 second shrinks with atrophy, so dividing by it removes part of the effect you are trying to measure.
 Adjust with `features.adjust_for_head_size` and a true intracranial volume: FastSurfer's `--tal_reg`
@@ -203,7 +217,11 @@ adjusted = features.adjust_for_head_size(putamen, tiv, method="residual", refere
 np.corrcoef(putamen, tiv)[0, 1], np.corrcoef(adjusted, tiv)[0, 1]    # 0.91 -> -0.05
 ```
 
-`features.tiv_from_registration(head_img, template_head, template_icv)` is the fallback when you have
+For analyses, `manifest.assemble_features` gives one intracranial volume per subject, `tiv_mm3`, with
+`tiv_source`: PIE's own eTIV (`pie_talairach`, same T1 as the volumes), else PPMI's FreeSurfer 7 eTIV for the same
+visit (`ppmi_fs7`, when `ppmi_dir` is passed), else missing (`none`). Adjust with that.
+
+`features.tiv_from_registration(head_img, template_head, template_icv)` is superseded; it was the fallback when there was
 no eTIV: it warps the TemplateFlow intracranial map into subject space by an affine head-to-head
 registration and sums it, returning `qc_pass` beside the volume. The registration must be head to
 head, skull included — pass FastSurfer's conformed `orig.mgz` or the raw T1, never a skull-stripped
@@ -224,8 +242,10 @@ is a frame with `patno`, `image_id`, `session_date`, `EVENT_ID` (e.g. `sessions.
 | `dat_sbr_table(ppmi_dir, source="auto")` | PPMI's SBR table and visual reads. `xing`: `Xing_Core_Lab_-_Quant_SBR_*` (PPMI's primary SBRs since December 2024, all earlier scans re-analysed; cerebral white-matter reference; sub-regional `*_REF_CWM` columns kept); `invicro`: the archived `DaTScan_SBR_Analysis_*` (occipital reference, nothing after 1 December 2024); `auto` = Xing when present. The scales differ: never pool them. 99mTc-TRODAT-1 scans are dropped |
 | `saa_labels(ppmi_dir, sessions, allow_unmatched=False)` | `PATNO`, `IMAGEID`, `SAA_EVENT_ID`, `SAA_Status` (`Conflicting` when calls at the chosen visit disagree), `SAA_Type`, `saa_positive` (NaN unless one Positive/Negative call), `saa_match` (`same_visit`, `screening_baseline_pair`, `unmatched_visit`), `saa_visit_concurrent` |
 
-On the September 2026 download the Xing table labels 1,447 MRI sessions (1,398 subjects) where the archived
-Invicro table labels 988. The expectation is refitted within whichever table is used, so the percentage rules keep
+On the September 2026 download the Xing table labels 1,447 MRI sessions (1,398 subjects) where the archived Invicro table labels 988. The Xing release lacks about 716 PPMI-1 participants whom Invicro analysed (504 PD, 136 HC, 76 SWEDD).
+- `auto` therefore takes the Xing match where one exists and the Invicro match otherwise, per session. Each table keeps its own control norm, and `sbr_source` records which table was used.
+- Percent-of-expected, deficit and visual labels can be pooled across the two. Raw SBRs cannot.
+- On Xing alone, PD + SWEDD visual reads fall to about 5 negatives. The expectation is refitted within whichever table is used, so the percentage rules keep
 their meaning on either reference region; PPMI 2.0 eligibility used < 0.80 of an age-only expectation on the Invicro
 scale, which `sbr_pct_expected < 0.80` approximates but does not reproduce. Tables are chosen by the release date in
 their names (`viewer.catalog.latest_table`), not by text order, in which `18Mar2025` sorts after `08Sep2026`.
@@ -240,15 +260,21 @@ iu_genetic_consensus,Polygenic_Risk_Scores}_*.csv`, `Imaging/DaTScan_{SBR_Analys
 ## FLAIR white-matter hyperintensities (`flair.py`)
 
 A vascular covariate, not a synucleinopathy marker: WMH load confounds subcortical volumes and marks the vascular
-mimic behind some normal DaTscans. No licensed lesion segmenter is available (SAMSEG/LST need a FreeSurfer or
-MATLAB licence, BIANCA needs labelled training data), so this is the classic threshold method. In the study's
+mimic behind some normal DaTscans. The default is the classic threshold method below; TrUE-Net (FSL's WMH U-Net,
+Sundaresan et al. 2021) is installed as the deep-learning alternative but not yet wired into `flair.py`, and FastSurfer's T1-only
+`vol_WM_hypointensities` tracks age better than the threshold measure (see the validity table). In the study's
 September 2026 MRI download (snapshot) 1,340 subjects with a T1 have a FLAIR, 3D 1 mm or 2D 5 mm.
 
 1. Series: `flag_flair` (`FLAIR|dark.?fluid|tirm`, excluding T1 FLAIR and repeats); `flag_flair_3d` = "3D" in
    the description or >= 100 files. 3D is preferred, then the largest series (`flair_3d` is recorded for
    harmonisation).
-2. `n4(img_sitk, shrink=2)` → `register_flair_to_t1(flair_sitk, t1_img, t1_mask_img)` (rigid MI to the
-   brain-masked T1 at 2 mm) → FLAIR resampled onto the T1 grid.
+2. `n4(img_sitk, shrink=2)` → `register_flair_to_t1(flair_sitk, t1_img, t1_mask_img)` (rigid MI to the T1
+   *head* at 2 mm from two starts, the scanner header and the centre of mass, the better final pose winning; the
+   reported `reg_flair_t1_mi` is the brain-masked MI at that pose) → FLAIR resampled onto the T1 grid. Until 25
+   September 2026 the fixed image was the brain-masked T1 with a centre-of-mass start, which put partial-coverage 2D
+   FLAIR (5 mm slices over the upper head) centimetres off: 177 of 1,338 scans failed QC, and their WMH volumes were
+   inflated (median 11.1 mL against 2.5 mL once registered). On 30 of those scans the new registration passed QC for
+   21; the other 9 look aligned in the gallery but stay below the MI threshold, so their QC rule is still under review.
 3. `wmh(flair_t1, aseg, vox_mm=1.0)`: white matter = FastSurfer labels 2, 41, 77 eroded by one voxel; lesions =
    WM voxels brighter than median + `K_MAD` (3) x 1.4826 MAD of normal-appearing WM; components below
    `MIN_LESION_MM3` (5 mm^3) dropped; periventricular = within `PV_MM` (10 mm) of the lateral ventricles.
@@ -297,10 +323,26 @@ unless `single_shell_fw=True`, see [imaging_dwi.md](imaging_dwi.md#single-shell-
 `nm_*_cnr`, and `flair_wmh_*`. LONI-masked dates (year 9999) become missing, so no `*_days_from_t1` is computed from them. A modality failing QC is blanked
 entirely, so a failed left-side metric cannot let a valid-looking right side through.
 
-The QC rules live in `manifest.QC` (one function per modality: `t1 dat dwi nm flair`) so studies and galleries
-agree on "pass". The batch columns are what block-wise ComBat should use: `dwi_batch` = vendor + shells +
-free-water method, `nm_batch` = vendor + voxel size, `flair_batch` = vendor + 2D/3D, `dat_batch` = vendor +
-camera model. Harmonising diffusion or neuromelanin features by the *T1* scanner is the mistake this avoids.
+`assemble_features(..., ppmi_dir="PPMI")` also joins PPMI's own FreeSurfer 7 and MRIQC tables (`features.fs7_tables`:
+`fs7_cth_<DK region>`, `fs7_sa_<region>`, `fs7_<aseg volume>` including `fs7_EstimatedTotalIntraCranialVol`, and
+`mriqc_<metric>`), but only where the T1 PIE used is from the table's visit (baseline in the 2025 release; 1,080 of 1,804
+subjects on the September 2026 download). With `nm/nm_template_features.csv` present it adds the template-space NM
+contrasts `nmt_*_cnr` under their own QC (`QC["nmt"]`: SN mask >= 90 % covered on both sides, crus CV < 0.3; flag
+`nmt_qc_pass`).
+
+The QC rules live in `manifest.QC` (one function per modality: `t1 dat dwi nm nmt flair`) so studies and galleries
+agree on "pass". The batch columns are what in-fold harmonisation should use:
+- `dwi_batch` = vendor + shells + free-water method (+ `_eddy`);
+- `dwi_acquisition_batch` = vendor | shells | voxel size | number of volumes;
+- `dwi_correction` = eddy / topup / rigid;
+- `nm_batch` = vendor + voxel size;
+- `nm_acquisition_batch` = vendor | voxel | TR | TE | MT preparation;
+- `flair_batch` = vendor + 2D/3D;
+- `dat_batch` = vendor + camera model.
+
+The two `*_acquisition_batch` keys are the study's definitions. Its scanner-sensitivity analysis also adds scanner model and flip angle, which are in `nm_features.csv`.
+
+Harmonising diffusion or neuromelanin features by the *T1* scanner is the mistake this avoids.
 
 QC galleries (`qc.py`) render three orthogonal views per subject from `--keep-nifti` outputs: DWI FA with SN
 (red), striatum (cyan), thalamus (magenta); NM mean slab with refined SN (red), atlas SN (cyan), reference (lime);
@@ -326,6 +368,21 @@ venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived>/datscan_full --mo
 Python: `montage(base, contours, out_png, title="", zoom=None)`, `render_subject(modality, subj_dir, out_png,
 fastsurfer_dir=None, row=None)`, `gallery(pngs, out_png, cols=4)`. Tests: `tests/test_manifest.py`,
 `tests/test_qc.py`.
+
+## Deviation scores against controls (`normative.py`)
+
+`normative.fit(frame, features, covariates, reference)` fits, per feature, a linear model on the reference rows only
+(intercept, the numeric covariates you pass, and age² when one of them is `age`); `normative.zscores(frame, model)`
+returns `z_<feature>` = (observed − predicted) / the reference residual SD. Use PPMI healthy controls (or, inside a
+cross-validation fold, the training controls) as the reference and `tiv_mm3`, sex and a one-hot scanner batch as
+covariates. Pretrained lifespan models (Rutherford et al. 2022) need FreeSurfer Destrieux thickness, which PIE does not
+produce. Tests: `tests/test_normative.py`.
+
+```python
+from pie.imaging import normative
+model = normative.fit(df, ["vol_Left_Putamen", "vol_Right_Putamen"], ["age", "sex", "tiv_mm3"], reference=df.COHORT.eq("Healthy Control"))
+z = normative.zscores(df, model)          # z_vol_Left_Putamen, z_vol_Right_Putamen
+```
 
 ## Whole-image models
 
@@ -488,8 +545,7 @@ python pie/pipeline.py --data-dir PPMI --output-dir <output> \
 
 The table enters the reduction/merge step as the `imaging` modality: `IMAGEID`, `SCAN_DATE` and text columns
 (scanner strings) are dropped and the rest are prefixed `imaging_`. Harmonise scanner effects inside the
-cross-validation folds (e.g. `endgame.preprocessing.ComBatHarmonizer(batch=…, covariates=[age, sex])`), never
-on the full dataset before splitting. For multi-modality work use `manifest.assemble_features` and
+cross-validation folds, never on the full dataset before splitting. The study's final method, which PIE ships as `pie.experiment.prediction.ImageDesign(residualize=True, batch_cols=…)`, is a training-fold ridge residualisation on an age spline, sex (plus ICV for T1) and batch one-hot codes, chosen against the unadjusted features in the inner loop. ComBat (e.g. `endgame.preprocessing.ComBatHarmonizer`) is the alternative; with a few dozen scans per batch it can over-shrink. For multi-modality work use `manifest.assemble_features` and
 [`pie.experiment`](experiment.md) instead.
 
 ## End-to-end example
@@ -574,7 +630,7 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 
 | Modality | Measure | Standing | In PIE |
 |---|---|---|---|
-| DaT-SPECT | Caudate/putamen SBR, occipital and cerebral-WM reference | Gold (PPMI core lab) | PPMI's values via `labels.dat_sbr_table` (Xing first); PIE's own reconstruction `datscan.py` for unquantified scans |
+| DaT-SPECT | Caudate/putamen SBR, occipital and cerebral-WM reference | Gold (PPMI core lab) | PPMI's values via `labels.dat_sbr_table` (Xing first, Invicro for scans Xing never analysed); PIE's own reconstruction `datscan.py` for unquantified scans, mapped to a published scale by `datscan.calibrate` |
 | | Putamen/caudate ratio, asymmetry index, z-score vs controls | Gold (EANM, DaTQUANT) | Yes: `labels.dat_labels`, `manifest.assemble_features` |
 | | % of age/sex-expected lowest putamen; PARS ≤ 65 %, NSD-ISS D+ ≤ 75 % | Gold (PPMI staging) | Yes: `sbr_pct_expected`, `dat_deficit_sbr`, `dat_d_nsdiss` |
 | | Pre/post-commissural, dorsal/ventral putamen | SOTA | PPMI's Xing columns kept; PIE's own: anterior/posterior halves |
@@ -601,7 +657,7 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Schaefer cortex + CIT168 subcortex | SOTA default ("4S") | Yes (`atlases.schaefer400_mni2009c`, `striatal_rois`) |
 | | Striatal seed FC, basal-ganglia network (ICA + dual regression) | Canonical, poorly reproducible | Yes |
 | | ALFF / fALFF / ReHo | SOTA | No (XCP-D computes them) |
-| All | ComBat inside cross-validation folds, per-modality batch | Gold | Batch columns in the manifest; harmonisation in the modelling code |
+| All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method; ComBat is the alternative) |
 
 ### Real-data validity checks (September 2026)
 
@@ -612,15 +668,17 @@ before quoting their values), with PPMI cohort labels:
 |---|---|---|
 | DaT SBR, lowest putamen | PD vs HC | d = −2.1; AUROC 0.95–0.96 (PPMI's own SBRs 0.99 on the same scans) |
 | DaT SBR | Agreement with PPMI | putamen r 0.79–0.81, caudate r 0.61–0.66 (PPMI's two core labs: 0.88) |
-| DaT labels | Coverage of MRI sessions | 1,447 with the Xing table, 988 with the archived Invicro table |
+| DaT labels | Coverage of MRI sessions | 1,447 with the Xing table, 988 with the archived Invicro table; `auto` now adds the Invicro-only PPMI-1 sessions (count not yet re-measured) |
 | T1 volumes | Age | thalamus r −0.42, hippocampus −0.36, ventricles +0.40 (n = 1,800) |
 | T1 volumes | vs PPMI's FreeSurfer 7.3.2 `FS7_ASEG_VOL` (1,080 baseline scans) | subcortical r 0.81–0.96, Lin's concordance 0.77–0.95 (putamen 0.92 / 0.85, lateral ventricle 0.96 / 0.95); WM-hypointensities r 0.19 (the two methods differ) |
 | Registration TIV | vs FreeSurfer eTIV (40 scans) | r 0.81, 9 % low; FastSurfer `MaskVol` r 0.85 |
+| PIE eTIV (`run --etiv`, FreeSurfer 7.4.1 talairach) | vs PPMI's FreeSurfer 7 eTIV, same 40 scans (26 Sep 2026) | r 0.992, mean difference +0.3 %, 0 of 40 rejected by `talairach_afd`: passes the pre-registered gate (r ≥ 0.95, < 5 %) |
 | DWI multi-shell FW | Age | brain r +0.49, posterior SN +0.28 (n = 68) |
 | DWI single-shell FW | Age; PD vs HC | brain r +0.02, posterior SN AUROC 0.50: quarantined |
 | DWI nigral FA / MD | vs PPMI's hand-drawn SN ROIs (248 scans) | FA ρ 0.39 (PIE reads higher: 0.43 vs 0.32, peduncle partial volume), MD ρ −0.01 |
 | NM atlas ROI CNR | PD vs HC (166 / 45) | AUROC 0.54 overall, 0.60 posterior half |
-| NM template CNR (Cassidy/Wengler, `nm_template`) | PD vs HC | Not yet measured: the 25 September 2026 run (45 HC + 45 PD) stopped after 46 SyN registrations when leaked ANTs files filled the disk (fixed, see Limitations). This is the NM result to obtain before presenting NM |
+| NM, pre-registered gate (AUROC ≥ 0.70, CI lower bound > 0.55), 45 HC + 45 PD, 26 Sep 2026 | PD vs HC | template CNR (`nmt_sn_mean_cnr`) 0.58 [0.46, 0.70], posterior 0.61; atlas CNR re-run with current `nm.py` (`nm_sn_mean_cnr`) 0.54 [0.42, 0.67]. **Neither passes: NM measures are exploratory** (`manifest.NM_VALIDATED = False`, column `nm_validated`). The template's crus reference sits mostly above the SN (median 7 mm), a defect to fix before any re-test on new subjects |
+| FLAIR registration | 30 scans that failed QC + 10 that passed, re-run 25 Sep 2026 | 21 / 30 now pass, 10 / 10 still pass; former failures' median WMH 11.1 → 2.5 mL |
 | FLAIR WMH (threshold) | Age; vs FastSurfer WM-hypointensities | ρ +0.18 (3D FLAIR +0.24); ρ 0.52 with the T1 measure, which itself tracks age at ρ +0.46 |
 
 The DWI nigral values agree poorly with manual ROIs because a 2 mm, affine-mapped, distortion-uncorrected nigra
@@ -676,9 +734,13 @@ acquisitions.
 
 - Segmentation-only FastSurfer: volumes, no cortical thickness or surface area (needs the surface stream and a
   FreeSurfer licence). PPMI's own `FS7_APARC_CTH` / `FS7_APARC_SA` tables (FreeSurfer 7.3.2, DK atlas, baseline scans)
-  can supplement. No eTIV, because `--tal_reg` is not passed; `features.tiv_from_registration` is an unvalidated
-  fallback. No longitudinal (within-subject template) stream.
+  can supplement; `fastsurfer.surfaces` runs the surface stream (pilot pending). eTIV comes from `run --etiv`
+  (validated, r 0.992 vs FS7). The longitudinal stream (`run --long`) exists but has not been piloted.
 - FastSurfer on CPU (`run --device cpu`) works but takes tens of minutes per scan.
+- ANTs registrations are seeded through `ants.config` (`features._seed_ants`). Until 26 September 2026 they were not: ANTsPy 0.6.3 silently ignores a `random_seed=` keyword.
+  - Even seeded and single-threaded, Mattes/MI registrations in ANTsPy 0.6.3 are not bit-reproducible. On a phantom, repeat affine runs differed by about 0.01 mm in translation and 0.5 % in registration-based TIV.
+  - Treat values from ANTs-registered masks as reproducible to that order. ANTs' Repro mode (GC metric) would be exact but is not used.
+  - The Biondetti bridge is computed once and cached, so NM masks do not vary between runs on one machine.
 - DWI: eddy-current and slice-outlier correction are not in the default path; susceptibility correction only
   where a reverse-PE b0 exists (`--fsl`, PPMI 2.0). Single-shell free water is not assembled by default.
 - DaTscan: PIE's own reconstruction (FBP, no attenuation correction, subject-space ROIs, hottest-placement search) is
@@ -696,7 +758,8 @@ venv_imaging/bin/python -m pytest -q tests/test_imaging.py tests/test_imaging_au
     tests/test_dwi.py tests/test_dwi_correction.py tests/test_embed.py tests/test_flair.py tests/test_freewater_qc.py \
     tests/test_manifest.py tests/test_nm.py tests/test_nm_template.py tests/test_qc.py tests/test_staging.py \
     tests/test_staging_files.py tests/test_imaging_regressions.py \
-    tests/test_dwi_tracts.py tests/test_fmri_striatal.py tests/test_nm_volume.py tests/test_volumes.py
+    tests/test_dwi_tracts.py tests/test_fmri_striatal.py tests/test_nm_volume.py tests/test_volumes.py tests/test_normative.py \
+    tests/test_fmri_connectivity.py tests/test_brain_viewer.py
 ```
 
 `tests/test_imaging_regressions.py` holds one regression test per bug fixed after the September 2026 audit
