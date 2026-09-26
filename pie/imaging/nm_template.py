@@ -13,6 +13,8 @@ Stages (each resumable, run in order):
     template   mean of the intensity-normalised slabs -> <work>/template/nm_template.nii.gz + sn / crus masks
     features   per subject: crus mode, CNR map, SN mean CNR (+ anterior/posterior/medial/lateral quadrants) ->
                <work>/nm_template_features.csv
+    published  per subject: contrast of the published Biondetti et al. 2020 nigral territories against their
+               background ROI (no study template needed) -> <work>/nm_published_features.csv
 
     venv_imaging/bin/python -m pie.imaging.nm_template syn --sessions Imaging/derived/sessions.csv \\
         --fastsurfer-dir Imaging/derived/fastsurfer --work-dir Imaging/derived/nm --workers 4
@@ -44,6 +46,11 @@ def syn_paths(fastsurfer_dir):
     return {"fwd": [tdir / "t1_to_MNI152NLin2009cAsym_syn_1Warp.nii.gz", tdir / "t1_to_MNI152NLin2009cAsym_syn_0GenericAffine.mat"]}
 
 
+def syn_cached(fastsurfer_dir):
+    """True when both SyN cache files exist and are non-empty (a copy onto a full disk leaves 0-byte files)."""
+    return all(p.exists() and p.stat().st_size > 0 for p in syn_paths(fastsurfer_dir)["fwd"])
+
+
 def crop_warp(path, margin_mm=20.0):
     """Crop a SyN displacement field (defined in MNI space) to the midbrain box plus a margin: the template pipeline only
     resamples inside the box, and a full 1 mm field is ~85 MB per subject. Keeps the NIfTI intent so ANTs reads it."""
@@ -66,7 +73,7 @@ def syn_cache(fastsurfer_dir, syn_type=SYN_TYPE):
     forward transform list in ANTs order (``fwd`` warps T1-space images into MNI). The inverse warp is not kept: a
     displacement field is ~70 MB per subject, and MNI -> T1 mappings can be recomputed when a study needs them."""
     paths = syn_paths(fastsurfer_dir)
-    if all(p.exists() for p in paths["fwd"]):
+    if syn_cached(fastsurfer_dir):
         return {k: [str(p) for p in v] for k, v in paths.items()}
     import ants
 
@@ -75,11 +82,16 @@ def syn_cache(fastsurfer_dir, syn_type=SYN_TYPE):
     t1b = t1 * ants.threshold_image(ants.image_read(str(mri / "mask.mgz")), 0.5, 1e9)
     reg = ants.registration(fixed=ants.image_read(str(mni_brain_path())), moving=t1b, type_of_transform=syn_type)
     paths["fwd"][0].parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(reg["fwdtransforms"][0], paths["fwd"][0])       # 1Warp
-    shutil.copy(reg["fwdtransforms"][1], paths["fwd"][1])       # 0GenericAffine
+    partial = paths["fwd"][0].with_name("partial_" + paths["fwd"][0].name)
     from .features import _drop_transforms
-    _drop_transforms(reg)
-    crop_warp(paths["fwd"][0])
+    try:
+        shutil.copy(reg["fwdtransforms"][0], partial)            # 1Warp, cropped before it counts as cached
+        crop_warp(partial)
+        shutil.copy(reg["fwdtransforms"][1], paths["fwd"][1])    # 0GenericAffine
+        partial.replace(paths["fwd"][0])                         # last: an interrupted run leaves no cache
+    finally:
+        _drop_transforms(reg)
+        partial.unlink(missing_ok=True)
     return {k: [str(p) for p in v] for k, v in paths.items()}
 
 
@@ -346,6 +358,60 @@ def template_features(nm_mni, masks, prefix="nmt_"):
     return out
 
 
+def published_masks(label_img=None):
+    """Biondetti et al. 2020 nigral territories and background on the MNI box: {"<territory>_<side>", "sn_<side>",
+    "bnd"}, territories associative / limbic / sensorimotor, side l = MNI x < 0. ``label_img`` defaults to
+    ``atlases.biondetti_mni2009c`` on the box grid (the registration runs once, ~15 min)."""
+    from nilearn.image import resample_to_img
+
+    from .atlases import BIONDETTI_BND, BIONDETTI_TERRITORIES, biondetti_mni2009c
+
+    if label_img is None:            # computed on the box grid itself: no nearest-neighbour step from a 1 mm grid
+        label_img = nib.load(biondetti_mni2009c(reference=box_path()))
+    lab = resample_to_img(label_img, nib.load(box_path()), interpolation="nearest", force_resample=True, copy_header=True)
+    lab = np.asanyarray(lab.dataobj)
+    x = np.broadcast_to(np.arange(BOX_SHAPE[0])[:, None, None] * BOX_MM + BOX_ORIGIN_RAS[0], BOX_SHAPE)
+    masks = {"bnd": lab == BIONDETTI_BND}
+    for side, half in (("l", x < 0), ("r", x > 0)):
+        for k, name in BIONDETTI_TERRITORIES.items():
+            masks[f"{name}_{side}"] = (lab == k) & half
+        masks[f"sn_{side}"] = np.isin(lab, list(BIONDETTI_TERRITORIES)) & half
+    return masks
+
+
+def published_features(nm_mni, masks, prefix="nmb_", min_cov=0.9):
+    """Contrast of each nigral territory against the background ROI, Biondetti's SNR / 100 - 1:
+    mean(region) / mean(BND) - 1, per side, bilateral mean (both sides required) and lower side. A region, or any
+    connected part of the background, with less than ``min_cov`` of its voxels inside the slab is missing. The posterolateral
+    (sensorimotor) territory carries the earliest PD loss (Biondetti 2020), so ``nmb_sensorimotor_mean_cnr`` leads."""
+    from scipy import ndimage
+
+    data = nm_mni > 0
+    cov = lambda m: float((m & data).sum() / max(m.sum(), 1))
+    parts, n = ndimage.label(masks["bnd"])          # Biondetti's BND has three parts; each must lie in the slab (study rule)
+    out = {f"{prefix}bnd_cov": cov(masks["bnd"]), f"{prefix}bnd_min_part_cov": min((cov(parts == i) for i in range(1, n + 1)), default=0.0)}
+    ref = float(nm_mni[masks["bnd"] & data].mean()) if out[f"{prefix}bnd_min_part_cov"] >= min_cov else np.nan
+    out[f"{prefix}bnd_mean"] = ref
+    for region in ("sn", "associative", "limbic", "sensorimotor"):
+        for side in ("l", "r"):
+            m = masks[f"{region}_{side}"]
+            out[f"{prefix}{region}_cov_{side}"] = cov(m)
+            ok = out[f"{prefix}{region}_cov_{side}"] >= min_cov and np.isfinite(ref)
+            out[f"{prefix}{region}_{side}_cnr"] = float(nm_mni[m & data].mean() / ref - 1) if ok else np.nan
+        l, r = out[f"{prefix}{region}_l_cnr"], out[f"{prefix}{region}_r_cnr"]
+        out[f"{prefix}{region}_mean_cnr"] = (l + r) / 2
+        out[f"{prefix}{region}_min_cnr"] = min(l, r) if np.isfinite(l + r) else np.nan
+    return out
+
+
+def _published_job(args):
+    work, patno, masks = args
+    f = Path(work) / str(patno) / "nm_mni.nii.gz"
+    if not f.exists():
+        return {"patno": patno, "error": "no nm_mni"}
+    return {"patno": patno, "error": "", **published_features(np.asanyarray(nib.load(f).dataobj).astype(np.float32), masks)}
+
+
 def _features_job(args):
     work, patno, masks = args
     f = Path(work) / str(patno) / "nm_mni.nii.gz"
@@ -370,7 +436,7 @@ def _subjects(work, sessions, fastsurfer_dir, patnos=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["syn", "normalize", "template", "features"])
+    ap.add_argument("stage", choices=["syn", "normalize", "template", "features", "published"])
     ap.add_argument("--sessions", required=True)
     ap.add_argument("--fastsurfer-dir", required=True)
     ap.add_argument("--work-dir", required=True, help="the pie.imaging.nm work dir (nm_features.csv + per-subject slabs)")
@@ -387,7 +453,7 @@ def main(argv=None):
         subjects = subjects[:a.limit]
     if a.stage == "syn":
         dirs = sorted({str(fs) for _, fs in subjects})
-        todo = [d for d in dirs if not all(p.exists() for p in syn_paths(d)["fwd"])]
+        todo = [d for d in dirs if not syn_cached(d)]
         print(f"{len(todo)} SyN registrations to run ({len(dirs) - len(todo)} cached)", flush=True)
         with ProcessPoolExecutor(max_workers=a.workers) as ex:
             for i, r in enumerate(ex.map(_syn_job, todo), start=1):
@@ -419,6 +485,13 @@ def main(argv=None):
         out = pd.DataFrame(rows)
         out.to_csv(work / "nm_template_features.csv", index=False)
         print(f"{int((out['error'] == '').sum())}/{len(out)} subjects -> {work / 'nm_template_features.csv'}", flush=True)
+        return
+    if a.stage == "published":
+        masks = published_masks()
+        with ProcessPoolExecutor(max_workers=a.workers) as ex:
+            out = pd.DataFrame(ex.map(_published_job, [(str(work), p, masks) for p, _ in subjects], chunksize=4))
+        out.to_csv(work / "nm_published_features.csv", index=False)
+        print(f"{int((out['error'] == '').sum())}/{len(out)} subjects -> {work / 'nm_published_features.csv'}", flush=True)
         return
     raise SystemExit(f"stage {a.stage} not implemented yet")
 

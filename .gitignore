@@ -30,6 +30,17 @@ CLAUDE.md
 CLAUDE.*.md
 GEMINI.md
 GEMINI.*.md
+# Agent workflow output: plans, specs, handoffs, ledgers (e.g. superpowers skills write docs/superpowers/)
+.superpowers/
+superpowers/
+.specstory/
+.kiro/
+.serena/
+.taskmaster/
+.claude-flow/
+.junie/
+.amazonq/
+.github/chatmodes/
 
 # Local design briefs and internal notes (not public project documentation).
 .impeccable.md

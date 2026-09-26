@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import pie.imaging
-from pie.imaging import (cnn, datscan, dwi, dwi_refine, embed, fba, flair, labels, manifest, nm, nm_template, qc,
+from pie.imaging import (cnn, datscan, dwi, dwi_refine, embed, fba, features, flair, labels, manifest, nm, nm_template, qc,
                          run)
 
 
@@ -393,8 +393,9 @@ def test_assembly_quarantines_single_shell_free_water_and_masked_dates(tmp_path)
     pd.DataFrame({"PATNO": [1, 2], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2022-01-01", "9999-01-01"],
                   "vol_Left_Putamen": [1., 1.]}).to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
     (tmp_path / "dwi").mkdir()
-    pd.DataFrame({"patno": [1, 2], "motion_mm_max": [1., 1.], "n_sn_l": [4, 4], "n_sn_r": [4, 4], "fa_wm_median": [.4, .4],
-                  "manufacturer": ["Siemens"] * 2, "shells": ["1000", "700 1000 2000"], "fw_method": ["singleshell_prior", "multishell_nls"],
+    pd.DataFrame({"patno": [1, 2], "motion_mm_max": [1., 1.], "motion_mm_mean": [.5, .5], "sn_brain_mask_fraction": [1., 1.], "sn_physical_fraction": [.95, .95], "sn_posterior_l_fa": [.5, .5], "sn_posterior_r_fa": [.5, .5], "n_sn_l": [15, 15], "n_sn_r": [15, 15],
+                  "fa_wm_median": [.4, .4], "manufacturer": ["Siemens"] * 2, "shells": ["1000", "700 1000 2000"],
+                  "fw_method": ["singleshell_prior", "multishell_nls"],
                   "acquisition_date": ["2022-01-03"] * 2, "sn_l_fw": [.2, .3], "sn_l_fat": [.5, .6], "sn_l_fa": [.4, .4],
                   "sn_l_ad": [1e-3, 1e-3], "sn_l_mk": [np.nan, .8]}).to_csv(tmp_path / "dwi" / "dwi_features.csv", index=False)
     f = manifest.assemble_features(tmp_path).set_index("PATNO")
@@ -462,3 +463,620 @@ def test_ants_registrations_leave_no_transform_files_behind(tmp_path, monkeypatc
     _, tx = dwi.map_labels_to_subject(nib.Nifti1Image(np.roll(base, 2, axis=0), np.eye(4)), img,
                                       nib.Nifti1Image((base > 0.5).astype(np.uint8), np.eye(4)), syn=False)
     assert not list(tmp_path.iterdir()) and "fwdtransforms" not in tx
+
+
+# ------------------------------------------------------------------------------------------ weak-point plan (26 Sep 2026)
+def test_freesurfer_env_names_missing_settings_and_builds_path(tmp_path, monkeypatch):
+    from pie.imaging import freesurfer
+    monkeypatch.setattr(freesurfer, "HOME", None)
+    with pytest.raises(RuntimeError, match="PIE_FREESURFER_HOME"):
+        freesurfer.fs_env(home=None, license=str(tmp_path / "license.txt"))
+    home = tmp_path / "fs"
+    (home / "bin").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="PIE_FS_LICENSE"):
+        freesurfer.fs_env(home=str(home), license=str(tmp_path / "absent.txt"))
+    (tmp_path / "license.txt").write_text("x\n")
+    env = freesurfer.fs_env(home=str(home), license=str(tmp_path / "license.txt"))
+    assert env["FREESURFER_HOME"] == str(home) and env["FS_LICENSE"] == str(tmp_path / "license.txt")
+    assert env["PATH"].split(os.pathsep)[0] == str(home / "bin") and env["SUBJECTS_DIR"]
+
+
+def test_fs7_tables_attach_only_to_the_same_visit(tmp_path):
+    from pie.imaging import features
+    im = tmp_path / "PPMI/Imaging"
+    im.mkdir(parents=True)
+    pd.DataFrame({"PATNO": [1, 2], "EVENT_ID": "BL", "lh_cuneus": [2.1, 2.2]}).to_csv(im / "FS7_APARC_CTH_01Jan2020.csv", index=False)
+    pd.DataFrame({"PATNO": [1, 2], "EVENT_ID": "BL", "lh_cuneus": [900., 950.]}).to_csv(im / "FS7_APARC_SA_01Jan2020.csv", index=False)
+    pd.DataFrame({"PATNO": [1, 2], "EVENT_ID": "BL", "EstimatedTotalIntraCranialVol": [1.5e6, 1.6e6]}).to_csv(im / "FS7_ASEG_VOL_01Jan2020.csv", index=False)
+    pd.DataFrame({"PATNO": [1, 2], "EVENT_ID": "BL", "cnr": [3.0, 3.1]}).to_csv(im / "MRIQC_01Jan2020.csv", index=False)
+    t = features.fs7_tables(tmp_path / "PPMI").set_index("PATNO")
+    assert t.loc[1, "fs7_cth_lh_cuneus"] == 2.1 and t.loc[1, "fs7_sa_lh_cuneus"] == 900 and t.loc[2, "mriqc_cnr"] == 3.1
+    pd.DataFrame({"PATNO": [1, 2], "EVENT_ID": ["BL", "V04"], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2020-01-01"] * 2,
+                  "vol_Left_Putamen": [1., 1.]}).to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
+    f = manifest.assemble_features(tmp_path, ppmi_dir=tmp_path / "PPMI").set_index("PATNO")
+    assert f.loc[1, "fs7_EstimatedTotalIntraCranialVol"] == 1.5e6 and np.isnan(f.loc[2, "fs7_EstimatedTotalIntraCranialVol"])
+    assert f.loc[1, "fs7_cth_lh_cuneus"] == 2.1 and np.isnan(f.loc[2, "mriqc_cnr"])
+
+
+def test_etiv_follows_freesurfer_atlas_scaling_and_backfill_resumes(tmp_path, monkeypatch):
+    from pie.imaging import fastsurfer
+    xfm = tmp_path / "talairach.xfm"
+    xfm.write_text("MNI Transform File\nTransform_Type = Linear;\nLinear_Transform =\n"
+                   "1.1 0 0 1.0\n0 1.1 0 2.0\n0 0 1.1 3.0;\n")
+    assert abs(fastsurfer.etiv_from_xfm(xfm) - 1948106 / 1.1 ** 3) < 1e-6
+    calls, afd_ok = [], {"S1": True, "S2": False}
+
+    def fake_run(cmd, log, cwd, env=None, timeout=3600):
+        cmd = [str(c) for c in cmd]
+        calls.append((cmd, Path(cwd)))
+        sid = Path(cwd).parent.name
+        if cmd[0].endswith("talairach-reg.sh"):
+            assert Path(cmd[1]).exists()                            # talairach-reg.sh refuses a log path that does not exist
+            (Path(cwd) / "transforms").mkdir(exist_ok=True)
+            shutil.copy(xfm, Path(cwd) / "transforms" / "talairach.xfm")
+            (Path(cwd) / "nu.mgz").write_bytes(b"x" * 100)
+        elif cmd[0] == "talairach_afd" and not afd_ok[sid]:
+            raise RuntimeError("talairach_afd exited 1")
+
+    monkeypatch.setattr(fastsurfer.freesurfer, "run", fake_run)
+    for sid in ("S1", "S2"):
+        mri = tmp_path / "fs" / sid / "mri"
+        mri.mkdir(parents=True)
+        for f in ("orig.mgz", "orig_nu.mgz", "aparc.DKTatlas+aseg.deep.mgz"):
+            (mri / f).touch()
+    v = fastsurfer.talairach_etiv(tmp_path / "fs", "S1", env={})
+    mri = (tmp_path / "fs" / "S1" / "mri").resolve()
+    assert abs(v - 1948106 / 1.331) < 1e-3 and calls[0][0][0].endswith("talairach-reg.sh") and calls[0][1] == mri
+    assert calls[1][0][:3] == ["talairach_afd", "-T", "0.005"] and not (mri / "nu.mgz").exists()   # 7 MB each, unused
+    fastsurfer.talairach_etiv(tmp_path / "fs", "S1", env={})
+    assert len(calls) == 2                                                  # resumes: registration and check are reused
+    assert np.isnan(fastsurfer.talairach_etiv(tmp_path / "fs", "S2", env={}))      # failed registration check: no eTIV
+    sessions = pd.DataFrame({"patno": [1, 2], "image_id": ["S1", "S2"], "session_date": ["2000-01-01"] * 2, "EVENT_ID": ["BL"] * 2,
+                             "protocol_phase": [1, 1]})
+    for sid in ("S1", "S2"):
+        (tmp_path / "fs" / sid / "stats").mkdir()
+        (tmp_path / "fs" / sid / "stats" / "aseg+DKT.stats").write_text("# Measure Mask, MaskVol, Mask Volume, 1500000.0, mm^3\n")
+    t = features.build_idp_table(sessions, tmp_path / "fs").set_index("IMAGEID")
+    assert abs(t.loc["S1", "eTIV"] - 1948106 / 1.331) < 1e-3 and np.isnan(t.loc["S2", "eTIV"])
+    (tmp_path / "fs" / "S1" / "mri" / "transforms" / "talairach.xfm").write_text("truncated")
+    assert np.isnan(features.build_idp_table(sessions, tmp_path / "fs").set_index("IMAGEID").loc["S1", "eTIV"])   # never aborts
+
+
+def test_run_etiv_backfills_finished_subjects_and_rebuilds_the_table(tmp_path, monkeypatch):
+    work = tmp_path / "derived"
+    for sid in ("S1", "S2"):
+        (work / "fastsurfer" / sid / "stats").mkdir(parents=True)
+        (work / "fastsurfer" / sid / "stats" / "aseg+DKT.stats").write_text("# Measure Mask, MaskVol, Mask Volume, 1500000.0, mm^3\n")
+    pd.DataFrame({"patno": [1, 2], "image_id": ["S1", "S2"], "session_date": ["2000-01-01"] * 2, "EVENT_ID": ["BL"] * 2,
+                  "protocol_phase": [1, 1]}).to_csv(work / "sessions.csv", index=False)
+
+    def fake_etiv(fs_dir, sid, **kw):
+        if sid == "S2":
+            raise RuntimeError("talairach_avi failed")
+        t = Path(fs_dir) / sid / "mri" / "transforms"
+        t.mkdir(parents=True, exist_ok=True)
+        (t / "talairach.xfm").write_text("Linear_Transform =\n1 0 0 0\n0 1 0 0\n0 0 1 0;\n")
+        (t / "talairach.afd").write_text("pass\n")
+        return 1948106.0
+
+    monkeypatch.setattr(run, "talairach_etiv", fake_etiv)
+    monkeypatch.setattr(run, "_freesurfer_ready", lambda tcsh=False: None)
+    run.main(["--zips", "unused.zip", "--work-dir", str(work), "--etiv", "--workers", "1"])
+    t = pd.read_csv(work / "fastsurfer_idps.csv").set_index("IMAGEID")
+    assert t.loc["S1", "eTIV"] == 1948106.0 and np.isnan(t.loc["S2", "eTIV"])     # a failure is missing, not fatal
+
+
+def test_tiv_prefers_pie_etiv_then_same_visit_fs7(tmp_path):
+    pd.DataFrame({"PATNO": [1, 2, 3], "EVENT_ID": ["BL", "BL", "V04"], "IMAGEID": ["I1", "I2", "I3"], "SCAN_DATE": ["2020-01-01"] * 3,
+                  "vol_Left_Putamen": [1.] * 3, "eTIV": [1.4e6, np.nan, np.nan]}).to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
+    im = tmp_path / "PPMI/Imaging"
+    im.mkdir(parents=True)
+    pd.DataFrame({"PATNO": [1, 2, 3], "EVENT_ID": "BL", "EstimatedTotalIntraCranialVol": [1.5e6, 1.6e6, 1.7e6]})\
+        .to_csv(im / "FS7_ASEG_VOL_01Jan2020.csv", index=False)
+    f = manifest.assemble_features(tmp_path, ppmi_dir=tmp_path / "PPMI").set_index("PATNO")
+    assert (f.loc[1, "tiv_mm3"], f.loc[1, "tiv_source"]) == (1.4e6, "pie_talairach")
+    assert (f.loc[2, "tiv_mm3"], f.loc[2, "tiv_source"]) == (1.6e6, "ppmi_fs7")
+    assert np.isnan(f.loc[3, "tiv_mm3"]) and f.loc[3, "tiv_source"] == "none"
+    assert manifest.assemble_features(tmp_path).set_index("PATNO").loc[2, "tiv_source"] == "none"   # no PPMI dir: PIE only
+
+
+def test_surface_stream_runs_the_cc_step_first_and_resumes_on_the_done_marker(tmp_path, monkeypatch):
+    from pie.imaging import fastsurfer
+    calls = []
+
+    def fake_run(cmd, log, cwd, env=None, timeout=3600):
+        cmd = [str(c) for c in cmd]
+        calls.append((cmd, Path(cwd), env))
+        if cmd[1].endswith("paint_cc_into_pred.py"):
+            (tmp_path / "S1" / "mri" / "aseg.auto.mgz").touch()
+        if cmd[0].endswith("recon-surf.sh"):
+            assert (tmp_path / "S1" / "mri" / "aseg.auto.mgz").exists()               # recon-surf's prerequisite
+            assert not (tmp_path / "S1" / "mri" / "wm.mgz").exists()                  # a killed run's leftovers are gone
+            (tmp_path / "S1" / "scripts" / "recon-surf.done").touch()
+
+    monkeypatch.setattr(fastsurfer.freesurfer, "run", fake_run)
+    (tmp_path / "S1" / "mri").mkdir(parents=True)
+    (tmp_path / "S1" / "mri" / "wm.mgz").touch()                                     # left by a killed recon-surf
+    (tmp_path / "S1" / "stats").mkdir()
+    (tmp_path / "S1" / "stats" / "lh.aparc.stats").touch()                           # written mid-run: not completion
+    fastsurfer.surfaces(tmp_path, "S1", env={"FS_LICENSE": "/lic.txt"})
+    fastsurfer.surfaces(tmp_path, "S1", env={"FS_LICENSE": "/lic.txt"})
+    names = [Path(c[0][1] if c[0][0].endswith("python") else c[0][0]).name for c in calls]
+    assert names == ["fastsurfer_cc.py", "paint_cc_into_pred.py", "recon-surf.sh"]
+    surf, cwd, env = calls[2]
+    assert {"--fsaparc", "--parallel", "/lic.txt", "--mask_name"} <= set(surf) and "--ignore_fs_version" not in surf
+    assert cwd.name == "recon_surf" and env["PYTHONPATH"].endswith("FastSurfer")       # recon-surf imports FastSurferCNN
+    assert calls[0][2]["PYTHONPATH"] == env["PYTHONPATH"]
+
+
+def test_assembly_reads_nm_template_features_with_their_own_qc(tmp_path):
+    _idps(tmp_path)
+    (tmp_path / "nm").mkdir()
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "nmt_sn_mean_cnr": [.2, .3], "nmt_sn_cov_l": [1., .5], "nmt_sn_cov_r": [1., 1.],
+                  "nmt_crus_cv_l": [.1, .1], "nmt_crus_cv_r": [.1, .1], "nmt_crus_mode_l": [100., 100.]})\
+        .to_csv(tmp_path / "nm" / "nm_template_features.csv", index=False)
+    f = manifest.assemble_features(tmp_path).set_index("PATNO")
+    assert f.loc[1, "nmt_sn_mean_cnr"] == .2 and np.isnan(f.loc[2, "nmt_sn_mean_cnr"]) and not f.loc[2, "nmt_qc_pass"]
+    assert "nmt_crus_mode_l" not in f and "nmt_sn_mean_cnr" in manifest.feature_blocks(f.columns)["nm"]
+
+
+def test_ppmi_manual_dti_rois_become_one_row_per_scan(tmp_path):
+    im = tmp_path / "PPMI/Imaging"
+    im.mkdir(parents=True)
+    rows = []
+    for m, v in (("FA", .3), ("E1", 1.2e-3), ("E2", .7e-3), ("E3", .5e-3)):
+        rows.append({"PATNO": 1, "PAG_NAME": "DTIROI", "INFODT": "01/2011", "Measure": m, "Tissue": "SN",
+                     **{f"ROI{i}": v + (0.01 if i in (3, 6) and m == "FA" else 0) for i in range(1, 7)},
+                     "REF1": .6, "REF2": .62, "RUNDATE": "2015-01-01"})
+    pd.DataFrame(rows).to_csv(im / "DTI_Regions_of_Interest_01Jan2020.csv", index=False)
+    t = labels.ppmi_dti_roi_table(tmp_path / "PPMI").iloc[0]
+    assert abs(t.sn_fa - (0.3 + 0.02 / 6)) < 1e-9 and abs(t.sn_caudal_fa - 0.31) < 1e-9 and abs(t.sn_md - 0.8e-3) < 1e-12
+    assert abs(t.peduncle_fa - 0.61) < 1e-9 and t.DTI_DATE == pd.Timestamp("2011-01-01") and t.PATNO == 1
+
+
+def test_pe_restricted_sdc_recovers_a_phase_encoding_shift():
+    from scipy.ndimage import map_coordinates
+    shape = (40, 48, 40)                                                   # (z, y, x) arrays
+    zz, yy, xx = np.indices(shape)
+    t1 = np.zeros(shape, np.float32)
+    t1[8:32, 8:40, 8:32] = 1.0
+    t1[16:24, 18:30, 14:26] = 2.0                                          # a "nucleus"
+    lab = np.zeros(shape, np.int16)
+    lab[16:24, 18:30, 14:26] = 7
+    shift = 3.0 * np.exp(-((xx - 20) ** 2 + (zz - 20) ** 2) / 200.0)       # voxels, along y only
+    b0 = map_coordinates(np.where(t1 > 0, 3.0 - t1, 0.0), [zz, yy - shift, xx], order=1).astype(np.float32)   # inverted contrast
+    to_img = lambda a: nib.Nifti1Image(np.ascontiguousarray(np.transpose(a, (2, 1, 0))), np.eye(4))           # stored (x, y, z)
+    fn, info = dwi.register_b0_to_t1_sdc(to_img(b0), to_img(t1), to_img((t1 > 0).astype(np.float32)), pe_axis="j")
+    try:
+        got = fn(to_img(lab)) == 7
+        truth = map_coordinates((lab == 7).astype(float), [zz, yy - shift, xx], order=0) > 0.5
+        dice = 2 * (got & truth).sum() / (got.sum() + truth.sum())
+        assert dice > 0.8 and 0.5 < info["sdc_max_displacement_mm"] < 8 and info["sdc_offaxis_max_mm"] < 0.1
+    finally:
+        shutil.rmtree(info["transform_dir"])
+
+
+def test_eddy_correct_consumes_eddy_outputs_once_and_cleans_up(tmp_path, monkeypatch):
+    fsl = tmp_path / "fsl" / "bin"
+    fsl.mkdir(parents=True)
+    (fsl / "topup").write_text("#!/bin/sh\nfor a in \"$@\"; do case $a in --out=*) o=${a#--out=};; esac; done\n"
+                               "cp b0_pair.nii.gz ${o}_fieldcoef.nii.gz; printf '0 0 0 0 0 0\\n0 0 0 0 0 0\\n' > ${o}_movpar.txt\n")
+    (fsl / "eddy_cuda").write_text(
+        "#!/bin/sh\ncp raw.nii.gz eddy.nii.gz\n"
+        f"{sys.executable} -c \"import numpy as n; v=n.loadtxt('bvecs'); v[:, 2:] = n.roll(v[:, 2:], 1, axis=0); n.savetxt('eddy.eddy_rotated_bvecs', v)\"\n"
+        "printf 'hdr\\n0 1\\n0 0\\n0 0\\n0 0\\n' > eddy.eddy_outlier_map\nprintf '0 0.5\\n0.4 0.7\\n0.2 0.2\\n0.1 0.1\\n' > eddy.eddy_movement_rms\n")
+    for f in fsl.iterdir():
+        f.chmod(0o755)
+    monkeypatch.setattr(dwi, "FSLDIR", str(tmp_path / "fsl"))
+    g = np.eye(3)[:, [0, 1]]
+    ds = {"data": np.ones((4, 4, 4, 4), np.float32), "affine": np.eye(4), "bvals": np.array([0., 0., 1000., 1000.]),
+          "bvecs": np.c_[np.zeros((3, 2)), g], "meta": {"PhaseEncodingDirection": "j-", "TotalReadoutTime": 0.05},
+          "rev_b0": np.ones((4, 4, 4, 1), np.float32), "rev_meta": {"PhaseEncodingDirection": "j", "TotalReadoutTime": 0.05}}
+    out = dwi.eddy_correct(ds, tmp_path / "work", cuda=True)
+    assert out["eddy"] and out["topup"] and out["bvecs_rotated"] and abs(out["eddy_outlier_fraction"] - 1 / 8) < 1e-9
+    assert np.allclose(out["bvecs"][:, 2:], np.roll(g, 1, axis=0)) and out["data"].shape == ds["data"].shape
+    assert out["motion_mm_max"] == 0.4 and not (tmp_path / "work" / "eddy").exists()
+    with pytest.raises(ValueError, match="PhaseEncodingDirection"):
+        dwi.eddy_correct({**ds, "rev_meta": {}}, tmp_path / "work", cuda=True)       # unverified reverse PE: no eddy
+
+
+def test_eddy_path_replaces_rigid_motion_only_when_a_reverse_b0_exists(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dwi, "eddy_correct", lambda ds, work, cuda=True: (calls.append("eddy"), dict(ds, eddy=True, topup=True, bvecs_rotated=True,
+                        motion_mm_max=0.3, motion_mm_mean=0.1, eddy_outlier_fraction=0.01))[1])
+    monkeypatch.setattr(dwi, "preprocess", lambda ds, sampling_seed=0: (calls.append("rigid"), dict(ds, mask=np.ones((4, 4, 4), bool),
+                        b0=np.ones((4, 4, 4)), motion_mm_max=1., motion_mm_mean=.5, rotation_deg_max=1., bvecs_rotated=True))[1])
+    base = {"data": np.ones((4, 4, 4, 3), np.float32), "affine": np.eye(4), "bvals": np.array([0., 1000., 1000.]), "meta": {}}
+    out = dwi.correct(dict(base, rev_b0=np.ones((4, 4, 4, 1))), "w", eddy=True)
+    assert calls == ["eddy"] and out["eddy"] and out["mask"].shape == (4, 4, 4) and out["b0"].shape == (4, 4, 4)
+    assert out["motion_metric"] == "eddy_rms_mm"                             # eddy's RMS displacement, not a translation norm
+    calls.clear()
+    out = dwi.correct(dict(base, rev_b0=None), "w", eddy=True)
+    assert calls == ["rigid"] and not out.get("eddy", False)                 # no reverse b0: the rigid path, recorded as such
+    assert out["motion_metric"] == "rigid_translation_mm"
+
+
+def test_dwi_batch_separates_eddy_from_rigid_correction(tmp_path):
+    pd.DataFrame({"PATNO": [1, 2], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2022-01-01"] * 2, "vol_Left_Putamen": [1., 1.]})\
+        .to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
+    (tmp_path / "dwi").mkdir()
+    pd.DataFrame({"patno": [1, 2], "motion_mm_max": [1., 1.], "n_sn_l": [4, 4], "n_sn_r": [4, 4], "fa_wm_median": [.4, .4],
+                  "manufacturer": ["Siemens"] * 2, "shells": ["700 1000 2000"] * 2, "fw_method": ["multishell_nls"] * 2,
+                  "eddy": [True, False], "sn_l_fa": [.4, .4]}).to_csv(tmp_path / "dwi" / "dwi_features.csv", index=False)
+    m = manifest.build_manifest(tmp_path).set_index("PATNO")
+    assert m["dwi_batch"].nunique() == 2 and m.loc[1, "dwi_batch"].endswith("_eddy") and bool(m.loc[1, "dwi_eddy"])
+
+
+def test_long_timepoints_need_two_real_dated_finished_sessions(tmp_path):
+    for sid in ("A", "B", "C", "D"):
+        (tmp_path / sid / "stats").mkdir(parents=True)
+        (tmp_path / sid / "stats" / "aseg+DKT.stats").touch()
+    sessions = pd.DataFrame({"patno": [1, 1, 1, 2], "image_id": ["B", "A", "C", "D"],
+                             "session_date": ["2012-01-01", "2010-01-01", "9999-01-01", "2010-01-01"]})
+    assert run.long_timepoints(sessions, tmp_path) == {1: ["A", "B"]}
+
+
+def test_longitudinal_stream_command_and_resume(tmp_path, monkeypatch):
+    from pie.imaging import fastsurfer
+    calls = []
+
+    def fake_run(cmd, log, cwd, env=None, timeout=3600):
+        calls.append([str(c) for c in cmd])
+        for tp in ("A", "B"):
+            (tmp_path / "long" / tp / "scripts").mkdir(parents=True, exist_ok=True)
+            (tmp_path / "long" / tp / "scripts" / "recon-surf.done").touch()
+
+    monkeypatch.setattr(fastsurfer.freesurfer, "run", fake_run)
+    (tmp_path / "long" / "1" / "mri").mkdir(parents=True)                  # partial template from a killed run
+    (tmp_path / "long" / "A" / "stats").mkdir(parents=True)
+    (tmp_path / "long" / "A" / "stats" / "aseg.stats").touch()              # written early: not a completion marker
+    args = ("1", ["/n/A_T1w.nii.gz", "/n/B_T1w.nii.gz"], ["A", "B"], tmp_path / "long")
+    fastsurfer.longitudinal(*args, env={"FS_LICENSE": "/lic.txt"}, device="cpu")
+    assert not (tmp_path / "long" / "A" / "stats" / "aseg.stats").exists()       # partial outputs cleared before the retry
+    fastsurfer.longitudinal(*args, env={"FS_LICENSE": "/lic.txt"}, device="cpu")
+    c = calls[0]
+    assert len(calls) == 1 and c[0].endswith("long_fastsurfer.sh") and c[1:3] == ["--tid", "1"]
+    assert c[c.index("--t1s") + 1:c.index("--t1s") + 3] == ["/n/A_T1w.nii.gz", "/n/B_T1w.nii.gz"]
+    assert c[c.index("--tpids") + 1:c.index("--tpids") + 3] == ["A", "B"] and c[c.index("--device") + 1] == "cpu"
+    assert "--fs_license" not in c        # long_fastsurfer.sh lowercases pass-through values; FS_LICENSE comes from the environment
+
+
+def test_run_long_passes_date_ordered_niftis_and_continues_after_a_failure(tmp_path, monkeypatch):
+    work = tmp_path / "derived"
+    for sid in ("A", "B", "C", "D"):
+        (work / "fastsurfer" / sid / "stats").mkdir(parents=True)
+        (work / "fastsurfer" / sid / "stats" / "aseg+DKT.stats").touch()
+    pd.DataFrame({"patno": [1, 1, 2, 2], "image_id": ["B", "A", "C", "D"], "session_date": ["2012-01-01", "2010-01-01", "2010-01-01", "2011-01-01"],
+                  "EVENT_ID": ["V04", "BL", "BL", "V04"], "protocol_phase": [1] * 4}).to_csv(work / "sessions.csv", index=False)
+    seen = []
+
+    def fake_long(tid, t1s, tpids, sd, device="cuda", threads=4):
+        seen.append((tid, [Path(t).name for t in t1s], tpids, Path(sd).name))
+        if tid == "1":
+            raise RuntimeError("recon-surf failed")
+
+    monkeypatch.setattr(run, "longitudinal", fake_long)
+    monkeypatch.setattr(run, "_freesurfer_ready", lambda tcsh=False: None)
+    run.main(["--zips", "unused.zip", "--work-dir", str(work), "--long", "--device", "cpu"])
+    assert seen == [("1", ["A_T1w.nii.gz", "B_T1w.nii.gz"], ["A", "B"], "fastsurfer_long"),
+                    ("2", ["C_T1w.nii.gz", "D_T1w.nii.gz"], ["C", "D"], "fastsurfer_long")]
+
+
+def _flair_phantom():
+    """T1 head (2 mm) and a same-session 2D FLAIR: FLAIR contrast, 5 mm slices covering only the upper head, and an
+    8 degree / 7 mm head movement between the scans. Returns (flair_sitk, t1_img, mask_img, true FLAIR->T1 transform)."""
+    import SimpleITK as sitk
+    from pie.imaging.dwi import _sitk_from_nib
+    shape = (80, 96, 90)
+    x, y, z = np.meshgrid(*[(np.arange(n) - n / 2) * 2.0 for n in shape], indexing="ij")
+    r = np.sqrt((x / 70) ** 2 + (y / 88) ** 2 + (z / 80) ** 2)
+    wm = np.sqrt((x / 45) ** 2 + (y / 60) ** 2 + ((z - 10) / 45) ** 2) < 1
+    vent = np.sqrt((x / 8) ** 2 + (y / 25) ** 2 + ((z - 10) / 12) ** 2) < 1
+    brain, scalp = r < 0.85, (r > 0.93) & (r < 1.0)
+    eyes = np.sqrt(((np.abs(x) - 30) / 12) ** 2 + ((y - 70) / 12) ** 2 + ((z + 25) / 12) ** 2) < 1
+    t1 = np.where(scalp | eyes, 0.9, 0.0) + np.where(brain, 0.5, 0) + np.where(wm, 0.3, 0) - np.where(vent, 0.6, 0)
+    flair = np.where(scalp, 0.8, 0.0) + np.where(eyes, 0.2, 0) + np.where(brain, 0.6, 0) - np.where(wm, 0.15, 0) - np.where(vent, 0.5, 0)
+    from scipy import ndimage
+    texture = ndimage.gaussian_filter(np.random.default_rng(0).normal(size=shape), 2.0)       # smooth tissue texture
+    texture /= np.abs(texture).max()
+    t1 = ndimage.gaussian_filter(t1 * (1 + 0.3 * texture), 1.0)                            # and partial-volume blur
+    flair = ndimage.gaussian_filter(flair * (1 + 0.3 * texture), 1.0)
+    aff = np.diag([2.0, 2.0, 2.0, 1.0])
+    aff[:3, 3] = -np.array(shape) + 1.0
+    t1_img, mask_img = nib.Nifti1Image(t1.astype(np.float32), aff), nib.Nifti1Image(brain.astype(np.uint8), aff)
+    true = sitk.Euler3DTransform((0.0, 0.0, 0.0), np.deg2rad(8), 0.0, 0.0, (0.0, 4.0, 6.0))      # FLAIR point -> T1 point
+    grid = sitk.Image([80, 96, 18], sitk.sitkFloat32)
+    grid.SetSpacing((2.0, 2.0, 5.0))
+    grid.SetOrigin((79.0, 95.0, -5.0))                         # LPS; covers z = -5 .. +80 mm: the upper head only
+    grid.SetDirection((-1, 0, 0, 0, -1, 0, 0, 0, 1))
+    flair_sitk = sitk.Resample(_sitk_from_nib(nib.Nifti1Image(flair.astype(np.float32), aff)), grid, true, sitk.sitkLinear, 0.0)
+    return flair_sitk, t1_img, mask_img, true
+
+
+def test_flair_registration_recovers_partial_coverage_2d_flair():
+    import SimpleITK as sitk
+    sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)       # as flair.process_subject runs it; accuracy varies with threads
+    flair_sitk, t1_img, mask_img, true = _flair_phantom()
+    tx, metric = flair.register_flair_to_t1(flair_sitk, t1_img, mask_img)
+    inv = true.GetInverse()
+    pts = [(x, y, z) for x in (-40.0, 0.0, 40.0) for y in (-50.0, 0.0, 50.0) for z in (0.0, 30.0, 60.0)]
+    err = [np.linalg.norm(np.subtract(tx.TransformPoint(p), inv.TransformPoint(p))) for p in pts]
+    assert np.median(err) < 4.0 and max(err) < 8.0 and metric < 0          # old code: 18 mm; new 2.3-3.4 mm by threads
+
+
+def test_freesurfer_stages_stop_once_when_freesurfer_is_not_set_up(tmp_path, monkeypatch):
+    from pie.imaging import freesurfer
+    work = tmp_path / "derived"
+    (work / "fastsurfer" / "S1" / "stats").mkdir(parents=True)
+    (work / "fastsurfer" / "S1" / "stats" / "aseg+DKT.stats").write_text("# Measure Mask, MaskVol, Mask Volume, 1.0, mm^3\n")
+    pd.DataFrame({"patno": [1], "image_id": ["S1"], "session_date": ["2000-01-01"], "EVENT_ID": ["BL"], "protocol_phase": [1]})\
+        .to_csv(work / "sessions.csv", index=False)
+    monkeypatch.setattr(freesurfer, "HOME", None)
+    monkeypatch.setattr(run, "talairach_etiv", lambda *a, **k: pytest.fail("must not reach any subject"))
+    for flag in ("--etiv", "--long"):
+        with pytest.raises(SystemExit, match="PIE_FREESURFER_HOME"):
+            run.main(["--zips", "unused.zip", "--work-dir", str(work), flag])
+    assert not (work / "fastsurfer_idps.csv").exists()                  # no table rewritten with an all-NaN eTIV column
+
+
+def test_sdc_keeps_its_transforms_in_the_callers_folder_and_cleans_up_on_failure(tmp_path, monkeypatch):
+    import ants
+    monkeypatch.setattr(ants, "registration", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("registration failed")))
+    img = nib.Nifti1Image(np.ones((8, 8, 8), np.float32), np.eye(4))
+    with pytest.raises(RuntimeError, match="registration failed"):
+        dwi.register_b0_to_t1_sdc(img, img, img, pe_axis="j", work_dir=tmp_path)
+    assert not list(tmp_path.iterdir())                                   # nothing left behind in the caller's folder
+
+
+def test_eddy_cpu_is_multithreaded_and_a_failed_eddy_leaves_no_working_folder(tmp_path, monkeypatch):
+    from pie.imaging.dwi_correction import build_eddy_command
+    meta = {"PhaseEncodingDirection": "j-", "TotalReadoutTime": 0.05}
+    assert "--nthr=8" in build_eddy_command("/fsl/bin", meta, 60, raw_is_uncorrected=True, cuda=False, nthr=8)[0]
+    fsl = tmp_path / "fsl" / "bin"
+    fsl.mkdir(parents=True)
+    (fsl / "topup").write_text("#!/bin/sh\nfor a in \"$@\"; do case $a in --out=*) o=${a#--out=};; esac; done\n"
+                               "cp b0_pair.nii.gz ${o}_fieldcoef.nii.gz\n")
+    (fsl / "eddy_cpu").write_text("#!/bin/sh\necho \"$@\" > ../eddy_args.txt\nexit 1\n")
+    for f in fsl.iterdir():
+        f.chmod(0o755)
+    monkeypatch.setattr(dwi, "FSLDIR", str(tmp_path / "fsl"))
+    ds = {"data": np.ones((4, 4, 4, 4), np.float32), "affine": np.eye(4), "bvals": np.array([0., 0., 1000., 1000.]),
+          "bvecs": np.c_[np.zeros((3, 2)), np.eye(3)[:, [0, 1]]], "meta": meta,
+          "rev_b0": np.ones((4, 4, 4, 1), np.float32), "rev_meta": {"PhaseEncodingDirection": "j", "TotalReadoutTime": 0.05}}
+    with pytest.raises(RuntimeError, match="eddy failed"):
+        dwi.eddy_correct(ds, tmp_path / "work", cuda=False)
+    assert not (tmp_path / "work" / "eddy").exists()
+    assert "--nthr=1" not in (tmp_path / "work" / "eddy_args.txt").read_text()
+
+
+def test_manual_roi_duplicates_are_averaged_per_scan_not_mixed(tmp_path):
+    im = tmp_path / "PPMI/Imaging"
+    im.mkdir(parents=True)
+    rows = []
+    for fa, e in ((.30, 1.0e-3), (.40, 0.4e-3)):                      # the same scan month read twice
+        for m, v in (("FA", fa), ("E1", e), ("E2", e), ("E3", e)):
+            rows.append({"PATNO": 1, "PAG_NAME": "DTIROI", "INFODT": "01/2011", "Measure": m, "Tissue": "SN",
+                         **{f"ROI{i}": v for i in range(1, 7)}, "REF1": .6, "REF2": .6, "RUNDATE": "2015-01-01"})
+    pd.DataFrame(rows).to_csv(im / "DTI_Regions_of_Interest_01Jan2020.csv", index=False)
+    t = labels.ppmi_dti_roi_table(tmp_path / "PPMI").iloc[0]
+    assert abs(t.sn_fa - 0.35) < 1e-9 and abs(t.sn_md - 0.7e-3) < 1e-12 and t.n_rows == 2
+
+
+def test_empty_syn_cache_files_are_not_treated_as_finished(tmp_path):
+    fwd = nm_template.syn_paths(tmp_path)["fwd"]
+    fwd[0].parent.mkdir(parents=True)
+    for f in fwd:
+        f.touch()                                                        # left by a copy onto a full disk
+    assert not nm_template.syn_cached(tmp_path)
+    for f in fwd:
+        f.write_bytes(b"x")
+    assert nm_template.syn_cached(tmp_path)
+
+
+def test_assembled_nm_features_carry_their_validation_status(tmp_path):
+    _idps(tmp_path)
+    (tmp_path / "nm").mkdir()
+    pd.DataFrame({"patno": [1], "error": [""], "n_sn_l": [40], "n_sn_r": [40], "sn_slab_coverage": [1.], "repeat_motion_mm_max": [.5],
+                  "nm_ref_l_sd": [1.], "nm_ref_l_mean": [10.], "nm_ref_r_sd": [1.], "nm_ref_r_mean": [10.], "manufacturer": ["GE"],
+                  "voxel_mm": ["0.5x0.5x1.5"], "nm_sn_mean_cnr": [.1]}).to_csv(tmp_path / "nm" / "nm_features.csv", index=False)
+    f = manifest.assemble_features(tmp_path).set_index("PATNO")
+    assert f.loc[1, "nm_sn_mean_cnr"] == .1 and not f["nm_validated"].any() and not manifest.NM_VALIDATED
+
+
+def test_biondetti_files_are_checked_against_pinned_hashes(tmp_path):
+    from pie.imaging import atlases
+    (tmp_path / "BND_ROI.nii.gz").write_bytes(b"not the atlas")
+    with pytest.raises(ValueError, match="checksum"):
+        atlases.biondetti_file("BND_ROI.nii.gz", cache_dir=tmp_path)
+
+
+def test_nigral_bridge_qc_rejects_misplaced_masks():
+    from pie.imaging import atlases
+    cit = atlases.cit168_mni2009c()
+    sn = np.asarray(cit.dataobj) == 7                      # neuromelanin-MRI nigra is the SNc (CIT168 SNr lies ventrolateral)
+    lab = np.where(sn, 3, 0).astype(np.int16)
+    lab[np.roll(sn, -12, axis=1) & ~sn] = 4                 # background 12 mm posterior, off the nigra
+    good = atlases.nigral_bridge_qc(nib.Nifti1Image(lab, cit.affine))
+    assert good["pass"] and good["centroid_mm_l"] < 1 and good["bnd_in_sn"] == 0
+    bad = atlases.nigral_bridge_qc(nib.Nifti1Image(np.roll(lab, 6, axis=0), cit.affine))   # 6 mm to the right
+    assert not bad["pass"] and bad["centroid_mm_l"] > 4
+
+
+def test_assembly_reads_published_nm_features_under_the_slab_qc(tmp_path):
+    _idps(tmp_path)
+    (tmp_path / "nm").mkdir()
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "n_sn_l": [40, 40], "n_sn_r": [40, 40], "sn_slab_coverage": [1., 1.],
+                  "repeat_motion_mm_max": [.5, 5.], "nm_ref_l_sd": [1., 1.], "nm_ref_l_mean": [10., 10.], "nm_ref_r_sd": [1., 1.],
+                  "nm_ref_r_mean": [10., 10.], "manufacturer": ["GE", "GE"], "voxel_mm": ["0.5x0.5x1.5"] * 2,
+                  "nm_sn_mean_cnr": [.1, .1]}).to_csv(tmp_path / "nm" / "nm_features.csv", index=False)
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "nmb_sensorimotor_mean_cnr": [.2, .3], "nmb_bnd_cov": [1., 1.]})\
+        .to_csv(tmp_path / "nm" / "nm_published_features.csv", index=False)
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "nmt_sn_mean_cnr": [.2, .3], "nmt_sn_cov_l": [1., 1.], "nmt_sn_cov_r": [1., 1.],
+                  "nmt_crus_cv_l": [.1, .1], "nmt_crus_cv_r": [.1, .1]}).to_csv(tmp_path / "nm" / "nm_template_features.csv", index=False)
+    f = manifest.assemble_features(tmp_path).set_index("PATNO")
+    assert f.loc[1, "nmb_sensorimotor_mean_cnr"] == .2 and "nmb_bnd_cov" not in f
+    assert np.isnan(f.loc[2, "nmb_sensorimotor_mean_cnr"]) and np.isnan(f.loc[2, "nmt_sn_mean_cnr"])   # 5 mm motion: slab fails
+    assert "nmb_sensorimotor_mean_cnr" in manifest.feature_blocks(f.columns)["nm"]
+
+
+def test_interrupted_syn_cache_is_not_taken_as_cached(tmp_path, monkeypatch):
+    import types
+    warp, aff = tmp_path / "w.nii.gz", tmp_path / "a.mat"
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4, 1, 3), np.float32), np.eye(4)), warp)
+    aff.write_text("affine")
+    fake = types.SimpleNamespace(image_read=lambda p: 1.0, threshold_image=lambda *a: 1.0,
+                                 registration=lambda **k: {"fwdtransforms": [str(warp), str(aff)], "invtransforms": []})
+    monkeypatch.setitem(sys.modules, "ants", fake)
+    monkeypatch.setattr(nm_template, "mni_brain_path", lambda: "mni.nii.gz")
+    monkeypatch.setattr(nm_template, "crop_warp", lambda p: (_ for _ in ()).throw(KeyboardInterrupt))   # killed mid-crop
+    with pytest.raises(KeyboardInterrupt):
+        nm_template.syn_cache(tmp_path)
+    assert not nm_template.syn_cached(tmp_path)
+
+
+def test_freesurfer_run_timeout_kills_the_whole_process_tree(tmp_path):
+    import time
+    from pie.imaging import freesurfer
+    script = tmp_path / "parent.sh"
+    script.write_text(f"#!/bin/sh\nsleep 60 &\necho $! > {tmp_path}/child.pid\nwait\n")     # recon-all style: work in children
+    script.chmod(0o755)
+    with pytest.raises(subprocess.TimeoutExpired):
+        freesurfer.run([script], tmp_path / "log", tmp_path, env=dict(os.environ), timeout=1)
+    pid = int((tmp_path / "child.pid").read_text())
+    for _ in range(40):
+        if not Path(f"/proc/{pid}").exists() or "State:\tZ" in Path(f"/proc/{pid}/status").read_text():
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("the child outlived the timeout")
+
+
+def test_idp_table_rewrite_is_atomic(tmp_path, monkeypatch):
+    work = tmp_path / "derived"
+    (work / "fastsurfer" / "S1" / "stats").mkdir(parents=True)
+    (work / "fastsurfer" / "S1" / "stats" / "aseg+DKT.stats").write_text("# Measure Mask, MaskVol, Mask Volume, 1500000.0, mm^3\n")
+    pd.DataFrame({"patno": [1], "image_id": ["S1"], "session_date": ["2000-01-01"], "EVENT_ID": ["BL"],
+                  "protocol_phase": [1]}).to_csv(work / "sessions.csv", index=False)
+    (work / "fastsurfer_idps.csv").write_text("the previous table\n")
+    real = pd.DataFrame.to_csv
+
+    def disk_full(self, path=None, *a, **k):
+        if "fastsurfer_idps" in str(path):
+            Path(path).write_text("PATNO,IMA")
+            raise OSError(28, "No space left on device")
+        return real(self, path, *a, **k)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", disk_full)
+    with pytest.raises(OSError):
+        run.main(["--zips", "unused.zip", "--work-dir", str(work), "--features-only"])
+    assert (work / "fastsurfer_idps.csv").read_text() == "the previous table\n"
+
+
+def test_sdc_records_how_oblique_the_phase_encoding_axis_is():
+    assert dwi._pe_physical_axis(np.diag([2., 2., 2., 1.]), "j-") == (1, 0.0)
+    c, s_ = np.cos(np.radians(20)), np.sin(np.radians(20))
+    tilted = np.array([[2., 0, 0, 0], [0, 2 * c, -2 * s_, 0], [0, 2 * s_, 2 * c, 0], [0, 0, 0, 1]])   # 20 degrees about x
+    axis, deg = dwi._pe_physical_axis(tilted, "j")
+    assert axis == 1 and abs(deg - 20) < 1e-6
+
+
+def test_registration_seeds_reach_ants_registration(monkeypatch):
+    import importlib
+    reg_module = importlib.import_module("ants.registration.registration")
+    real, seen = reg_module.get_lib_fn, []
+
+    def spy(name):
+        fn = real(name)
+        return (lambda args: (seen.append(list(map(str, args))), fn(args))[1]) if name == "antsRegistration" else fn
+
+    monkeypatch.setattr(reg_module, "get_lib_fn", spy)
+    img = np.zeros((24, 24, 24), np.float32)
+    img[6:18, 5:19, 7:17] = 1
+    head = nib.Nifti1Image(img, np.eye(4))
+    features.tiv_from_registration(head, head, head, seed=7)      # ANTsPy 0.6 swallows random_seed= in **kwargs
+    assert seen and all("--random-seed" in a and a[a.index("--random-seed") + 1] == "7" for a in seen)
+
+
+def test_age_is_in_julian_years():
+    cov = pd.DataFrame({"PATNO": [1], "BIRTHDT": pd.to_datetime(["1950-01-01"])})
+    assert abs(labels._age_at(cov, pd.Series([1]), pd.Series(["2020-01-01"]))[0] - 25567 / 365.25) < 1e-9
+
+
+def test_dat_control_norm_counts_each_control_once(tmp_path):
+    ppmi, sessions = _ppmi(tmp_path)
+    im = ppmi / "Imaging"
+    q, v = pd.read_csv(im / "Xing_Core_Lab_-_Quant_SBR_01Jan2020.csv"), pd.read_csv(im / "Xing_Core_Lab_-_Visual_Read_01Jan2020.csv")
+    low = {c: 1.8 for c in q if c.startswith("PUTAMEN")}                 # one control re-scanned nine times, all low
+    pd.concat([q] + [q[q.PATNO == 1].assign(DATSCAN_DATE=f"0{m}/2012", EVENT_ID=f"V0{m}", **low) for m in range(1, 10)])\
+        .to_csv(im / "Xing_Core_Lab_-_Quant_SBR_01Jan2020.csv", index=False)
+    pd.concat([v] + [v[v.PATNO == 1].assign(DATSCAN_DATE=f"0{m}/2012") for m in range(1, 10)])\
+        .to_csv(im / "Xing_Core_Lab_-_Visual_Read_01Jan2020.csv", index=False)
+    d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
+    assert abs(d.loc[21, "sbr_pct_expected"] - 0.9 / 2.8) < 0.02         # the repeat scans must not drag the norm down
+
+
+def test_acquisition_batches_carry_the_protocol(tmp_path):
+    pd.DataFrame({"PATNO": [1, 2], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2022-01-01"] * 2, "vol_Left_Putamen": [1., 1.]})\
+        .to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
+    (tmp_path / "dwi").mkdir(), (tmp_path / "nm").mkdir()
+    pd.DataFrame({"patno": [1, 2], "motion_mm_max": [1., 1.], "n_sn_l": [4, 4], "n_sn_r": [4, 4], "fa_wm_median": [.4, .4],
+                  "manufacturer": ["Siemens"] * 2, "shells": ["1000"] * 2, "fw_method": ["singleshell_prior"] * 2, "eddy": [False] * 2,
+                  "voxel_mm": [2.0, 2.0], "n_volumes": [65, 33], "topup": [True, False]}).to_csv(tmp_path / "dwi" / "dwi_features.csv", index=False)
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "n_sn_l": [40, 40], "n_sn_r": [40, 40], "sn_slab_coverage": [1., 1.],
+                  "repeat_motion_mm_max": [.5, .5], "nm_ref_l_sd": [1., 1.], "nm_ref_l_mean": [10., 10.], "nm_ref_r_sd": [1., 1.],
+                  "nm_ref_r_mean": [10., 10.], "manufacturer": ["GE", "GE"], "voxel_mm": ["0.5x0.5x1.5"] * 2, "tr_s": [.6, .6],
+                  "te_s": [.004, .003], "mt_flag": [1, 1], "model": ["MR750"] * 2, "flip_angle": [40, 40]})\
+        .to_csv(tmp_path / "nm" / "nm_features.csv", index=False)
+    m = manifest.build_manifest(tmp_path).set_index("PATNO")
+    assert m["nm_acquisition_batch"].nunique() == 2 and m["nm_batch"].nunique() == 1       # TE differs; vendor/voxel batch kept
+    assert m["dwi_acquisition_batch"].nunique() == 2 and "65" in m.loc[1, "dwi_acquisition_batch"]
+    assert m.loc[1, "dwi_correction"] == "topup" and m.loc[2, "dwi_correction"] == "rigid"
+
+
+def test_nonphysical_tensor_fits_are_rejected_not_clipped():
+    from dipy.core.sphere import HemiSphere, disperse_charges
+    rng = np.random.default_rng(0)
+    hs, _ = disperse_charges(HemiSphere(theta=np.arccos(rng.uniform(-1, 1, 30)), phi=rng.uniform(0, 2 * np.pi, 30)), 500)
+    v, b = np.vstack([[0, 0, 0], hs.vertices]).T, np.r_[0, np.full(30, 1000.)]
+    sig = lambda D: 1000 * np.exp(-b * np.einsum("in,ij,jn->n", v, D, v))
+    data = np.zeros((2, 1, 1, 31), np.float32)
+    data[0, 0, 0] = sig(np.diag([1.5e-3, 0.4e-3, 0.3e-3]))              # physical, FA 0.67
+    data[1, 0, 0] = sig(np.diag([1.5e-3, -0.4e-3, 0.3e-3]))             # negative diffusivity: dipy clips it to FA 0.90
+    maps = dwi.fit_models({"bvals": b, "bvecs": v, "data": data, "mask": np.ones((2, 1, 1), bool)})
+    assert abs(maps["md"][0, 0, 0] - 0.733e-3) < 1e-5 and np.isnan(maps["fa"][1, 0, 0]) and np.isnan(maps["md"][1, 0, 0])
+    assert maps["tensor_physical"][0, 0, 0] and not maps["tensor_physical"][1, 0, 0]
+
+
+def test_dwi_qc_is_the_study_rule(tmp_path):
+    _idps(tmp_path)
+    (tmp_path / "dwi").mkdir()
+    ok = {"n_sn_l": 30, "n_sn_r": 30, "sn_brain_mask_fraction": 1.0, "sn_physical_fraction": 0.95, "motion_mm_mean": 0.5,
+          "motion_mm_max": 1.0, "fa_wm_median": 0.4, "sn_posterior_l_fa": 0.5, "sn_posterior_r_fa": 0.5}
+    rows = [dict(ok), dict(ok, n_sn_l=4, n_sn_r=4), dict(ok, sn_physical_fraction=0.7), dict(ok, sn_brain_mask_fraction=0.9),
+            dict(ok, motion_mm_mean=2.5), dict(ok, sn_posterior_r_fa=np.nan)]
+    d = pd.DataFrame(rows).assign(patno=range(1, 7))
+    assert manifest.QC["dwi"](d).tolist() == [True, False, False, False, False, False]
+
+
+def test_dat_calibration_is_per_vendor_with_a_pooled_fallback():
+    from pie.imaging import datscan
+    rng = np.random.default_rng(0)
+    true = rng.uniform(0.5, 3.0, 40)
+    d = pd.DataFrame({"vendor": ["GE"] * 30 + ["PHILIPS"] * 10, "published": true})
+    d["sbrwm_putamen_l"] = np.where(d.vendor == "GE", 0.5 * true + 0.2, 0.8 * true)
+    d.loc[[5, 35], "published"] = np.nan                                       # e.g. prodromal: PPMI withholds the value
+    out = datscan.calibrate(d, {"sbrwm_putamen_l": "published"}, min_ref=15)
+    ge = out.vendor == "GE"
+    assert np.allclose(out.loc[ge, "sbrwm_putamen_l_cal"], true[ge.to_numpy()])  # includes the row without a published value
+    assert (out.loc[ge, "calibration"] == "GE").all() and (out.loc[~ge, "calibration"] == "POOLED").all()   # 9 < 15 reference scans
+
+
+def test_dat_labels_fall_back_to_invicro_for_scans_xing_never_analysed(tmp_path):
+    ppmi, sessions = _ppmi(tmp_path)
+    f = ppmi / "Imaging" / "Xing_Core_Lab_-_Quant_SBR_01Jan2020.csv"
+    x = pd.read_csv(f)
+    x[x.PATNO != 21].to_csv(f, index=False)                      # a PPMI-1 participant only Invicro analysed
+    d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
+    assert d.loc[21, "sbr_source"] == "invicro_occipital" and d.loc[21, "dat_deficit_sbr"] == 1 and d.loc[21, "dat_visual"] == 1
+    assert d.loc[1, "sbr_source"] == "xing_cwm" and d.index.is_unique  # Xing stays primary; one row per session

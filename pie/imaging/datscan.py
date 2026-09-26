@@ -15,7 +15,7 @@ occipital reference; SBR = target/reference - 1) with open components:
 
 Attenuation correction (first-order Chang, ``chang_correction``) is implemented but off by default everywhere
 (``reconstruct``, ``process_series`` and the CLI's ``--attenuation``): it lowered agreement with PPMI's SBRs.
-Without it absolute SBRs sit below PPMI's; calibrating against PPMI's published values is left to the study.
+Without it absolute SBRs sit below PPMI's; ``calibrate`` maps them onto a published scale per camera vendor.
 """
 
 import io
@@ -636,3 +636,28 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+
+def calibrate(d, targets, min_ref=15, vendor="vendor"):
+    """Per-vendor linear map of PIE SBR columns onto published SBRs, as study1_virtual_biomarkers' calibrate_datscan.py
+    (calibrated putamen r 0.85 against PPMI on 880 scans; uncalibrated PIE 0.79-0.81 against Xing). ``targets`` maps
+    a PIE column (e.g. ``sbrwm_putamen_l``) to the published column on the same rows (e.g. Xing's
+    ``PUTAMEN_L_REF_CWM``; keep reference regions matched: CWM to ``sbrwm_*``, occipital to ``sbr_*``). The map is
+    fitted on the rows that have both values (blank QC failures first, as the study did), per vendor with >=
+    ``min_ref`` of them, else on all vendors pooled, and applied to every row (so cohorts without published values get calibrated values too). Adds
+    ``<column>_cal`` and ``calibration`` (the vendor or ``POOLED``, from the first target)."""
+    import pandas as pd
+
+    out = d.copy()
+    for i, (col, target) in enumerate(targets.items()):
+        ref = out[pd.to_numeric(out[col], errors="coerce").notna() & pd.to_numeric(out[target], errors="coerce").notna()]
+        out[f"{col}_cal"] = np.nan
+        for v, g in out.groupby(vendor):
+            r = ref[ref[vendor] == v]
+            src = v if len(r) >= min_ref else "POOLED"
+            r = r if src == v else ref
+            slope, intercept = np.polyfit(r[col].astype(float), r[target].astype(float), 1)
+            out.loc[g.index, f"{col}_cal"] = intercept + slope * g[col].astype(float)
+            if i == 0:
+                out.loc[g.index, "calibration"] = src
+    return out

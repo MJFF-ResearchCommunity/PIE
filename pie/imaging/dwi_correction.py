@@ -67,7 +67,7 @@ def topup_config(shape):
 
 
 def build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False,
-                       raw_is_uncorrected, cuda=True):
+                       raw_is_uncorrected, cuda=True, nthr=1):
     """Build the bounded correction command for a prepared working directory.
 
     Requires standard raw.nii.gz/mask/gradient/acqparams/index filenames and
@@ -75,7 +75,8 @@ def build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False,
     an estimated compatible reverse-PE field named ``topup``. Feed RAW images,
     not images already passed through applytopup or rigid motion correction.
     The caller owns resource scheduling, command/provenance logs and timeouts.
-    CPU and CUDA engines are explicit choices, never a silent fallback.
+    CPU and CUDA engines are explicit choices, never a silent fallback. ``nthr``: OpenMP threads, which only eddy_cpu
+    uses (single-threaded it takes many hours per multi-shell scan).
     """
     if raw_is_uncorrected is not True:
         raise ValueError('Raw uncorrected input required; do not apply correction twice')
@@ -86,7 +87,7 @@ def build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False,
     binary = Path(fsl_bin) / ('eddy_cuda' if cuda else 'eddy_cpu')
     command = [str(binary), '--imain=raw.nii.gz', '--mask=eddy_mask.nii.gz',
                '--acqp=acqparams.txt', '--index=index.txt', '--bvals=bvals',
-               '--bvecs=bvecs', '--out=eddy', '--niter=5', '--nthr=1', '--repol',
+               '--bvecs=bvecs', '--out=eddy', '--niter=5', f'--nthr={int(nthr)}', '--repol',
                '--initrand=1', '--cnr_maps', '--ol_type=sw', '--mporder=0', '--verbose', *options]
     if use_topup:
         command.append('--topup=topup')

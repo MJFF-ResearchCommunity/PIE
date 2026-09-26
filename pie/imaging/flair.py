@@ -67,24 +67,53 @@ def n4(img_sitk, shrink=2):
 
 
 def register_flair_to_t1(flair_sitk, t1_img, t1_mask_img):
-    """Rigid MI registration (T1 brain fixed at 2 mm, FLAIR moving). Returns (transform fixed(T1)->moving(FLAIR), metric)."""
+    """Rigid MI registration of the FLAIR (moving) to the conformed T1 head (fixed, 2 mm). Two starts, the scanner header
+    (same-session scans share scanner coordinates) and the centre-of-mass alignment; the start whose final pose has the
+    better head metric wins. The head, not the brain, is the fixed image: a partial-coverage 2D FLAIR (5 mm slices over
+    the upper head) registered to a brain-only T1 from a centre-of-mass start settled centimetres off, which was most of
+    the 13 % of PPMI FLAIRs that failed QC until September 2026. Returns (transform fixed(T1)->moving(FLAIR), metric), the
+    metric being the brain-masked MI at the final pose, on the scale the QC threshold was set on."""
     import SimpleITK as sitk
 
-    fixed = _brain(t1_img, t1_mask_img, mm=2.0)
-    init = sitk.CenteredTransformInitializer(fixed, flair_sitk, sitk.Euler3DTransform(), sitk.CenteredTransformInitializerFilter.MOMENTS)
-    reg = sitk.ImageRegistrationMethod()
-    reg.SetMetricAsMattesMutualInformation(32)
-    reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.2, seed=0)
-    reg.SetInterpolator(sitk.sitkLinear)
-    reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-3, numberOfIterations=200, relaxationFactor=0.6)
-    reg.SetOptimizerScalesFromPhysicalShift()
-    reg.SetShrinkFactorsPerLevel([4, 2, 1])
-    reg.SetSmoothingSigmasPerLevel([3, 2, 0])
-    reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-    reg.SetInitialTransform(sitk.Euler3DTransform(init), inPlace=False)
-    tx = reg.Execute(fixed, flair_sitk)
-    return tx, float(reg.GetMetricValue())
+    head = sitk.Shrink(_sitk_from_nib(nib.Nifti1Image(np.asanyarray(t1_img.dataobj).astype(np.float32), t1_img.affine)),
+                       [max(1, int(round(2.0 / sp))) for sp in np.abs(np.diag(nib.as_closest_canonical(t1_img).affine)[:3])])
+    brain = _brain(t1_img, t1_mask_img, mm=2.0)
+
+    def method(sampling=0.2):
+        reg = sitk.ImageRegistrationMethod()
+        reg.SetMetricAsMattesMutualInformation(32)
+        reg.SetMetricSamplingStrategy(reg.RANDOM)
+        reg.SetMetricSamplingPercentage(sampling, seed=0)
+        reg.SetInterpolator(sitk.sitkLinear)
+        return reg
+
+    header = sitk.Euler3DTransform()
+    header.SetCenter(head.TransformContinuousIndexToPhysicalPoint([(n - 1) / 2 for n in head.GetSize()]))
+    moments = sitk.Euler3DTransform(sitk.CenteredTransformInitializer(head, flair_sitk, sitk.Euler3DTransform(),
+                                                                     sitk.CenteredTransformInitializerFilter.MOMENTS))
+    best = None
+    for init in (header, moments):
+        reg = method()
+        reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-3, numberOfIterations=200, relaxationFactor=0.6)
+        reg.SetOptimizerScalesFromPhysicalShift()
+        reg.SetShrinkFactorsPerLevel([4, 2, 1])
+        reg.SetSmoothingSigmasPerLevel([3, 2, 0])
+        reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+        reg.SetInitialTransform(init, inPlace=False)
+        try:
+            tx = reg.Execute(head, flair_sitk)
+        except RuntimeError:
+            continue
+        score = method(1.0)
+        score.SetInitialTransform(tx)
+        value = score.MetricEvaluate(head, flair_sitk)
+        if best is None or value < best[1]:
+            best = (tx, value)
+    if best is None:
+        raise RuntimeError("FLAIR-to-T1 registration failed from both starts")
+    qc = method(1.0)
+    qc.SetInitialTransform(best[0])
+    return best[0], float(qc.MetricEvaluate(brain, flair_sitk))
 
 
 def wmh(flair_t1, aseg, vox_mm=1.0):

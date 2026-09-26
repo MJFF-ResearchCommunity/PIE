@@ -18,16 +18,30 @@ import re
 import numpy as np
 import pandas as pd
 
+def _col(d, c):
+    return pd.to_numeric(d[c], errors="coerce") if c in d else pd.Series(np.nan, index=d.index)
+
+
 # QC rules per modality (the same thresholds the study used); keep in one place
 T1_KEY_VOLUMES = ["vol_Left_Putamen", "vol_Right_Putamen", "vol_Left_Caudate", "vol_Right_Caudate", "vol_Left_Thalamus", "vol_Right_Thalamus"]
 QC = {
     "t1": lambda d: (d[[c for c in T1_KEY_VOLUMES if c in d]] > 0).all(axis=1),   # a failed FastSurfer run leaves empty labels (0 mm3): ratios/asymmetries undefined
     "dat": lambda d: (d["reg_metric"].abs() >= 0.4) & (d["n_label_voxels"] >= 100),
-    "dwi": lambda d: (d["motion_mm_max"] < 6) & (d["n_sn_l"] >= 3) & (d["n_sn_r"] >= 3) & (d["fa_wm_median"] > 0.25),
+    # the study's nigral diffusion rule (split-half ICC FA 0.88, MD 0.97 under it): >= 20 SN voxels, >= 95 % of the SN in
+    # the brain mask, >= 80 % physically admissible tensor fits, mean motion <= 2 mm, both posterior SN halves measured;
+    # tables written before these columns existed fail it (re-run them)
+    "dwi": lambda d: ((d["n_sn_l"] + d["n_sn_r"] >= 20) & (_col(d, "sn_brain_mask_fraction") >= 0.95)
+                      & (_col(d, "sn_physical_fraction") >= 0.8) & (_col(d, "motion_mm_mean") <= 2)
+                      & np.isfinite(_col(d, "sn_posterior_l_fa")) & np.isfinite(_col(d, "sn_posterior_r_fa")) & (d["fa_wm_median"] > 0.25)),
     "nm": lambda d: (d["n_sn_l"] >= 20) & (d["n_sn_r"] >= 20) & (d["sn_slab_coverage"] >= 0.5) & (d["repeat_motion_mm_max"] < 3)
     & (d["nm_ref_l_sd"] < 0.4 * d["nm_ref_l_mean"]) & (d["nm_ref_r_sd"] < 0.4 * d["nm_ref_r_mean"]),   # reference ring partly outside the slab -> CV ~1, CNR garbage
     "flair": lambda d: (d["reg_flair_t1_mi"] < -0.2) & (d["wm_mm3"] > 200000) & (d["flair_wm_mad"] > 0),
+    # nm_template: the template SN mask has data on both sides and the crus reference is homogeneous
+    "nmt": lambda d: (d["nmt_sn_cov_l"] >= 0.9) & (d["nmt_sn_cov_r"] >= 0.9) & (d["nmt_crus_cv_l"] < 0.3) & (d["nmt_crus_cv_r"] < 0.3),
 }
+# Neither NM measure passed its pre-registered PD-vs-HC gate (AUROC >= 0.70, CI lower bound > 0.55) on 45 HC + 45 PD
+# (26 September 2026: nm_template 0.58 [0.46, 0.70], nm.py 0.54 [0.42, 0.67]); assembled NM columns are exploratory.
+NM_VALIDATED = False
 DWI_METRIC_SUFFIXES = ("_fa", "_md", "_ad", "_rd", "_fw", "_fat", "_mdt", "_mk")   # dwi.METRICS as column suffixes
 
 
@@ -66,7 +80,7 @@ def _modality_metadata(d, mod, index_file, subjects, flag):
     d[f"{mod}_date"] = _masked_dates(recorded.fillna(inferred))
     d[f"{mod}_date_source"] = np.where(recorded.notna(), "recorded", "index_inferred")
     cols = [f"{mod}_date_source"]
-    for c in ("fs_image_id", "processing_version", "source_image_ids", "fw_method", "topup", "denoised", "bvecs_rotated"):
+    for c in ("fs_image_id", "processing_version", "source_image_ids", "fw_method", "topup", "denoised", "bvecs_rotated", "eddy"):
         if c in d:
             name = c if c == "fw_method" else f"{mod}_{c}"
             d[name] = d[c]
@@ -128,16 +142,26 @@ def build_manifest(derived_dir, modality_dirs=None):
     if dwi is not None:
         dwi["dwi_qc_pass"] = QC["dwi"](dwi)
         dwi["dwi_batch"] = _vendor(dwi["manufacturer"]) + "_" + dwi["shells"].astype(str).str.replace(" ", "-") + "_" + dwi["fw_method"].astype(str)
+        dwi["dwi_batch"] += np.where(dwi.get("eddy", pd.Series(False, index=dwi.index)).astype(str).str.lower().eq("true"), "_eddy", "")
+        flag = lambda c: dwi.get(c, pd.Series(False, index=dwi.index)).astype(str).str.lower().eq("true")
+        dwi["dwi_correction"] = np.where(flag("eddy"), "eddy", np.where(flag("topup"), "topup", "rigid"))
+        # the study's batch: vendor | shells | voxel size | number of volumes (direction count)
+        dwi["dwi_acquisition_batch"] = _vendor(dwi["manufacturer"]) + "|" + dwi["shells"].astype(str) + "|" + \
+            dwi.get("voxel_mm", pd.Series("", index=dwi.index)).astype(str) + "|" + dwi.get("n_volumes", pd.Series("", index=dwi.index)).astype(str)
         extra = _modality_metadata(dwi, "dwi", dwi_dir / "dwi_index.csv", subjects, "selected")
-        man = man.merge(dwi[["patno", "dwi_date", "dwi_batch", "dwi_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+        man = man.merge(dwi[["patno", "dwi_date", "dwi_batch", "dwi_acquisition_batch", "dwi_correction", "dwi_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     # NM
     nm_dir = _modality_dir(derived, "nm", modality_dirs)
     nmf = _read(nm_dir / "nm_features.csv")
     if nmf is not None:
         nmf["nm_qc_pass"] = QC["nm"](nmf)
         nmf["nm_batch"] = _vendor(nmf["manufacturer"]) + "_" + nmf["voxel_mm"].astype(str)
+        # the study's batch: vendor | voxel | TR | TE | MT preparation (the NM contrast depends on all of them)
+        num = lambda c: pd.to_numeric(nmf.get(c, pd.Series(np.nan, index=nmf.index)), errors="coerce").round(4).astype(str)
+        nmf["nm_acquisition_batch"] = (_vendor(nmf["manufacturer"]) + "|" + nmf["voxel_mm"].astype(str) + "|" + num("tr_s") + "|"
+                                       + num("te_s") + "|" + num("mt_flag"))
         extra = _modality_metadata(nmf, "nm", nm_dir / "nm_index.csv", subjects, "selected")
-        man = man.merge(nmf[["patno", "nm_date", "nm_batch", "nm_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+        man = man.merge(nmf[["patno", "nm_date", "nm_batch", "nm_acquisition_batch", "nm_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     # FLAIR
     flair_dir = _modality_dir(derived, "flair", modality_dirs)
     fl = _read(flair_dir / "flair_features.csv")
@@ -157,7 +181,7 @@ def build_manifest(derived_dir, modality_dirs=None):
     return man
 
 
-def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False):
+def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, ppmi_dir=None):
     """Manifest + features per subject: FastSurfer IDPs (as in fastsurfer_idps.csv), `dat_*` SBRs (occipital `sbr_*` and
     cerebral-WM `sbrwm_*` references, their anterior/posterior halves, putamen/caudate ratios and asymmetry indices),
     `dwi_*`, `nm_*` (ratios/volumes only), `flair_*`. Values of QC-failed modalities are blanked; the QC flags stay.
@@ -174,6 +198,10 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False):
     idps["t1_qc_pass"] = QC["t1"](idps)   # failed segmentation: T1 measures blanked, flag kept (as for the other modalities)
     idps.loc[~idps["t1_qc_pass"], [c for c in idps.columns if c not in ("PATNO", "IMAGEID", "t1_qc_pass")]] = np.nan
     df = man.merge(idps, on="PATNO", how="left")
+    if ppmi_dir is not None and "EVENT_ID" in df:   # PPMI's FS7 / MRIQC values, only for the visit of the T1 PIE used
+        from .features import fs7_tables
+        fs7 = fs7_tables(ppmi_dir).rename(columns={"EVENT_ID": "_fs7_event"})
+        df = df.merge(fs7, left_on=["PATNO", "EVENT_ID"], right_on=["PATNO", "_fs7_event"], how="left").drop(columns="_fs7_event")
     blocks = {}
     dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv")
     if dat is not None:
@@ -193,6 +221,17 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False):
     if nmf is not None:
         cols = [c for c in nmf.columns if c.startswith("nm_") and c.endswith(("_cnr", "_voxels"))]
         blocks["nm"] = nmf[["patno"] + cols]
+        df["nm_validated"] = NM_VALIDATED
+    nmt = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_template_features.csv")
+    if nmt is not None:      # template-space CNR (Cassidy/Wengler); its own QC, so a failed template row blanks only these
+        nmt["nmt_qc_pass"] = QC["nmt"](nmt)
+        cols = [c for c in nmt.columns if c.startswith("nmt_") and c.endswith("_cnr")]
+        nmt.loc[~nmt["nmt_qc_pass"], cols] = np.nan
+        df = df.merge(nmt[["patno", "nmt_qc_pass"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+    nmb = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_published_features.csv")
+    if nmb is not None:      # published Biondetti territories vs background; coverage already blanks a region
+        cols = [c for c in nmb.columns if c.startswith("nmb_") and c.endswith("_cnr")]
+        df = df.merge(nmb[["patno"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     fl = _read(_modality_dir(derived, "flair", modality_dirs) / "flair_features.csv")
     if fl is not None:
         cols = ["wmh_log_mm3", "wmh_pv_mm3", "wmh_deep_mm3", "wmh_frac_wm", "wmh_n_lesions", "wmh_mm3"]
@@ -204,6 +243,14 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False):
             # A failed left-side metric must not let valid-looking right-side metrics escape QC.
             bad = ~df[f"{mod}_qc_pass"].fillna(False).astype(bool)
             df.loc[bad, feat_cols] = np.nan
+    if "nm_qc_pass" in df:   # the slab's own QC (motion, coverage) holds for every NM method read from it
+        df.loc[~df["nm_qc_pass"].fillna(False).astype(bool), [c for c in df if c.startswith(("nmt_", "nmb_")) and c.endswith("_cnr")]] = np.nan
+    # one intracranial volume for head-size adjustment: PIE's FreeSurfer eTIV (same T1 as the volumes), else PPMI's
+    # FreeSurfer 7 eTIV of the same visit; never MaskVol or BrainSegVol
+    nan = pd.Series(np.nan, index=df.index)
+    pie_tiv, fs7_tiv = df.get("eTIV", nan), df.get("fs7_EstimatedTotalIntraCranialVol", nan)
+    df["tiv_mm3"] = pie_tiv.fillna(fs7_tiv)
+    df["tiv_source"] = np.where(pie_tiv.notna(), "pie_talairach", np.where(fs7_tiv.notna(), "ppmi_fs7", "none"))
     return df
 
 
@@ -212,5 +259,5 @@ def feature_blocks(columns):
     cols = list(columns)
     return {"dat": [c for c in cols if c.startswith("dat_sbr")],
             "dwi": [c for c in cols if c.startswith("dwi_") and is_dwi_feature(c)],
-            "nm": [c for c in cols if c.startswith("nm_") and c.endswith(("_cnr", "_voxels"))],
+            "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_")) and c.endswith(("_cnr", "_voxels"))],
             "flair": [c for c in cols if c.startswith("flair_wmh")]}

@@ -93,6 +93,64 @@ def nuisance_design(confounds, metadata, tr, config=ConnectivityConfig()):
     return design, keep, audit
 
 
+def _lomb_scargle_amplitude(t, y, freq, chunk=20000):
+    """One-sided amplitude spectrum of unevenly sampled columns (Lomb 1976; Scargle 1982), scaled so that a sine of
+    amplitude A gives A, as the FFT amplitude 2|X|/N does for complete series. ``t``: sample times, ``y``: time x
+    columns (mean removed), ``freq``: Hz. Columns are processed in chunks to bound memory."""
+    w = 2 * np.pi * np.asarray(freq, float)[:, None]
+    tau = np.arctan2(np.sin(2 * w * t).sum(axis=1), np.cos(2 * w * t).sum(axis=1)) / (2 * w[:, 0])
+    arg = w * (t[None, :] - tau[:, None])
+    c, s = np.cos(arg), np.sin(arg)
+    cc, ss = (c ** 2).sum(axis=1)[:, None], (s ** 2).sum(axis=1)[:, None]
+    out = np.empty((len(freq), y.shape[1]))
+    for k in range(0, y.shape[1], chunk):
+        yk = y[:, k:k + chunk]
+        power = 0.5 * ((c @ yk) ** 2 / cc + np.divide((s @ yk) ** 2, ss, out=np.zeros((len(freq), yk.shape[1])), where=ss > 1e-9))
+        out[:, k:k + chunk] = 2 * np.sqrt(power / len(t))
+    return out
+
+
+def alff_falff(series, tr, keep, band=(0.01, 0.08)):
+    """ALFF (mean amplitude in ``band``, Zang et al. 2007) and fALFF (band amplitude over the amplitude of (0, Nyquist],
+    Zou et al. 2008) per column of a time x columns array of nuisance residuals covering every frame. The spectrum is
+    the Lomb-Scargle periodogram of the retained frames (``keep``), at the full series' FFT frequencies: interpolating
+    censored frames instead removes high-frequency power and inflates fALFF with the censored fraction (on white noise
+    0.14 -> 0.22 at 35 % censored), i.e. with head motion. Uncensored, it equals the FFT amplitude spectrum. Raw ALFF of
+    noise grows as 1/sqrt(retained frames), equally for every voxel of a scan, so compare scans by mALFF (ALFF over its
+    brain mean, as ``local_measures`` reports it)."""
+    keep = np.asarray(keep, bool)
+    if keep.sum() < 3:
+        raise ValueError('Fewer than three retained frames')
+    y = np.asarray(series, float)[keep]
+    freq = np.fft.rfftfreq(len(keep), d=tr)[1:]
+    amp = _lomb_scargle_amplitude(np.flatnonzero(keep) * float(tr), y - y.mean(axis=0), freq)
+    inband = (freq >= band[0]) & (freq <= band[1])
+    return amp[inband].mean(axis=0), amp[inband].sum(axis=0) / amp.sum(axis=0)
+
+
+def reho(data, mask, keep):
+    """Regional homogeneity (Zang et al. 2004): Kendall's W of each in-mask voxel with its in-mask 26 neighbours over
+    the retained frames. ``data``: (x, y, z, t) array; returns an (x, y, z) float32 map, NaN outside the mask. Works on
+    the mask's bounding box in float32 (~1.5 GB for a 2 mm brain and 600 frames)."""
+    from scipy import ndimage
+    from scipy.stats import rankdata
+
+    mask, keep = np.asarray(mask, bool), np.asarray(keep, bool)
+    n = int(keep.sum())
+    idx = np.nonzero(mask)
+    box = tuple(slice(max(0, int(a.min()) - 1), int(a.max()) + 2) for a in idx)
+    m = mask[box]
+    ranks = np.zeros(m.shape + (n,), np.float32)
+    ranks[m] = rankdata(np.asarray(data)[box][m][:, keep], axis=1)
+    k = ndimage.uniform_filter(m.astype(np.float32), size=3, mode="constant") * 27          # in-mask voxels per cube
+    rsum = ndimage.uniform_filter(ranks, size=(3, 3, 3, 1), mode="constant") * 27            # summed ranks per frame
+    s = ((rsum - k[..., None] * (n + 1) / 2) ** 2).sum(axis=-1)
+    w = 12 * s / (np.maximum(k, 1) ** 2 * (n ** 3 - n))
+    out = np.full(mask.shape, np.nan, np.float32)
+    out[box] = np.where(m & (k > 1.5), w, np.nan)
+    return out
+
+
 def _network_names(networks):
     """Names become "A__B" feature keys: nonstrings would fail late or collide (1 vs "1")."""
     networks = list(networks)
@@ -208,6 +266,43 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
         result['outputs']['connectivity.npz'] = sha256(out / 'connectivity.npz')
     write_json(completion, result)
     return result
+
+
+def local_measures(bold, brain_mask, confounds_tsv, confounds_json, atlas, *, tr, config=ConnectivityConfig(), band=(0.01, 0.08)):
+    """Parcel means of voxel-wise ALFF (as mALFF: divided by its brain mean), fALFF and ReHo on nuisance residuals, with exactly the censoring and regressors
+    of ``extract_connectivity`` (``nuisance_design``). ReHo uses the unsmoothed residuals. Atlas and BOLD must share a
+    standard space (e.g. ``atlases.schaefer400_mni2009c()`` on fMRIPrep's MNI152NLin2009cAsym res-2 grid); the atlas is
+    only resampled (nearest) onto the BOLD grid. Returns {"alff_<id>", "falff_<id>", "reho_<id>", "temporal"}; numbers
+    only, no QC verdict, so check ``temporal["temporal_qc_pass"]`` as for connectivity."""
+    img, mask_img, atlas_img = (nib.load(p) for p in (bold, brain_mask, atlas))
+    table = pd.read_csv(confounds_tsv, sep='\t')
+    if img.ndim != 4 or len(table) != img.shape[3]:
+        raise ValueError('BOLD/confounds length mismatch')
+    design, keep, temporal = nuisance_design(table, json.loads(Path(confounds_json).read_text()), tr, config)
+    labels = resample_from_to(atlas_img, (img.shape[:3], img.affine), order=0).get_fdata().astype(int)
+    data = img.get_fdata(dtype=np.float32)
+    brain = np.asarray(mask_img.dataobj) > 0
+    series = data[brain].T.astype(float)                                   # time x voxels
+    valid = np.isfinite(series).all(axis=0) & (np.ptp(series, axis=0) > 0)
+    kept = series[keep][:, valid]
+    residual = np.zeros((len(keep), int(valid.sum())))
+    residual[keep] = kept - design @ np.linalg.lstsq(design, kept, rcond=None)[0]
+    alff, falff = alff_falff(residual, tr, keep, band)
+    alff = alff / alff.mean()               # mALFF: raw amplitude is in scanner intensity units (Zang et al. 2007)
+    use = np.zeros(brain.shape, bool)
+    use[brain] = valid
+    res4d = np.zeros(brain.shape + (int(keep.sum()),), np.float32)
+    res4d[use] = residual[keep].T
+    reho_map = reho(res4d, use, np.ones(int(keep.sum()), bool))
+    vox_labels = labels[use]
+    out = {"temporal": temporal}
+    for k in sorted(set(np.unique(labels)) - {0}):
+        sel = vox_labels == k
+        ok = sel.sum() >= config.minimum_parcel_coverage * (labels == k).sum()   # as extract_connectivity's parcel coverage
+        out[f"alff_{k}"] = float(alff[sel].mean()) if ok else np.nan
+        out[f"falff_{k}"] = float(falff[sel].mean()) if ok else np.nan
+        out[f"reho_{k}"] = float(np.nanmean(reho_map[use & (labels == k)])) if ok else np.nan
+    return out
 
 
 # ====================================================================================================

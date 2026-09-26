@@ -113,6 +113,39 @@ Tests: `tests/test_nm.py` (planted contrast, independent noise, band-offset refi
 refined masks) and the hemisphere / no-wrap cases in `tests/test_imaging_audit.py`; refeature versioning and stale-atlas handling
 in `tests/test_imaging_regressions.py`.
 
+### Validation status (26 September 2026): not validated
+
+Pre-registered gate: PD-vs-HC AUROC ≥ 0.70 with the bootstrap 95 % CI lower bound > 0.55, on all 45 QC-passing
+healthy controls with NM-MRI and 45 randomly drawn PD patients.
+
+| Measure | HC mean (SD) | PD mean (SD) | AUROC [95 % CI] | Cohen's d |
+|---|---|---|---|---|
+| `nmt_sn_mean_cnr` (template, crus reference) | 0.181 (0.048) | 0.167 (0.051) | 0.58 [0.46, 0.70] | 0.28 |
+| `nmt_sn_post_mean_cnr` | 0.161 (0.037) | 0.144 (0.042) | 0.61 [0.49, 0.72] | 0.44 |
+| `nm_sn_mean_cnr` (atlas ROI, ring reference, `nm.py` v5) | 0.102 (0.029) | 0.100 (0.025) | 0.54 [0.42, 0.67] | 0.08 |
+| `nm_sn_posterior_mean_cnr` | 0.098 (0.026) | 0.092 (0.023) | 0.60 [0.48, 0.72] | 0.25 |
+
+Neither method passes, so `manifest.NM_VALIDATED` is False and assembled NM columns carry `nm_validated = False`:
+treat them as exploratory. Published single-site NM-MRI studies report larger effects; possible reasons here are
+PPMI's multi-site 2D GRE-MT protocol, the affine atlas placement of `nm.py`, and a defect found in the template's crus
+reference, which lies mostly above the SN (median 7 mm; about 10 % of it at SN levels). Fixing that mask is an
+anatomical, outcome-blind change; its effect must then be tested on patients not in this sample.
+
+**Re-test in progress (pre-registered 26 September 2026).** The measure under test replaces PIE's self-derived masks with the published Biondetti et al. 2020 nigral territories and background ROI (`nm_template` stage `published`, below).
+- Primary measure: the bilateral sensorimotor-territory contrast `nmb_sensorimotor_mean_cnr`, where Biondetti found the earliest PD loss.
+- Primary analysis: vendor-, age- and sex-adjusted z against HC.
+- Sample: held-out PD patients (none from the 90 above), plus the same 45 HC, whose reuse is declared.
+- Gate:
+  - AUROC ≥ 0.70;
+  - CI lower bound > 0.55;
+  - Spearman ρ ≥ 0.20 with the lowest putamen SBR.
+
+Two changes were made after pre-registration but before any confirmatory value was computed:
+- **Vendor restriction.** The primary analysis uses GE, Siemens and Toshiba, the vendors with at least 5 HC (16, 21 and 6). Philips has 2 HC, too few to estimate its offset, so its 2 HC and 4 PD enter only the unadjusted secondary analysis.
+- **Bridge-QC reference.** The first mapping of the Biondetti atlas failed its check against CIT168 SNc + SNr: centroids were 4.1 and 3.7 mm away, and 61 background voxels fell inside. NM-MRI shows the SNc, and the SNr lies ventrolateral to it; an independent registration of the same atlas gave 1.0–1.4 mm to the SNc against 3.6–3.7 mm to SNc + SNr. The check was therefore re-referenced to the SNc. The visual criterion was unchanged.
+
+The result will replace this paragraph.
+
 ## Neuromelanin volume and normalised intensity (`nm.hyperintense_volume`, `nm.normalised_intensity`)
 
 The contrast ratios above are computed on a fixed atlas mask, and deliberately exclude threshold
@@ -165,6 +198,7 @@ Every averaged slab goes into a 0.5 mm MNI midbrain box (`BOX_ORIGIN_RAS=(-30, -
 | `normalize` | `normalize_subject(work_dir, patno, fastsurfer_dir)`, `slab_in_t1` | `<work>/<patno>/nm_mni.nii.gz`, `nm_normalize_log.csv` (`mni_nonzero_frac`) |
 | `template` | `build_template(work_dir, patnos, min_frac=0.5)` → `(template, count, n)`; `template_masks(template, crus_mm=(4.0, 9.0), sn_mm=3.0, cnr_min=0.06)`; `save_template`; `template_figure` | `<work>/template/nm_template.nii.gz`, `nm_template_count.nii.gz`, `nm_template_masks.nii.gz` (1 sn_l, 2 sn_r, 3 crus_l, 4 crus_r), `template_info.txt`, `template_qc.png` |
 | `features` | `load_masks(work_dir)`, `template_features(nm_mni, masks, prefix="nmt_")` | `<work>/nm_template_features.csv` |
+| `published` | `published_masks()` (Biondetti territories + background on the box, via `atlases.biondetti_mni2009c(reference=box_path())`), `published_features(nm_mni, masks, prefix="nmb_", min_cov=0.9)` | `<work>/nm_published_features.csv` |
 
 Template: each normalised slab divided by its median inside the SN prior (bundled CIT168 SNc + SNr, `sn_prior()`)
 dilated 10 mm, averaged; voxels with data in fewer than `min_frac` of subjects are zero. Crus = darker half of the
@@ -192,8 +226,55 @@ are written under `~/nilearn_data/`.
 
 Columns: `nmt_sn_{l,r}_cnr`, `nmt_sn_{post,ant,med,lat}_{l,r}_cnr`, `nmt_{sn,sn_post,sn_ant,sn_med,sn_lat}_mean_cnr`,
 `nmt_sn_min_cnr`, `nmt_sn_asym_cnr`; QC `nmt_crus_mode_{l,r}`, `nmt_crus_cv_{l,r}`, `nmt_sn_cov_{l,r}` (fraction
-of the SN mask with data); `patno`, `error`. `manifest.assemble_features` does not read this table; join it on
-`patno` yourself. Tests: `tests/test_nm_template.py`.
+of the SN mask with data); `patno`, `error`. `manifest.assemble_features` reads this table from the NM directory and
+keeps the `nmt_*_cnr` columns, blanked where `QC["nmt"]` fails (SN coverage >= 0.9 per side, crus CV < 0.3).
+Tests: `tests/test_nm_template.py`, and the assembly case in `tests/test_imaging_regressions.py`.
+
+### Published nigral territories (`published` stage)
+
+The `published` stage needs no study template and no data-driven mask. It reads the neuromelanin contrast in the nigral territories that Biondetti et al. published (Brain 2020;143:2757, doi:10.1093/brain/awaa216).
+
+**Territories and reference.**
+- The territories are associative, limbic and sensorimotor.
+- The reference is the background ROI (BND) the authors used for SNR = 100 × mean(SN) / mean(BND). BND has three parts, in the crus cerebri and the midline tegmentum.
+- Per side (MNI x < 0 = left), contrast = mean(region) / mean(BND) − 1, i.e. SNR / 100 − 1.
+
+**Source files.**
+- Downloaded at run time from github.com/emmabiondetti/substantia-nigra-neuromelanin at commit `e34cbd5`.
+- Checked against pinned sha256 values (`atlases.BIONDETTI_FILES`).
+- The repository declares no licence, so PIE never bundles the files.
+
+**Mapping to MNI.** The authors' brain template is registered once to the TemplateFlow MNI152NLin2009cAsym brain:
+- antsRegistrationSyN[s];
+- about 15 minutes;
+- cached under `~/.cache/pie/biondetti/to_MNI152NLin2009cAsym/` together with `qc.json`.
+
+The labels are then pulled directly onto the 0.5 mm box. Where a territory and BND touch, the territory wins.
+
+**Bridge QC** (`atlases.nigral_bridge_qc`). This is an outcome-blind gate, and the bridge raises an error if it fails.
+- Criteria:
+  - per side, the SN centroid lies within 4 mm of the CIT168 SNc centroid;
+  - no BND voxel lies inside the SNc.
+- On 26 September 2026 the result was 1.7 mm (left) and 1.2 mm (right), with no BND in the SNc.
+  - The SN measured 546 + 544 mm³, and the study's independent registration gave 546 + 539 mm³.
+- On the pooled NM template, the SN is brighter than a 1.5 mm shell around it at every level:
+  - SN: +3.3 %, +3.3 %, +1.7 % from inferior to superior;
+  - sensorimotor territory: +6.0 %, +6.5 %, +1.8 %.
+- The uppermost sensorimotor levels, z −12 to −8 mm, have the weakest contrast.
+
+**Coverage and missing values.**
+- A region is missing when less than 90 % of its voxels have data.
+- The reference is missing when any of BND's three parts is below 90 %; this is the study's rule.
+- Bilateral means need both sides.
+
+**Columns.**
+- `nmb_{sn,associative,limbic,sensorimotor}_{l,r}_cnr`
+- `…_mean_cnr`
+- `…_min_cnr`
+- coverage: `nmb_*_cov_{l,r}`, `nmb_bnd_cov`, `nmb_bnd_min_part_cov`
+- `nmb_bnd_mean`
+
+`assemble_features` keeps the `nmb_*_cnr` columns. It blanks them, like `nmt_*`, wherever the slab fails `QC["nm"]`.
 
 ## DaTscan SPECT (`datscan.py`)
 
@@ -266,9 +347,11 @@ every SBR (putamen by ~0.15 on the WM scale), part of which is the upward bias o
 largest on low-count scans.
 
 No attenuation correction by default: a Chang implementation exists (`--attenuation`) but lowered agreement with
-PPMI's values. Absolute SBRs therefore sit below PPMI's; calibrating them per vendor against PPMI's published SBRs
-is study code, not part of PIE; the study validated PIE SBRs against PPMI's on 237 reference subjects (September
-2026 snapshot; `Parkinsons/study1_virtual_biomarkers/results/datscan_agreement.csv`, not in PIE). `reg_params` / `reg_center` store the fitted fixed → moving transform so ROI
+PPMI's values. Absolute SBRs therefore sit below PPMI's. `datscan.calibrate(d, {pie_column: published_column}, min_ref=15)` maps them onto a published scale.
+- It fits a linear map per camera vendor on the scans that have both values. A vendor with fewer than 15 such scans uses all vendors pooled.
+- The map is applied to every scan, so prodromal scans without published SBRs are calibrated too.
+- Match the reference regions: `sbrwm_*` to Xing's `*_REF_CWM`, and `sbr_*` to Invicro's occipital-referenced SBRs.
+- It is ported from `study1_virtual_biomarkers/calibrate_datscan.py`, where calibrated putamen SBRs correlated with PPMI's at r 0.85 on 880 reference scans. `reg_params` / `reg_center` store the fitted fixed → moving transform so ROI
 variants can be recomputed without re-registering: `transform_from_row(row)`, `requantify_row(row,
 fastsurfer_subject_dir)`.
 

@@ -102,7 +102,7 @@ def test_assemble_retains_fixel_features_and_blanks_all_failed_metrics(tmp_path)
     pd.DataFrame({"PATNO": [1, 2], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2022-01-01"] * 2,
                   "vol_Left_Putamen": [1., 1.]}).to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
     replacement = tmp_path / "dwi_v2"; replacement.mkdir()
-    pd.DataFrame({"patno": [1, 2], "motion_mm_max": [1., 8.], "n_sn_l": [4, 4], "n_sn_r": [4, 4],
+    pd.DataFrame({"patno": [1, 2], "motion_mm_max": [1., 8.], "motion_mm_mean": [.5, 3.], "sn_brain_mask_fraction": [1., 1.], "sn_physical_fraction": [.95, .95], "sn_posterior_l_fa": [.5, .5], "sn_posterior_r_fa": [.5, .5], "n_sn_l": [15, 15], "n_sn_r": [15, 15],
                   "fa_wm_median": [.4, .4], "manufacturer": ["Siemens"] * 2, "shells": ["1000"] * 2,
                   "fw_method": ["singleshell_prior"] * 2, "topup": [True, False], "fs_image_id": ["I1", "I2"],
                   "acquisition_date": ["2022-01-03"] * 2, "sn_l_fw": [.2, np.nan], "sn_r_fw": [.3, .8],
