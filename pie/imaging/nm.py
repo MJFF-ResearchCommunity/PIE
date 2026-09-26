@@ -119,12 +119,38 @@ def compatible_repeats(niis, minimum=1, limit=None):
     return selected, info
 
 
-def average_repeats(niis, sampling_seed=0, transforms_dir=None):
-    """Align/average one compatible reconstruction per acquisition; return image, metadata, count, motion."""
+def _mppca_centre(stack, frac=0.5):
+    """MP-PCA (5-voxel patches) over the central ``frac`` of the two in-plane axes of stacked repeats, the rest left as
+    it is. MP-PCA is patch-local: beyond two patch radii of the crop edge (the midbrain is central in PPMI's
+    head-centred slabs) values equal whole-slab MP-PCA, about four times faster (whole slab: ~8 CPU-min per subject)."""
+    from dipy.denoise.localpca import mppca
+
+    inplane = np.argsort(stack.shape[:3])[1:]
+    sl = [slice(None)] * 3
+    for ax in inplane:
+        n = stack.shape[ax]
+        sl[ax] = slice((n - int(n * frac)) // 2, (n - int(n * frac)) // 2 + int(n * frac))
+    out = stack.copy()
+    out[tuple(sl)] = mppca(stack[tuple(sl)], patch_radius=2, suppress_warning=True)
+    return out
+
+
+def average_repeats(niis, sampling_seed=0, transforms_dir=None, denoise=False):
+    """Align/average one compatible reconstruction per acquisition; return image, metadata, count, motion.
+    ``denoise``: MP-PCA (Veraart et al. 2016, DIPY ``mppca``, 5-voxel patches) over the stacked repeats before
+    alignment, as in the published PPMI nigral-volume pipeline (Langley et al. 2025), on the slab's central in-plane
+    half (``_mppca_centre``). On a phantom it cut the error of the average about threefold in uniform tissue but only
+    by ~20 % around a bright nigra-like block, whose contrast it kept within 10 %."""
     import SimpleITK as sitk
 
     selected, info = compatible_repeats(niis)
     group = [(r['image'], r['path']) for r in selected]
+    # a clean magnitude slab reaches its maximum in a few voxels; a scanner-clipped one (PPMI: 12-bit ceiling 4095) in
+    # a large fraction of the brain, which destroys the nigral contrast
+    clipped = max(float((a == a.max()).mean()) if a.max() > 0 else 0.0 for a in (np.asanyarray(img.dataobj) for img, _ in group))
+    if denoise and len(group) >= 3:
+        stack = _mppca_centre(np.stack([np.asanyarray(img.dataobj).astype(np.float32) for img, _ in group], axis=-1))
+        group = [(nib.Nifti1Image(stack[..., i], img.affine), path) for i, (img, path) in enumerate(group)]
     ref_img = group[0][0]
     ref = _sitk_native(np.asanyarray(ref_img.dataobj).astype(np.float32), ref_img.affine)
     acc = sitk.GetArrayFromImage(ref).astype(np.float64)
@@ -148,6 +174,8 @@ def average_repeats(niis, sampling_seed=0, transforms_dir=None):
                  Path(transforms_dir) / 'repeat_support_fraction.nii.gz')
     meta = dict(selected[0]['meta'])
     meta['PIERepeatSelection'] = dict(info, volumes=[{k: v for k, v in r.items() if k != 'image'} for r in selected])
+    meta['PIEDenoise'] = 'mppca' if denoise and len(group) >= 3 else 'none'
+    meta['PIEClippedFraction'] = clipped
     return nib.Nifti1Image(np.transpose(mean, (2, 1, 0)), ref_img.affine), meta, len(group), float(max(motion))
 
 
@@ -437,7 +465,7 @@ def register_slab(nm_img, fastsurfer_dir, sampling_seed=0):
 
 
 # ------------------------------------------------------------------------------------------ driver
-def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, sampling_seed=0, keep_raw=False):
+def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, sampling_seed=0, keep_raw=False, denoise=False):
     import SimpleITK as sitk
 
     sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)
@@ -446,10 +474,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     niis = []
     for r in series_rows:
         niis += convert(r["zip"], r["prefix"], work / "nii")
-    nm_img, meta, n_rep, motion = average_repeats(niis, sampling_seed=sampling_seed,
+    nm_img, meta, n_rep, motion = average_repeats(niis, sampling_seed=sampling_seed, denoise=denoise,
                                                 transforms_dir=work / 'repeat_transforms' if keep_nifti else None)
     (work / 'repeat_selection.json').write_text(json.dumps(meta['PIERepeatSelection'], indent=2))
-    row = {"patno": patno, "n_series": len(series_rows), "n_repeats": n_rep, "repeat_motion_mm_max": motion,
+    row = {"patno": patno, "n_series": len(series_rows), "n_repeats": n_rep, "repeat_motion_mm_max": motion, "denoise": meta["PIEDenoise"], "nm_clipped_fraction": meta["PIEClippedFraction"],
            "shape": "x".join(map(str, nm_img.shape)), "voxel_mm": "x".join(str(round(float(z), 2)) for z in nm_img.header.get_zooms()[:3]),
            "manufacturer": str(meta.get("Manufacturer", "")), "model": str(meta.get("ManufacturersModelName", meta.get("ManufacturerModelName", ""))),
            "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "flip_angle": meta.get("FlipAngle", np.nan),
@@ -491,9 +519,9 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep = args
+    patno, rows, fs_dir, work_dir, keep, denoise = args
     try:
-        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep)
+        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, denoise=denoise)
         out["error"] = out.pop("nm_error", "")
     except Exception as e:
         out = {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -506,6 +534,7 @@ def main(argv=None):
     from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows
 
     ap = add_common_args(argparse.ArgumentParser())
+    ap.add_argument("--denoise", action="store_true", help="MP-PCA over the repeats before averaging (Langley et al. 2025)")
     ap.add_argument("--refeature", action="store_true", help="recompute the feature columns of every finished subject from the saved "
                     "slab and label maps (--keep-nifti outputs); the previous table is kept as *.pre_refeature.csv")
     a = ap.parse_args(argv)
@@ -541,7 +570,7 @@ def main(argv=None):
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
     out_csv = work / "nm_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti)
+    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.denoise)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, pid_file=a.pid_file)
 

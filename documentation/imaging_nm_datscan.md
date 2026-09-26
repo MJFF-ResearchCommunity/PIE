@@ -7,7 +7,54 @@ Part of the [imaging layer](imaging.md). Both read the subject's FastSurfer T1 (
 |---|---|---|
 | `nm.py` | `nm_features.csv`: nigral contrast ratios on the native NM slab | dcm2niix, SimpleITK (the MNI target is bundled with PIE) |
 | `nm_template.py` | `nm_template_features.csv`: contrast in a study NM template | + ANTsPy (`ants`), scikit-image, nilearn; the 1 mm MNI152NLin2009cAsym target is fetched from TemplateFlow once |
+| `nm_native.py` | `nm_native_features.csv`: published measures on the native slab (Langley SNc volume, snceg segmentation) | + ANTsPy; snceg in its own environment (`PIE_SNCEG_PYTHON`) |
 | `datscan.py` | `datscan_sbr.csv`: striatal binding ratios from raw projections | pydicom, scikit-image, SimpleITK |
+
+## Neuromelanin MRI in PIE: methods, evidence and status
+
+Neuromelanin-sensitive MRI shows the pigmented dopaminergic neurons of the substantia nigra pars compacta (SNc) as a bright band [Sasaki 2006; Cassidy 2019]. In PD the band loses signal and shrinks, first in its posterolateral (sensorimotor) part [Biondetti 2020].
+
+**How the field quantifies it.**
+
+| Approach | Status in the field | PIE |
+|---|---|---|
+| **SNc volume from a reference-based threshold, in native space**: voxels in a nigral search region brighter than a crus/peduncle reference mean + k SD | The most widely used and best-replicated measure. Meta-analyses find volume beats contrast [Cho 2021]; scan–rescan reliability is high [Langley 2016; Wengler 2020]. Published on this PPMI protocol, Siemens only [Langley 2025]: HC 395 ± 117 mm³, de novo PD 309 ± 100 mm³ (d ≈ 0.83). Emory Siemens cohorts: AUROC 0.756 and 0.749 [Hwang 2023] | `nm_native` (`nml_*`) on MP-PCA-denoised repeats (`nm --denoise`), k = 2.8 as published. Reproduction pending (below) |
+| **Contrast ratio or CNR of the SN against a crus or tegmental reference** | Standard; slightly less discriminative than volume [Cho 2021] | `nm.py` (atlas ROI, ring reference); `nm_template` (template mask, crus mode); `nm_template published` (Biondetti territories); `nm_native` snceg CR/CNR |
+| **Deep-learning segmentation of the NM-hyperintense SN** | State of the art. snceg is public (MIT): a multi-site-trained Attention U-Net, validated on PPMI GRE-MT segmentation. PPMI TSE: PD vs HC AUROC 0.743 with the contrast ratio against the crus [Lillebostad 2025] | `nm_native --snceg` (`nms_*`), pinned weights. Reproduction pending |
+| **Voxelwise analysis in template space with CNR against the crus mode** | State of the art for group maps; reproducible [Wengler 2020; Cassidy 2019] | `nm_template` (`nmt_*`) |
+| **Functional territories** (associative, limbic, sensorimotor) | State of the art for early-PD localisation [Biondetti 2020] | `nm_template published` (`nmb_*`), `nm_native` region codes |
+| **Multi-site harmonisation** | ComBat preserves the age effect while removing scanner effects [Wengler 2021]; vendor matters [Trujillo 2024] | `nm_acquisition_batch` in the manifest, harmonised in-fold (`pie.experiment.prediction.ImageDesign`) |
+
+**What PIE found on PPMI** (September 2026 download, pre-registered tests; see "Validation status" below).
+- Mean contrast in fixed masks separates de novo PD from HC only modestly: AUROC 0.54–0.62. This holds for the atlas ROI, the template, and the Biondetti territories on 106 held-out PD.
+- A cross-validated 8-territory model reaches 0.67.
+- The sensorimotor-territory loss and relative limbic sparing replicated across samples.
+- Separation depends strongly on scanner vendor. Unadjusted sensorimotor AUROC is GE 0.53, Siemens 0.70 and Toshiba 0.97 (6 HC / 5 PD). The published PPMI volume study used Siemens only.
+- PIE's download held NM for 48 HC and 170 PD, where PPMI's acquisition metadata lists 112 HC and 631 PD. The missing scans, mostly baseline, are the main limit on precision.
+
+**PIE's position.**
+- **Native-space threshold volume (`nm_native`, Langley method).** This is PIE's candidate primary NM measure. Its status becomes "reproduces the published PPMI result" only if the reproduction below meets its pre-registered criterion.
+- **snceg segmentation.** This is the state-of-the-art alternative.
+- **Template and territory contrasts.** These remain for voxelwise and regional work.
+- **Everything assembled.** `manifest.NM_VALIDATED` stays False until a measure passes.
+
+**Reproductions of published methods** (pre-registered 26–27 September 2026):
+
+| | Published | Target | PIE result |
+|---|---|---|---|
+| R1 [Langley 2025] | PPMI Siemens GRE-MT, SNc volume, d ≈ 0.83 | p < 0.05 and PIE's d CI contains 0.83 | **Pilot: not reproduced.** 21 HC and 82 de novo PD, Siemens. HC 706 ± 290 vs PD 706 ± 218 mm³; adjusted d 0.01 [−0.63, 0.60]; AUROC 0.48. The full run follows the missing-NM download. See the note below |
+| R1b [Hwang 2023] | Emory Siemens, AUROC 0.756 / 0.749 | CI contains the published AUROC | pending (Dryad doi:10.6086/D1709N, CC0; browser download) |
+| R2 [Lillebostad 2025] | PPMI Siemens TSE-FS, snceg CR vs crus, AUROC 0.743 | CI contains 0.743, lower bound > 0.5 | pending (needs the PPMI-1 `Axial PD-T2 TSE FS` series) |
+
+**Why the R1 pilot differs from Langley 2025** (diagnosed across all scans, without group labels).
+- PIE's search region is the Biondetti nigra plus a 1 mm ring: about 1,600 mm³ on the native slab.
+- After MP-PCA the crus is very uniform (CV 3.7 %), so the mean + 2.8 SD threshold sits only about 10 % above the crus.
+- The nigra's mean contrast is about 12 %, so roughly half its voxels fall on either side of the threshold, and the volume tracks noise around it.
+- PIE's control volumes (706 mm³) are about 1.8 times Langley's (395 mm³).
+
+With the public Biondetti ROIs, this is therefore not Langley's measure. A faithful reproduction needs their SNc atlas and cerebral-peduncle ROI, which are not public; the corresponding author is X. P. Hu, UC Riverside. PIE has not tuned the search region or k after seeing the pilot. Any such change would be exploratory.
+
+On the same scans, snceg's segmented-nigra contrast against the crus separated de novo PD from HC at d 0.54 [0.16, 0.98] (p = 0.01), AUROC 0.62. That is exploratory: there is no published PPMI GRE-MT target. The snceg volume did not separate the groups (d −0.06).
 
 ## Neuromelanin-sensitive MRI (`nm.py`)
 
@@ -99,7 +146,7 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 | `nm_sn_mean_cnr`, `nm_sn_posterior_mean_cnr`, `nm_sn_anterior_mean_cnr`, `nm_sn_min_cnr`, `nm_sn_asym_cnr`, `nm_sn_mean_cnr_atlas` | Bilateral mean, min, \|L−R\| |
 | `nm_sn_{l,r}_mean`, `nm_ring_mean`, `nm_ring_sd`, `n_ring`, `nm_ref_{l,r}_mean`, `nm_ref_{l,r}_sd`, `n_ref_{l,r}`, `n_sn_{l,r}` | Raw intensities and voxel counts |
 | `nm_sn_shift_mm_{l,r}` | Refinement displacement (mm) |
-| `n_repeats`, `repeat_motion_mm_max`, `reg_nm_t1_mi`, `reg_t1_mni_mi`, `reg_init`, `sn_slab_coverage` | QC |
+| `n_repeats`, `repeat_motion_mm_max`, `nm_clipped_fraction`, `reg_nm_t1_mi`, `reg_t1_mni_mi`, `reg_init`, `sn_slab_coverage` | QC |
 | `shape`, `voxel_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `flip_angle`, `mt_flag`, `series_desc`, `n_series` | Acquisition |
 | `patno`, `acquisition_date`, `fs_image_id`, `processing_version`, `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold`, `registration_reference_space`, `registration_reference_sha256`, `error` | Lineage |
 
@@ -107,7 +154,13 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 ratio, not a bounded fraction. New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-09-16-explicit-mni2009c-reference-v5`; `--refeature` rows get that string plus `-refeatured`.
 `manifest.QC["nm"]`: `n_sn_l >= 20`, `n_sn_r >= 20`, `sn_slab_coverage >= 0.5`, `repeat_motion_mm_max < 3`, and
 `nm_ref_{l,r}_sd < 0.4 x nm_ref_{l,r}_mean` (a reference partly outside the slab has CV near 1 and meaningless
-CNR; this rejected 7 of 646 Philips scans in the September 2026 snapshot). The assembled table keeps `nm_*` columns ending `_cnr` (so not `_cnr_crus` / `_cnr_atlas`).
+CNR; this rejected 7 of 646 Philips scans in the September 2026 snapshot), and `nm_clipped_fraction <= 0.01`.
+`nm_clipped_fraction` is the largest fraction, over the raw repeats, of voxels at that repeat's maximum value.
+- A clean slab reaches its maximum in a handful of voxels (about 3 × 10⁻⁷ of the slab).
+- A scanner-clipped one saturates the brain. On a PPMI Siemens Prisma_fit scan, 37 % of voxels sat at the 12-bit ceiling of 4095, and snceg found 2 mm³ of nigra.
+- Tables written before 26 September 2026 lack the column, and their rows pass this criterion.
+
+The assembled table keeps `nm_*` columns ending `_cnr` (so not `_cnr_crus` / `_cnr_atlas`).
 
 Tests: `tests/test_nm.py` (planted contrast, independent noise, band-offset refinement, reference excludes both
 refined masks) and the hemisphere / no-wrap cases in `tests/test_imaging_audit.py`; refeature versioning and stale-atlas handling
@@ -131,20 +184,62 @@ PPMI's multi-site 2D GRE-MT protocol, the affine atlas placement of `nm.py`, and
 reference, which lies mostly above the SN (median 7 mm; about 10 % of it at SN levels). Fixing that mask is an
 anatomical, outcome-blind change; its effect must then be tested on patients not in this sample.
 
-**Re-test in progress (pre-registered 26 September 2026).** The measure under test replaces PIE's self-derived masks with the published Biondetti et al. 2020 nigral territories and background ROI (`nm_template` stage `published`, below).
-- Primary measure: the bilateral sensorimotor-territory contrast `nmb_sensorimotor_mean_cnr`, where Biondetti found the earliest PD loss.
-- Primary analysis: vendor-, age- and sex-adjusted z against HC.
-- Sample: held-out PD patients (none from the 90 above), plus the same 45 HC, whose reuse is declared.
-- Gate:
-  - AUROC ≥ 0.70;
-  - CI lower bound > 0.55;
-  - Spearman ρ ≥ 0.20 with the lowest putamen SBR.
+### Re-test with published nigral territories (26 September 2026): not validated
 
-Two changes were made after pre-registration but before any confirmatory value was computed:
-- **Vendor restriction.** The primary analysis uses GE, Siemens and Toshiba, the vendors with at least 5 HC (16, 21 and 6). Philips has 2 HC, too few to estimate its offset, so its 2 HC and 4 PD enter only the unadjusted secondary analysis.
-- **Bridge-QC reference.** The first mapping of the Biondetti atlas failed its check against CIT168 SNc + SNr: centroids were 4.1 and 3.7 mm away, and 61 background voxels fell inside. NM-MRI shows the SNc, and the SNr lies ventrolateral to it; an independent registration of the same atlas gave 1.0–1.4 mm to the SNc against 3.6–3.7 mm to SNc + SNr. The check was therefore re-referenced to the SNc. The visual criterion was unchanged.
+The re-test replaces PIE's self-derived masks with the published Biondetti et al. 2020 nigral territories and background ROI (`nm_template` stage `published`, below). Both tests were written down before any held-out value was compared.
 
-The result will replace this paragraph.
+**Sample.**
+- PD: held-out patients, none from the 90 above. 120 were processed, all passing `QC["nm"]`.
+- HC: the same 45, whose reuse is declared.
+- Primary analysis: GE, Siemens and Toshiba only.
+- After mask coverage: 106 PD and 39 HC.
+
+**Gate.**
+- AUROC ≥ 0.70;
+- CI lower bound > 0.55;
+- Spearman ρ ≥ 0.20 with the lowest putamen SBR.
+
+| Test | Measure | AUROC [CI] | ρ with lowest putamen SBR | Result |
+|---|---|---|---|---|
+| 1 | Bilateral sensorimotor-territory contrast `nmb_sensorimotor_mean_cnr` (where Biondetti found the earliest loss); vendor-, age- and sex-adjusted z against leave-one-out HC | 0.62 [0.53, 0.72] | +0.18 (n = 133); within PD +0.01 | Fail |
+| 2 | Eight territory × side contrasts: training-HC z, then L2 logistic regression, 5-fold CV × 20; 97.5 % CI for the second test | 0.67 [0.55, 0.78] | +0.20 (0.196); within PD +0.01 | Fail |
+
+Secondary measures (test 1 design; AUROC, HC > PD):
+
+| Measure | AUROC |
+|---|---|
+| Whole SN | 0.58 |
+| Associative territory | 0.63 |
+| Limbic territory (PD higher) | 0.44 |
+| Sensorimotor, lower side | 0.59 |
+
+**Replicated findings.** The spatial pattern held in the development sample (0.59 and 0.67) and in the held-out patients:
+- PD have lower NM in the sensorimotor territory (0.079 vs 0.089);
+- PD have relatively preserved or higher NM in the limbic territory (0.130 vs 0.122);
+- the model's weights are negative on sensorimotor and positive on limbic.
+
+This matches the lateral-to-medial gradient of nigral cell loss.
+
+**Scanner vendor.** Separation differs strongly by vendor. Unadjusted sensorimotor AUROC:
+
+| Vendor | AUROC | HC / PD |
+|---|---|---|
+| GE | 0.53 | 16 / 42 |
+| Siemens | 0.70 | 21 / 69 |
+| Toshiba | 0.97 | 6 / 5 |
+
+The PD–HC difference is small next to between-subject and between-scanner spread.
+
+**Status.** NM columns stay exploratory (`manifest.NM_VALIDATED = False`). The held-out patients have now been used, so any further NM hypothesis, for example Siemens-only, needs new data.
+
+**Changes after pre-registration, before any confirmatory value.**
+- **Vendor restriction.** The primary analysis uses the vendors with at least 5 HC: GE 16, Siemens 21, Toshiba 6. Philips has 2 HC, too few to estimate its offset.
+- **Bridge-QC reference.** The first mapping of the Biondetti atlas failed its check against CIT168 SNc + SNr: centroids were 4.1 and 3.7 mm away, and 61 background voxels fell inside.
+  - NM-MRI shows the SNc, and the SNr lies ventrolateral to it.
+  - An independent registration of the same atlas gave 1.0–1.4 mm to the SNc against 3.6–3.7 mm to SNc + SNr.
+  - The check was therefore re-referenced to the SNc; the visual criterion was unchanged.
+- **Test 2.** It was added at the user's request after the development sample gave 0.59 for test 1, and before unblinding.
+- **Bug fix.** A bug that left the DaT correlation empty was fixed before unblinding: sessions were de-duplicated by image ID alone.
 
 ## Neuromelanin volume and normalised intensity (`nm.hyperintense_volume`, `nm.normalised_intensity`)
 
@@ -275,6 +370,74 @@ The labels are then pulled directly onto the 0.5 mm box. Where a territory and B
 - `nmb_bnd_mean`
 
 `assemble_features` keeps the `nmb_*_cnr` columns. It blanks them, like `nmt_*`, wherever the slab fails `QC["nm"]`.
+
+## Native-space published measures (`nm_native.py`)
+
+Every measure is read on the subject's own averaged slab (`nm_mean.nii.gz`). The slab itself is never resampled.
+- **Region labels.** They are defined once in MNI152NLin2009cAsym (`region_labels`) and pulled onto the slab grid in one nearest-label resampling (`pull_labels`).
+- **Transform chain.** Slab → T1 is the inverse of the rigid `slab_to_t1.tfm` from `nm.register_slab`. T1 → MNI is the inverse of the cached `nm_template syn` warp.
+- **Inverse warp.** `inverse_warp` inverts the cropped forward SyN displacement field with ANTs (`invert_displacement_field`) and caches it beside it (`*1InverseWarp*`). A synthetic test checks this against ANTs' own inverse (Dice > 0.95).
+- **Region codes.** Each label is region + 100 × side (1 left, 2 right). The regions are:
+  - Biondetti territories 1–3;
+  - `RING = 5`, the 1 mm search ring around the nigra;
+  - `CRUS = 21`, the lateral parts of the Biondetti background ROI;
+  - `TEGMENTUM = 23`, its midline part.
+- **Coverage.** The share of each region the slab contains comes from the same pull onto the slab grid padded along its normal. A side whose search region or crus is less than 90 % inside the slab is missing.
+
+| Measure | Function | Columns |
+|---|---|---|
+| **Langley SNc volume** [Langley 2025; Hwang 2023]: search region (nigra + 1 mm) voxels above the crus mean + 2.8 SD (`nm.hyperintense_volume`); run `nm --denoise` first. That is MP-PCA over the repeats before averaging [Veraart 2016], as published, on the slab's central in-plane half, which equals whole-slab MP-PCA in the midbrain at about 2 CPU-min per subject. On a phantom it cut the error of the average about threefold in uniform tissue, by about 20 % around a nigra-like block, and kept that block's contrast within 10 % | `langley_features(nm_img, codes, k=2.8)` | `nml_sn_volume_mm3`, `nml_sn_volume_{l,r}_mm3`, `nml_threshold`, `nml_ref_mean`, `nml_ref_sd`, `nml_n_ref`, `nml_k` |
+| **snceg** [Lillebostad 2025]: model output on the native slab; crus reference excludes segmented voxels | `snceg_mask(nm_path, out_path)`, `snceg_features(nm_img, sn, codes)` | `nms_sn_volume_mm3`, `nms_sn_volume_{l,r}_mm3`, `nms_sn_{l,r,mean}_cr` (I_SN / I_crus − 1), `nms_sn_{l,r,mean}_cnr` ((I_SN − I_crus) / SD_crus), `nms_crus_mean`, `nms_crus_sd` |
+| QC | `process_subject` | `native_cov_search_{l,r}`, `native_cov_crus_{l,r}` |
+
+**Departures from the publications.**
+- Langley's own SNc atlas and cerebral-peduncle ROI are not public. PIE uses the published Biondetti nigral mask, dilated 1 mm as Langley dilate theirs, and the crus parts of Biondetti's background ROI. Absolute volumes can therefore differ from theirs; the effect size is the reproduction target.
+- Registration uses ANTs SyN to MNI152NLin2009cAsym with a rigid MI slab-to-T1 step. Langley used FSL FNIRT and boundary-based registration.
+- For its GRE analysis, Lillebostad's crus reference is the same Biondetti background ROI.
+
+**snceg setup.**
+- Weights: fetched from `huggingface.co/lillepeder/SNceg-0.1` at revision `6bcddc5f`, sha256-pinned (`SNCEG_FILES`), into `~/.cache/pie/snceg/`.
+- Model: a pickled fastMONAI learner that needs torch 2.0.1, fastMONAI 0.4.0.2 and numpy 1.26. PIE's own environment cannot hold those, so `snceg_runner.py` (adapted from `snceg.py`, MIT) runs in a separate Python 3.11 environment:
+
+```bash
+/usr/bin/python3.11 -m venv third_party/snceg_venv
+third_party/snceg_venv/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch==2.0.1 torchvision==0.15.2 fastMONAI==0.4.0.2 fastai==2.7.12 monai==1.2.0 torchio==0.18.91 \
+    huggingface-hub==0.23.4 numpy==1.26.0
+export PIE_SNCEG_PYTHON=$PWD/third_party/snceg_venv/bin/python     # the default path
+```
+
+A subject takes about 8 s on CPU. The mask must come back on the input grid, or the call raises.
+
+```bash
+venv_imaging/bin/python -m pie.imaging.nm --zips … --sessions … --fastsurfer-dir … --work-dir <w> --keep-nifti --denoise
+venv_imaging/bin/python -m pie.imaging.nm_template syn --sessions … --fastsurfer-dir … --work-dir <w>
+venv_imaging/bin/python -m pie.imaging.nm_native --sessions … --fastsurfer-dir … --work-dir <w> --workers 6 --snceg
+```
+
+`manifest.assemble_features` keeps `nml_sn_volume*_mm3` and `nms_sn*_{mm3,cr,cnr}`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`. Tests are in `tests/test_nm_native.py`:
+- a real ANTs SyN between synthetic volumes;
+- an oblique thin slab;
+- coverage;
+- region codes;
+- the threshold volume per side;
+- snceg features;
+- the snceg environment contract.
+
+### References (neuromelanin)
+
+- Biondetti E, Gaurav R, Yahia-Cherif L, et al. Spatiotemporal changes in substantia nigra neuromelanin content in Parkinson's disease. *Brain* 2020;143:2757–2770. doi:10.1093/brain/awaa216. Atlas: github.com/emmabiondetti/substantia-nigra-neuromelanin.
+- Cassidy CM, Zucca FA, Girgis RR, et al. Neuromelanin-sensitive MRI as a noninvasive proxy measure of dopamine function in the human brain. *PNAS* 2019;116:5108–5117. doi:10.1073/pnas.1807983116.
+- Cho SJ, Bae YJ, Kim JM, et al. Diagnostic performance of neuromelanin-sensitive magnetic resonance imaging for patients with Parkinson's disease and factor analysis for its heterogeneity: a systematic review and meta-analysis. *Eur Radiol* 2021;31:1268–1280. doi:10.1007/s00330-020-07240-7.
+- Hwang KS, Langley J, Tripathi R, et al. In vivo detection of substantia nigra and locus coeruleus volume loss in Parkinson's disease using neuromelanin-sensitive MRI: replication in two cohorts. *PLOS ONE* 2023;18:e0282684. doi:10.1371/journal.pone.0282684. Data: Dryad doi:10.6086/D1709N (CC0).
+- Langley J, Huddleston DE, Liu CJ, Hu X. Reproducibility of locus coeruleus and substantia nigra imaging with neuromelanin sensitive MRI. *MAGMA* 2017;30:121–125. doi:10.1007/s10334-016-0590-z.
+- Langley J, Hwang KS, Huddleston DE, Hu XP, PPMI. Nigral volume loss in prodromal, early, and moderate Parkinson's disease. *npj Parkinson's Disease* 2025;11:181. doi:10.1038/s41531-025-00976-3.
+- Lillebostad PAG, Njølstad TH, Hogstad S, et al. Deep-learning segmentation of the substantia nigra from multiparametric MRI: application to Parkinson's disease. *Imaging Neuroscience* 2025;3:IMAG.a.158. doi:10.1162/imag.a.158. Code: github.com/lillepeder/snceg (MIT).
+- Sasaki M, Shibata E, Tohyama K, et al. Neuromelanin magnetic resonance imaging of locus ceruleus and substantia nigra in Parkinson's disease. *NeuroReport* 2006;17:1215–1218. doi:10.1097/01.wnr.0000227984.84927.a7.
+- Trujillo P, Aumann MA, Claassen DO. Neuromelanin-sensitive MRI as a promising biomarker of catecholamine function. *Brain* 2024;147:337–351. doi:10.1093/brain/awad300.
+- Veraart J, Fieremans E, Novikov DS. Diffusion MRI noise mapping using random matrix theory. *Magn Reson Med* 2016;76:1582–1593. doi:10.1002/mrm.26059.
+- Wengler K, He X, Abi-Dargham A, Horga G. Reproducibility assessment of neuromelanin-sensitive magnetic resonance imaging protocols for region-of-interest and voxelwise analyses. *NeuroImage* 2020;208:116457. doi:10.1016/j.neuroimage.2019.116457.
+- Wengler K, Cassidy C, van der Pluijm M, et al. Cross-scanner harmonization of neuromelanin-sensitive MRI for multisite studies. *J Magn Reson Imaging* 2021;54:1189–1199. doi:10.1002/jmri.27679.
 
 ## DaTscan SPECT (`datscan.py`)
 

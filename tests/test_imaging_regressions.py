@@ -943,8 +943,14 @@ def test_freesurfer_run_timeout_kills_the_whole_process_tree(tmp_path):
     with pytest.raises(subprocess.TimeoutExpired):
         freesurfer.run([script], tmp_path / "log", tmp_path, env=dict(os.environ), timeout=1)
     pid = int((tmp_path / "child.pid").read_text())
+    def gone():
+        try:
+            return "State:\tZ" in Path(f"/proc/{pid}/status").read_text()     # a zombie is dead, awaiting its reaper
+        except OSError:                                                   # vanished (ENOENT) or vanishing (ESRCH) mid-read
+            return True
+
     for _ in range(40):
-        if not Path(f"/proc/{pid}").exists() or "State:\tZ" in Path(f"/proc/{pid}/status").read_text():
+        if gone():
             break
         time.sleep(0.05)
     else:
@@ -1080,3 +1086,61 @@ def test_dat_labels_fall_back_to_invicro_for_scans_xing_never_analysed(tmp_path)
     d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
     assert d.loc[21, "sbr_source"] == "invicro_occipital" and d.loc[21, "dat_deficit_sbr"] == 1 and d.loc[21, "dat_visual"] == 1
     assert d.loc[1, "sbr_source"] == "xing_cwm" and d.index.is_unique  # Xing stays primary; one row per session
+
+
+def test_dat_labels_keep_every_participant_even_when_image_ids_repeat(tmp_path):
+    ppmi, sessions = _ppmi(tmp_path)
+    d = labels.dat_labels(ppmi, sessions.assign(image_id="x"))                # callers without real image IDs
+    assert d["PATNO"].nunique() == 21                                          # 22 minus the TRODAT scan
+
+
+def test_assembly_reads_native_nm_measures_under_the_slab_qc(tmp_path):
+    _idps(tmp_path)
+    (tmp_path / "nm").mkdir()
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "n_sn_l": [40, 40], "n_sn_r": [40, 40], "sn_slab_coverage": [1., 1.],
+                  "repeat_motion_mm_max": [.5, 5.], "nm_ref_l_sd": [1., 1.], "nm_ref_l_mean": [10., 10.], "nm_ref_r_sd": [1., 1.],
+                  "nm_ref_r_mean": [10., 10.], "manufacturer": ["SIEMENS"] * 2, "voxel_mm": ["0.5x0.5x2.0"] * 2,
+                  "nm_sn_mean_cnr": [.1, .1]}).to_csv(tmp_path / "nm" / "nm_features.csv", index=False)
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "nml_sn_volume_mm3": [400., 300.], "nml_threshold": [1500., 1500.],
+                  "nms_sn_mean_cr": [.18, .15], "nms_sn_volume_mm3": [600., 500.], "native_cov_search_l": [1., 1.]})\
+        .to_csv(tmp_path / "nm" / "nm_native_features.csv", index=False)
+    f = manifest.assemble_features(tmp_path).set_index("PATNO")
+    assert f.loc[1, "nml_sn_volume_mm3"] == 400 and f.loc[1, "nms_sn_mean_cr"] == .18 and "nml_threshold" not in f
+    assert np.isnan(f.loc[2, "nml_sn_volume_mm3"]) and np.isnan(f.loc[2, "nms_sn_mean_cr"])      # 5 mm motion: slab fails
+    blocks = manifest.feature_blocks(f.columns)["nm"]
+    assert {"nml_sn_volume_mm3", "nms_sn_mean_cr", "nms_sn_volume_mm3"} <= set(blocks)
+
+
+def test_series_indexes_skip_phantom_scans_with_non_numeric_subject_ids(tmp_path):
+    import zipfile
+
+    from pie.imaging import batch, index
+
+    zp = tmp_path / "loni.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("PPMI/1/MPRAGE/2000-01-01_09_00_00.0/I000001/a.dcm", b"x")
+        z.writestr("PPMI/00000JAN00/MPRAGE/2011-04-27_09_00_00.0/I000002/a.dcm", b"x")   # LONI phantom subject
+    assert batch.index_series([zp])["patno"].tolist() == [1]
+    assert index.index_zips([zp])["patno"].tolist() == [1]
+
+
+def test_ida_metadata_reads_namespaced_records_and_skips_phantoms(tmp_path):
+    import zipfile
+
+    from pie.imaging.index import read_ida_metadata
+
+    def xml(subject, image):
+        return (f'<?xml version="1.0"?><idaxs xmlns="http://ida.loni.usc.edu"><project xmlns=""><subject>'
+                f'<subjectIdentifier>{subject}</subjectIdentifier><researchGroup>PD</researchGroup>'
+                f'<visit><visitIdentifier>Baseline</visitIdentifier></visit><study><subjectAge>60.0</subjectAge>'
+                f'<series><dateAcquired>2000-01-01</dateAcquired></series><imagingProtocol><imageUID>{image}</imageUID>'
+                f'<description>MPRAGE</description><protocolTerm><protocol term="Manufacturer">SIEMENS</protocol>'
+                f'</protocolTerm></imagingProtocol></study></subject></project></idaxs>')
+
+    zp = tmp_path / "meta.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("PPMI/PPMI_1_MPRAGE_S1_I000001.xml", xml("1", "000001"))
+        z.writestr("PPMI/PPMI_00000JAN00_MPRAGE_S2_I000002.xml", xml("00000JAN00", "000002"))
+    d = read_ida_metadata(zp)
+    assert d["image_id"].tolist() == ["I000001"]
+    assert d[["patno", "ida_visit", "ida_manufacturer"]].iloc[0].tolist() == [1, "Baseline", "SIEMENS"]

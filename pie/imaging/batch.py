@@ -31,6 +31,8 @@ def index_series(zips):
                     counts[key] = counts.get(key, 0) + 1
         for key, c in counts.items():
             _, patno, desc, date, image_id = key.split("/")
+            if not patno.isdigit():          # LONI phantom scans ("00000JAN00") are not participants
+                continue
             rows.append({"zip": str(zp), "prefix": key + "/", "patno": int(patno), "desc": desc, "date": date[:10], "image_id": image_id, "n_files": c})
     return pd.DataFrame(rows)
 

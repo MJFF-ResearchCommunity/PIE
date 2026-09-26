@@ -33,7 +33,7 @@ def index_zips(zip_paths, cache_csv=None):
         with zipfile.ZipFile(zp) as z:
             for info in z.infolist():
                 parts = info.filename.split("/")
-                if len(parts) != 6 or info.is_dir():
+                if len(parts) != 6 or info.is_dir() or not parts[1].isdigit():   # phantom scans are not participants
                     continue
                 _, patno, desc, session, image_id, _fname = parts
                 key = (zp, patno, desc, session, image_id)
@@ -128,9 +128,11 @@ def read_ida_metadata(paths):
             docs = [f.read_bytes() for f in p.rglob("*.xml")]
         for doc in docs:
             root = ET.fromstring(doc)
-            if root.tag != "idaxs":
+            if root.tag.rsplit("}", 1)[-1] != "idaxs":          # newer downloads namespace the root: {http://ida.loni.usc.edu}idaxs
                 continue
             get = lambda tag: (root.find(f".//{tag}").text if root.find(f".//{tag}") is not None else None)
+            if not (get("subjectIdentifier") or "").isdigit():   # LONI phantom scans are not participants
+                continue
             prot = {e.get("term"): e.text for e in root.iter("protocol")}
             rows.append({"image_id": "I" + get("imageUID"), "patno": int(get("subjectIdentifier")), "ida_group": get("researchGroup"),
                          "ida_visit": get("visitIdentifier"), "ida_age": get("subjectAge"), "ida_date": get("dateAcquired"),

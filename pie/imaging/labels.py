@@ -133,7 +133,7 @@ def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")
         if not parts:
             raise FileNotFoundError("no PPMI DaTscan SBR table")
         parts = [x for x in parts if len(x)] or parts[:1]          # a table with no match has no columns
-        return pd.concat(parts, ignore_index=True).drop_duplicates("IMAGEID", keep="first").reset_index(drop=True) if len(parts[0]) else parts[0]
+        return pd.concat(parts, ignore_index=True).drop_duplicates(["PATNO", "IMAGEID"], keep="first").reset_index(drop=True) if len(parts[0]) else parts[0]
     cov = covariates(ppmi_dir)
     sbr, vis = dat_sbr_table(ppmi_dir, source)
     vis["dat_visual"] = vis["DATSCAN_VISINTRP"].str.lower().map({"positive": 1.0, "negative": 0.0})

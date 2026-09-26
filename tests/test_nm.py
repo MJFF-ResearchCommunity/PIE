@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 
+import nibabel as nib
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -97,3 +98,63 @@ def test_reference_excludes_both_final_refined_masks():
     assert values['n_ring'] == masks['ref'].sum()
     assert values['nm_ring_mean'] == img[masks['ref']].mean()
     assert abs(values['nm_sn_l_cnr'] - .25) < .02
+
+
+def test_mppca_denoising_of_repeats_lowers_noise_and_keeps_nigral_contrast(tmp_path):
+    import json
+    from scipy import ndimage
+    rng = np.random.default_rng(0)
+    truth = (100 + 30 * ndimage.gaussian_filter(rng.normal(size=(40, 40, 12)), 2)).astype(np.float32)
+    band = np.zeros(truth.shape, bool)
+    band[15:25, 15:25, 3:9] = True
+    truth[band] += 25                                                      # a bright nigra-like block
+    aff = np.diag([0.5, 0.5, 2.0, 1.0])
+    paths = []
+    for i in range(5):                                                     # PPMI GRE-MT: 5 or 10 measurements
+        p = tmp_path / f"rep{i}.nii.gz"
+        nib.save(nib.Nifti1Image(truth + rng.normal(0, 15, truth.shape).astype(np.float32), aff), p)
+        p.with_suffix("").with_suffix(".json").write_text(json.dumps({"AcquisitionTime": f"10:0{i}:00", "AcquisitionNumber": i + 1}))
+        paths.append(p)
+    plain = np.asarray(nm.average_repeats(paths, sampling_seed=1)[0].dataobj)
+    img, meta, n, _ = nm.average_repeats(paths, sampling_seed=1, denoise=True)
+    den = np.asarray(img.dataobj)
+    inner = (slice(14, 26), slice(14, 26), slice(2, -2))                  # inside the denoised centre (_mppca_centre)
+    rmse = lambda x: float(np.sqrt(((x - truth)[inner] ** 2).mean()))
+    contrast = lambda x: float(x[band].mean() - x[ndimage.binary_dilation(band, iterations=3) & ~band].mean())
+    assert n == 5 and meta["PIEDenoise"] == "mppca" and rmse(den) < 0.9 * rmse(plain)   # ~0.8 around a bright structure
+    assert abs(contrast(den) / contrast(truth) - 1) < 0.1                  # denoising must not flatten the band
+
+
+def test_mppca_on_the_central_region_equals_whole_slab_mppca_there():
+    from dipy.denoise.localpca import mppca
+    rng = np.random.default_rng(2)
+    stack = (100 + rng.normal(0, 15, (48, 40, 8, 5))).astype(np.float32)
+    full = mppca(stack, patch_radius=2, suppress_warning=True)
+    part = nm._mppca_centre(stack)
+    inner = (slice(12 + 4, 36 - 4), slice(10 + 4, 30 - 4))   # the central half in-plane, two patch radii off its edges
+    assert np.allclose(part[inner], full[inner], atol=1e-3)
+    assert np.array_equal(part[:10], stack[:10]) and np.array_equal(part[:, :8], stack[:, :8])   # outside: untouched
+
+
+def test_scanner_clipped_repeats_are_measured_and_fail_nm_qc(tmp_path):
+    import pandas as pd
+
+    from pie.imaging.manifest import QC
+
+    rng = np.random.default_rng(3)
+    aff = np.diag([0.5, 0.5, 1.5, 1.0])
+    clean, clipped = [], []
+    for i in range(3):                       # 12-bit magnitude; the clipped scan saturates ~30 % of the slab at 4095
+        img = rng.normal(1400, 300, (40, 40, 6)).astype(np.float32)
+        img[:, :14] += 3000
+        for paths, arr in ((clean, img), (clipped, np.minimum(img, 4095))):
+            p = tmp_path / f"{'clip' if arr is not img else 'ok'}_{i}.nii.gz"
+            nib.save(nib.Nifti1Image(arr.round().astype(np.int16), aff), p)
+            paths.append(p)
+    ok = nm.average_repeats(clean, sampling_seed=1)[1]["PIEClippedFraction"]
+    bad = nm.average_repeats(clipped, sampling_seed=1)[1]["PIEClippedFraction"]
+    assert ok < 0.001 and bad > 0.25                    # ~84 % of the raised third clips
+    row = {"n_sn_l": 50, "n_sn_r": 50, "sn_slab_coverage": 1.0, "repeat_motion_mm_max": 0.5,
+           "nm_ref_l_sd": 10, "nm_ref_l_mean": 100, "nm_ref_r_sd": 10, "nm_ref_r_mean": 100}
+    d = pd.DataFrame([{**row, "nm_clipped_fraction": ok}, {**row, "nm_clipped_fraction": bad}, row])   # last: legacy table
+    assert QC["nm"](d).tolist() == [True, False, True]
