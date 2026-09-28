@@ -31,6 +31,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -101,6 +102,25 @@ def acquisition_metadata_key(meta):
             meta.get('EchoTime'), meta.get('RepetitionTime'), meta.get('PixelBandwidth'))
 
 
+PE_NAME_SIGN = {"PA": "", "RL": "", "R": "", "RIGHT": "", "AP": "-", "LR": "-", "L": "-", "LEFT": "-"}
+
+
+def _pe_from_name(meta):
+    """Philips records the phase-encoding axis but not its polarity; PPMI's series names carry it (``..._PA`` with
+    ``DTI_revB0_AP``; ``DTI_LR`` / ``DTI_RL``; the fat-shift direction, ``AX DTI ... FAT SHIFT L`` or
+    ``..._FAT_SHIFT_RIGHT``). topup and eddy need only the relative polarity of the two runs (flipping both negates the
+    estimated field and leaves the corrected images unchanged), so a fixed sign per name is enough, with dcm2niix's
+    readout estimate shared by both runs. On real PPMI-2 Philips sessions this raised the
+    forward/reverse b0 correlation after topup from 0.38-0.52 to 0.97 in 3 of 3 sessions (0.71-0.81 when both runs
+    were given the same polarity)."""
+    name = re.sub(r"[^A-Z0-9]+", "_", str(meta.get("SeriesDescription", "")).upper()).strip("_")
+    m = re.search(r"_(AP|PA|LR|RL)$", name) or re.search(r"FAT_SHIFT_(LEFT|RIGHT|L|R)(?:_|$)", name)
+    axis, trt = meta.get("PhaseEncodingAxis"), meta.get("TotalReadoutTime", meta.get("EstimatedTotalReadoutTime"))
+    if meta.get("PhaseEncodingDirection") or not (m and axis and trt):
+        return meta
+    return dict(meta, PhaseEncodingDirection=axis + PE_NAME_SIGN[m.group(1).upper()], TotalReadoutTime=trt, pe_from_description=True)
+
+
 def assemble(runs):
     """Choose/concatenate runs into one dataset. Returns dict(data, affine, bvals, bvecs, meta, n_runs)."""
     loaded = []
@@ -112,7 +132,7 @@ def assemble(runs):
         v = np.loadtxt(bvec).reshape(3, -1)
         if len(b) != img.shape[3]:
             continue
-        meta = json.load(open(js)) if Path(js).exists() else {}
+        meta = _pe_from_name(json.load(open(js)) if Path(js).exists() else {})
         loaded.append((img, b, v, meta))
     b0_runs = [x for x in loaded if (x[1] > 50).sum() < 6]     # b0-only series (reverse-phase for topup)
     loaded = [x for x in loaded if (x[1] > 50).sum() >= 6]
@@ -473,6 +493,8 @@ def fit_models(ds, fw_mask=None):
 
     b, v, data, mask = ds["bvals"], ds["bvecs"], ds["data"], ds["mask"]
     sel = b <= 1050
+    if (b[sel] > 50).sum() < 6:
+        raise ValueError("no diffusion shell at b <= 1050 for the tensor fit")
     # the study's physicality rule: DIPY's TensorModel clips a negative eigenvalue to ~0 and reports the fit (a
     # non-physical tensor then reads as high FA); here such voxels are NaN and tensor_physical is False
     t = tensor_measurements(data[mask][:, sel], b[sel], v[:, sel])
@@ -485,13 +507,16 @@ def fit_models(ds, fw_mask=None):
     shells = sorted(set(int(round(x / 100.0)) * 100 for x in b if x > 50))
     if len(shells) >= 2:
         from dipy.reconst.dki import DiffusionKurtosisModel
-        from dipy.reconst.fwdti import FreeWaterTensorModel
+
+        from .freewater_qc import fit_multishell_checked
 
         sel2 = b <= 2050
         gt2 = gradient_table(b[sel2], bvecs=v[:, sel2], b0_threshold=50)
-        fw = FreeWaterTensorModel(gt2).fit(data[..., sel2], mask=fmask)
-        f, fat = np.nan_to_num(fw.f), np.nan_to_num(fw.fa)
-        out["mdt"] = np.where(fmask, fw.md, np.nan).astype(np.float32)
+        # the study's rule: DIPY's NLS unchanged, a failed or non-physical raw solution is missing (never FW = 0)
+        fw = fit_multishell_checked(data[fmask], b, v)
+        f, fat, out["mdt"] = (np.full(mask.shape, np.nan, np.float32) for _ in range(3))
+        for m, k in ((f, "f"), (fat, "tissue_fa"), (out["mdt"], "tissue_md")):
+            m[fmask] = np.where(fw["physical"], fw[k], np.nan)
         dk = DiffusionKurtosisModel(gt2, fit_method="WLS").fit(data[..., sel2], mask=fmask)
         out["mk"] = np.where(fmask, dk.mk(min_kurtosis=0, max_kurtosis=3), np.nan).astype(np.float32)
         method = "multishell_nls"
@@ -776,8 +801,8 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
         ds = denoise_dwi(ds, work)
     row = {"patno": patno, "denoised": bool(ds.get("denoised", False)), "n_series": len(series_rows), "n_runs_used": ds["n_runs"], "n_volumes": int(ds["data"].shape[3]),
            "shells": " ".join(map(str, ds["shells"])), "voxel_mm": float(np.round(np.linalg.norm(ds["affine"][:3, :3], axis=0).mean(), 2)),
-           "manufacturer": str(ds["meta"].get("Manufacturer", "")), "model": str(ds["meta"].get("ManufacturerModelName", "")),
-           "pe_direction": str(ds["meta"].get("PhaseEncodingDirection", "")), "readout_s": ds["meta"].get("TotalReadoutTime", np.nan),
+           "manufacturer": str(ds["meta"].get("Manufacturer", "")), "model": str(ds["meta"].get("ManufacturersModelName", ds["meta"].get("ManufacturerModelName", ""))),
+           "pe_direction": str(ds["meta"].get("PhaseEncodingDirection", "")), "pe_from_description": bool(ds["meta"].get("pe_from_description", False)), "readout_s": ds["meta"].get("TotalReadoutTime", np.nan),
            "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
     row["n_rev_b0"] = int(ds["rev_b0"].shape[3]) if ds.get("rev_b0") is not None else 0
     ds = correct(ds, work, fsl=fsl, eddy=eddy, cuda=cuda)
