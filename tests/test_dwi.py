@@ -114,3 +114,57 @@ def test_denoise_reduces_noise_and_crop_even_drops_odd_axes():
     even = dwi._crop_even(ds)
     assert even["data"].shape[:3] == (16, 16, 10) and even["rev_b0"].shape[:3] == (16, 16, 10)
     assert dwi._crop_even(even) is even
+
+
+def test_multishell_free_water_is_nan_where_the_fit_is_not_physical():
+    # the study's rule (freewater_qc): a failed or non-physical NLS solution is missing, never FW = 0
+    rng = np.random.default_rng(3)
+    g = rng.normal(size=(3, 30))
+    g /= np.linalg.norm(g, axis=0)
+    bvals = np.r_[0, 0, np.full(30, 700.), np.full(30, 2000.)]
+    bvecs = np.c_[np.zeros((3, 2)), g, g]
+    sig = lambda D, f: 1000 * ((1 - f) * np.exp(-bvals * np.einsum("in,ij,jn->n", bvecs, D, bvecs)) + f * np.exp(-bvals * dwi.D_WATER))
+    data = np.zeros((2, 1, 1, len(bvals)), np.float32)
+    data[0, 0, 0] = sig(np.diag([1.5e-3, 0.4e-3, 0.4e-3]), 0.2)
+    data[1, 0, 0] = sig(np.diag([1.5e-3, -0.4e-3, 0.3e-3]), 0.0)     # negative tissue diffusivity: no physical fit
+    maps = dwi.fit_models({"bvals": bvals, "bvecs": bvecs, "data": data, "mask": np.ones((2, 1, 1), bool)})
+    assert abs(maps["fw"][0, 0, 0] - 0.2) < 1e-3
+    assert np.isnan(maps["fw"][1, 0, 0]) and np.isnan(maps["fat"][1, 0, 0]) and np.isnan(maps["mdt"][1, 0, 0])
+
+
+def test_scan_without_a_tensor_shell_is_an_explicit_error():
+    # e.g. Philips PPMI-2 sessions whose three "b700/b1000/b2000" series were all acquired at b = 2000 (the header
+    # and the attenuation agree; only the names differ): no b <= 1050 shell, so no tensor, never a silent FA of 0
+    g = np.random.default_rng(4).normal(size=(3, 30))
+    bvals, bvecs = np.r_[0, 0, np.full(30, 2000.)], np.c_[np.zeros((3, 2)), g / np.linalg.norm(g, axis=0)]
+    ds = {"bvals": bvals, "bvecs": bvecs, "data": np.full((2, 1, 1, 32), 100, np.float32), "mask": np.ones((2, 1, 1), bool)}
+    import pytest
+    with pytest.raises(ValueError, match="b <= 1050"):
+        dwi.fit_models(ds)
+
+
+def _philips(tmp, name, n_dirs, desc):
+    run = _run(tmp, name, n_dirs)
+    json.dump({"Manufacturer": "Philips", "PhaseEncodingAxis": "j", "EstimatedTotalReadoutTime": 0.0742, "SeriesDescription": desc},
+              open(run[3], "w"))
+    return run
+
+
+def test_philips_polarity_comes_from_the_series_name(tmp_path):
+    # Philips exports the PE axis but no polarity; PPMI names it (_PA main, revB0_AP reverse). topup/eddy need only the
+    # relative polarity, and on real PPMI-2 sessions it raised the forward/reverse b0 correlation from 0.38-0.52 to 0.97 (3 sessions)
+    ds = dwi.assemble([_philips(tmp_path, "b1000", 10, "DTI_b1000_64dir_PA"), _philips(tmp_path, "rev", 0, "DTI_revB0_AP"),
+                       _philips(tmp_path, "same", 0, "DTI_revB0_PA")])
+    assert ds["meta"]["PhaseEncodingDirection"] == "j" and ds["rev_meta"]["PhaseEncodingDirection"] == "j-"
+    assert ds["meta"]["TotalReadoutTime"] == ds["rev_meta"]["TotalReadoutTime"] == 0.0742
+    assert ds["meta"]["pe_from_description"] and ds["rev_b0"].shape[3] == 1
+    # Philips's other PPMI naming: the fat-shift direction sets the polarity (AX DTI ... FAT SHIFT L / R, ..._FAT_SHIFT_LEFT)
+    for a, b in (("AX DTI 32 DIR FAT SHIFT R NO ANGLE", "AX DTI 32 DIR FAT SHIFT L NO ANGLE"), ("2D_DTI_EPI_FAT_SHIFT_RIGHT", "2D_DTI_EPI_FAT_SHIFT_LEFT"),
+                 ("DTI_ RL", "DTI_ LR")):
+        t = tmp_path / a[:6].replace(" ", "")
+        t.mkdir(exist_ok=True)
+        ds = dwi.assemble([_philips(t, "main", 10, a), _philips(t, "rev", 10, b)])
+        assert {ds["meta"]["PhaseEncodingDirection"], ds["rev_meta"]["PhaseEncodingDirection"]} == {"j", "j-"}, a
+    # no direction in the name: nothing is guessed, so no reverse pair and no topup/eddy
+    ds = dwi.assemble([_philips(tmp_path, "b1000", 10, "DTI_b1000_64dir"), _philips(tmp_path, "rev", 0, "DTI_revB0")])
+    assert "PhaseEncodingDirection" not in ds["meta"] and ds["rev_b0"] is None
