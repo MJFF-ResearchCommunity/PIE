@@ -168,23 +168,40 @@ def _box_sn():
 
 
 def _current_sha():
-    from pie.imaging.atlases import cit168_provenance
-    return cit168_provenance()["atlas_sha256"]
+    return nm._atlas_provenance()["atlas_sha256"]
 
 
 def test_nm_refeature_labels_rows_with_the_current_version(tmp_path):
-    from pie.imaging.atlases import cit168_provenance
     _nm_subject(tmp_path, _box_sn())
-    row = {"patno": 1, "error": "", **cit168_provenance(), "nm_sn_l_cnr": 9.9, "processing_version": "old"}
+    row = {"patno": 1, "error": "", **nm._atlas_provenance(), "nm_sn_l_cnr": 9.9, "processing_version": "old"}
     out = nm._refeature_job((str(tmp_path / "nm"), row))
     assert out["error"] == "" and out["nm_sn_l_cnr"] != 9.9
     assert out["processing_version"] == nm.PROCESSING_VERSION + "-refeatured"
 
 
+def test_nm_refeature_applies_the_saved_repeat_support(tmp_path):
+    d = _nm_subject(tmp_path, _box_sn())
+    (d / "repeat_transforms").mkdir()
+    nib.save(nib.Nifti1Image(np.full(SLAB_SHAPE, 0.8, np.float32), SLAB), d / "repeat_transforms" / "repeat_support_fraction.nii.gz")
+    out = nm._refeature_job((str(tmp_path / "nm"), {"patno": 1, "error": "", **nm._atlas_provenance()}))
+    assert out["error"] == "" and out["nm_support_l"] == out["nm_support_r"] == 0.0 and out["nm_valid_l"] == 1.0
+
+
+def test_nm_refeature_keeps_the_acquisition_clipping_measure(tmp_path):
+    """``nm_clipped_fraction`` comes from the raw repeats, which refeature never reads: dropping it with the stale
+    feature columns turned a clipped scan's QC failure into a pass."""
+    _nm_subject(tmp_path, _box_sn())
+    out = nm._refeature_job((str(tmp_path / "nm"), {"patno": 1, "error": "", **nm._atlas_provenance(), "nm_clipped_fraction": 0.37}))
+    assert out["error"] == "" and out["nm_clipped_fraction"] == 0.37
+
+
 def test_nm_refeature_refuses_a_stale_atlas_it_cannot_regenerate(tmp_path):
     _nm_subject(tmp_path, _box_sn())
+    from pie.imaging.atlases import cit168_provenance
     out = nm._refeature_job((str(tmp_path / "nm"), {"patno": 1, "error": ""}))   # legacy row: no atlas provenance
     assert "atlas" in out["error"]
+    affine_era = nm._refeature_job((str(tmp_path / "nm"), {"patno": 1, "error": "", **cit168_provenance()}))
+    assert "atlas" in affine_era["error"]              # a map made through the affine is not reused under the SyN
 
 
 def test_nm_refeature_regenerates_a_stale_atlas_from_saved_transforms(tmp_path):
@@ -197,11 +214,11 @@ def test_nm_refeature_regenerates_a_stale_atlas_from_saved_transforms(tmp_path):
     t1_aff = np.eye(4)
     t1_aff[:3, 3] = (-20.0, -40.0, -30.0)
     nib.save(nib.MGHImage(np.ones((40, 40, 30), np.float32), t1_aff), fs / "mri" / "orig.mgz")
-    sitk.WriteTransform(sitk.AffineTransform(3), str(dwi.mni_cache_path(fs)))
-    dwi._write_mni_cache_provenance(dwi.mni_cache_path(fs), {})
+    from test_nm import _zero_syn_cache
+    _zero_syn_cache(fs)
     out = nm._refeature_job((str(tmp_path / "nm"), {"patno": 1, "error": ""}, str(fs)))
     assert out["error"] == "" and out["atlas_sha256"] == _current_sha()
-    assert out["n_sn_l"] > 0 and out["n_sn_r"] > 0 and 0 < out["sn_slab_coverage"] <= 1.5
+    assert out["n_sn_l"] > 0 and out["n_sn_r"] > 0 and 0 < out["sn_slab_coverage_l"] <= 1 and 0 < out["sn_slab_coverage_r"] <= 1
     saved = np.asanyarray(nib.load(d / "pauli_nm.nii.gz").dataobj)
     assert np.isin(saved, [7, 9]).sum() == out["n_sn_l"] + out["n_sn_r"]
 
@@ -924,9 +941,11 @@ def test_interrupted_syn_cache_is_not_taken_as_cached(tmp_path, monkeypatch):
     warp, aff = tmp_path / "w.nii.gz", tmp_path / "a.mat"
     nib.save(nib.Nifti1Image(np.zeros((4, 4, 4, 1, 3), np.float32), np.eye(4)), warp)
     aff.write_text("affine")
-    fake = types.SimpleNamespace(image_read=lambda p: 1.0, threshold_image=lambda *a: 1.0,
+    fake = types.SimpleNamespace(image_read=lambda p: 1.0, threshold_image=lambda *a: 1.0, resample_image=lambda i, *a, **k: i,
+                                 config=types.SimpleNamespace(set_ants_deterministic=lambda *a, **k: None),
                                  registration=lambda **k: {"fwdtransforms": [str(warp), str(aff)], "invtransforms": []})
     monkeypatch.setitem(sys.modules, "ants", fake)
+    monkeypatch.setattr(nm_template, "_unit", lambda i: i)
     monkeypatch.setattr(nm_template, "mni_brain_path", lambda: "mni.nii.gz")
     monkeypatch.setattr(nm_template, "crop_warp", lambda p: (_ for _ in ()).throw(KeyboardInterrupt))   # killed mid-crop
     with pytest.raises(KeyboardInterrupt):
@@ -1102,11 +1121,13 @@ def test_assembly_reads_native_nm_measures_under_the_slab_qc(tmp_path):
                   "nm_ref_r_mean": [10., 10.], "manufacturer": ["SIEMENS"] * 2, "voxel_mm": ["0.5x0.5x2.0"] * 2,
                   "nm_sn_mean_cnr": [.1, .1]}).to_csv(tmp_path / "nm" / "nm_features.csv", index=False)
     pd.DataFrame({"patno": [1, 2], "error": ["", ""], "nml_sn_volume_mm3": [400., 300.], "nml_threshold": [1500., 1500.],
-                  "nms_sn_mean_cr": [.18, .15], "nms_sn_volume_mm3": [600., 500.], "native_cov_search_l": [1., 1.]})\
+                  "nms_sn_mean_cr": [.18, .15], "nms_sn_volume_mm3": [600., 500.], "native_cov_search_l": [1., 1.],
+                  "nm_bion_whole_mean_cr": [.12, .11]})\
         .to_csv(tmp_path / "nm" / "nm_native_features.csv", index=False)
     f = manifest.assemble_features(tmp_path).set_index("PATNO")
     assert f.loc[1, "nml_sn_volume_mm3"] == 400 and f.loc[1, "nms_sn_mean_cr"] == .18 and "nml_threshold" not in f
     assert np.isnan(f.loc[2, "nml_sn_volume_mm3"]) and np.isnan(f.loc[2, "nms_sn_mean_cr"])      # 5 mm motion: slab fails
+    assert f.loc[1, "nm_bion_whole_mean_cr"] == .12 and np.isnan(f.loc[2, "nm_bion_whole_mean_cr"])   # the study's measure too
     blocks = manifest.feature_blocks(f.columns)["nm"]
     assert {"nml_sn_volume_mm3", "nms_sn_mean_cr", "nms_sn_volume_mm3"} <= set(blocks)
 

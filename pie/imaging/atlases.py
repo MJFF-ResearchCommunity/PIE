@@ -208,6 +208,79 @@ def _biondetti_labels(fwd, reference, cache_dir=BIONDETTI_DIR):
     return nib.Nifti1Image(lab, nib.load(reference).affine)
 
 
+# JHU ICBM-DTI-81 cerebral peduncle, the reference region of Langley et al.'s nigral volume (version 2 of PIE's reproduction)
+JHU_PEDUNCLE = {'l': 16, 'r': 15}   # "Cerebral peduncle L / R" (FSL JHU-labels.xml)
+NLIN6_BRAIN = 'tpl-MNI152NLin6Asym_res-01_desc-brain_T1w.nii.gz'   # FSL's MNI152 1 mm, the JHU atlas's grid (verified 27 Sep 2026)
+NLIN6_BRAIN_SHA256 = '72f8edc99d7e696da7717db20b73897d8da5909d7f30b1c9a7e2a79e9f64ff2f'
+JHU_DIR = Path.home() / '.cache' / 'pie' / 'jhu'
+
+
+def peduncle_bridge_qc(ped, bion, affine, min_crus=0.8, min_lateral_mm=2.0):
+    """Anatomy check of a peduncle label map (16 left, 15 right) against Biondetti labels on the same grid: at the nigra's
+    axial levels each side has peduncle voxels, their centroid lies at least ``min_lateral_mm`` lateral of the same-side
+    nigra, and the peduncle covers at least ``min_crus`` of Biondetti's own crus (the lateral parts of its background
+    ROI). The share of the nigra it overlaps is reported, not gated: JHU's FA-drawn label spills over the nigra's lateral
+    edge (36 % on the 2009c grid, 27 Sep 2026), and ``nm_native.langley_labels`` gives the nigra and its ring priority."""
+    from scipy import ndimage
+
+    x = nib.affines.apply_affine(affine, np.indices(bion.shape).reshape(3, -1).T).reshape(bion.shape + (3,))
+    sn = np.isin(bion, list(BIONDETTI_TERRITORIES))
+    parts, n = ndimage.label(bion == BIONDETTI_BND, structure=np.ones((3, 3, 3)))
+    crus = np.isin(parts, [i for i in range(1, n + 1) if np.abs(x[parts == i][:, 0]).mean() > 5])   # as region_labels
+    z = x[..., 2]
+    level = (z >= z[sn].min()) & (z <= z[sn].max())
+    out, ok = {}, True
+    for side, code in JHU_PEDUNCLE.items():
+        half = x[..., 0] < 0 if side == 'l' else x[..., 0] > 0
+        s, p, c = sn & half, (ped == code) & level, crus & half
+        lateral = float(np.abs(x[p][:, 0]).mean() - np.abs(x[s][:, 0]).mean()) if p.any() and s.any() else np.nan
+        on_crus = float((c & (ped == code)).sum() / max(c.sum(), 1))
+        out.update({f'{side}_voxels_at_sn_levels': int(p.sum()), f'{side}_lateral_mm': lateral, f'{side}_crus_covered': on_crus,
+                    f'{side}_sn_overlap': float((s & (ped == code)).sum() / max(s.sum(), 1))})
+        ok &= p.sum() >= 10 and np.isfinite(lateral) and lateral >= min_lateral_mm and c.any() and on_crus >= min_crus
+    out['pass'] = bool(ok)
+    return out
+
+
+def jhu_peduncle_mni2009c(cache_dir=JHU_DIR, seed=0):
+    """Path of the JHU cerebral peduncle labels (16 left, 15 right) on the 1 mm MNI152NLin2009cAsym brain grid. The atlas
+    (``dwi.fetch_jhu``, sha256-pinned) shares FSL's MNI152 1 mm grid; that template (TemplateFlow MNI152NLin6Asym brain,
+    pinned) is registered once to the 2009c brain (antsRegistrationSyN[s], seeded) and the labels pulled with
+    genericLabel. Cached with ``peduncle_bridge_qc`` against the Biondetti nigra; raises while that QC fails."""
+    import ants
+
+    from .dwi import fetch_jhu
+    from .features import _drop_transforms, _seed_ants
+
+    d = Path(cache_dir) / 'to_MNI152NLin2009cAsym'
+    out, qc_file = d / 'jhu_peduncle_space-MNI152NLin2009cAsym_res-01.nii.gz', d / 'qc.json'
+    if not qc_file.exists():
+        labels, _, prov = fetch_jhu(cache_dir)
+        src = _pinned('https://templateflow.s3.amazonaws.com/tpl-MNI152NLin6Asym/' + NLIN6_BRAIN, Path(cache_dir) / NLIN6_BRAIN, NLIN6_BRAIN_SHA256)
+        if labels.shape != nib.load(src).shape or not np.allclose(nib.affines.apply_affine(labels.affine, [[0, 0, 0], np.array(labels.shape) - 1]),
+                                                                  nib.affines.apply_affine(nib.load(src).affine, [[181, 0, 0], [0, 217, 181]])):
+            raise ValueError('the JHU atlas is not on the MNI152NLin6Asym 1 mm grid')
+        _seed_ants(seed)
+        ref = ants.image_read(str(mni2009c_brain_1mm()))
+        reg = ants.registration(ref, ants.image_read(str(src)), type_of_transform='antsRegistrationSyN[s]')
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            ped = np.where(np.isin(np.asarray(labels.dataobj), list(JHU_PEDUNCLE.values())), np.asarray(labels.dataobj), 0).astype(np.float32)
+            moved = ants.apply_transforms(ref, ants.from_nibabel_nifti(nib.Nifti1Image(ped, labels.affine)), reg['fwdtransforms'],
+                                          interpolator='genericLabel')
+        finally:
+            _drop_transforms(reg)
+        img = nib.Nifti1Image(np.rint(moved.numpy()).astype(np.int16), nib.load(mni2009c_brain_1mm()).affine)
+        nib.save(img, out)
+        qc = peduncle_bridge_qc(np.asarray(img.dataobj), np.asarray(nib.load(biondetti_mni2009c()).dataobj), img.affine)
+        qc_file.write_text(json.dumps({'qc': qc, 'seed': seed, 'atlas': prov, 'template': NLIN6_BRAIN, 'type': 'antsRegistrationSyN[s]',
+                                       'target': 'tpl-MNI152NLin2009cAsym_res-01 T1w x brain mask'}, indent=2, default=str))
+    qc = json.loads(qc_file.read_text())['qc']
+    if not qc['pass']:
+        raise ValueError(f'JHU peduncle -> MNI152NLin2009cAsym bridge failed its QC ({qc_file}): {qc}')
+    return out
+
+
 def biondetti_mni2009c(reference=None, cache_dir=BIONDETTI_DIR, seed=0):
     """Path of the Biondetti territories (1-3) and background (4) in MNI152NLin2009cAsym on ``reference``'s grid (an
     image path; default the 1 mm template), resampled once from the authors' space, not via a second grid."""

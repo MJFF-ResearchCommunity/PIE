@@ -33,28 +33,32 @@ Neuromelanin-sensitive MRI shows the pigmented dopaminergic neurons of the subst
 - PIE's download held NM for 48 HC and 170 PD, where PPMI's acquisition metadata lists 112 HC and 631 PD. The missing scans, mostly baseline, are the main limit on precision.
 
 **PIE's position.**
-- **Native-space threshold volume (`nm_native`, Langley method).** This is PIE's candidate primary NM measure. Its status becomes "reproduces the published PPMI result" only if the reproduction below meets its pre-registered criterion.
-- **snceg segmentation.** This is the state-of-the-art alternative.
+- **Native-space threshold volume (`nm_native`, Langley method).** It did not reproduce (R1, R1-v2 and R1b below), so it is exploratory until the authors' regions are available.
+- **snceg segmentation.** This is the state-of-the-art alternative, and it reproduced its published PPMI TSE-FS result (R2).
+- **The study's contrast ratio** (`nm_native --study`, `nm_bion_*`). It was tested in a pre-registered out-of-sample replication (27 September 2026) on 369 HC/PD that no NM test had used, 298 of them usable (251 PD, 47 HC; 293 Siemens).
+  - **The study's control replicated.** The nested NM family over the covariates added +0.121 [+0.027, +0.213] AUROC (study: +0.211). The family reached AUROC 0.635 [0.548, 0.718], and the whole-nigra scalar 0.611 (study: 0.605).
+  - **PIE's own gate was not met.** It needs AUROC ≥ 0.70 with a lower bound > 0.55, and a DaT correlation ≥ 0.20; the DaT correlation was ρ 0.14. So `NM_VALIDATED` stays False: the measure detects Parkinson's disease out of sample, but too weakly for PIE to call it validated.
 - **Template and territory contrasts.** These remain for voxelwise and regional work.
 - **Everything assembled.** `manifest.NM_VALIDATED` stays False until a measure passes.
 
-**Reproductions of published methods** (pre-registered 26–27 September 2026):
+**Reproductions of published methods** (pre-registered 26–27 September 2026; scripts hashed before any value):
 
 | | Published | Target | PIE result |
 |---|---|---|---|
-| R1 [Langley 2025] | PPMI Siemens GRE-MT, SNc volume, d ≈ 0.83 | p < 0.05 and PIE's d CI contains 0.83 | **Pilot: not reproduced.** 21 HC and 82 de novo PD, Siemens. HC 706 ± 290 vs PD 706 ± 218 mm³; adjusted d 0.01 [−0.63, 0.60]; AUROC 0.48. The full run is in progress on the 25 Sep download: 590 HC/PD with NM, all processed afresh. See the note below |
-| R1b [Hwang 2023] | Emory Siemens, AUROC 0.756 / 0.749 | CI contains the published AUROC | running: 52 HC and 61 PD from the Dryad release (doi:10.6086/D1709N, CC0), NIfTI with 7 repeats per NM scan |
-| R2 [Lillebostad 2025] | PPMI Siemens TSE-FS, snceg CR vs crus, AUROC 0.743 | CI contains 0.743, lower bound > 0.5 | running: TSE-FS at all visits, earliest TSE-FS session per participant (199 PD, 35 HC, 34 SWEDD), same-day T1 |
+| R1 [Langley 2025] | PPMI Siemens GRE-MT, SNc volume, d ≈ 0.83 | p < 0.05 and PIE's d CI contains 0.83 | **Not reproduced.** 68 HC and 348 de novo PD, 10 Siemens models. HC 711 ± 272 vs PD 761 ± 292 mm³; adjusted d −0.06 [−0.29, 0.18]; AUROC 0.45 [0.38, 0.52]. The 21 HC / 82 PD pilot gave d 0.01 |
+| R1-v2 | as R1 | as R1 | **Not reproduced.** Version 2 (JHU ICBM-DTI-81 cerebral peduncle as the reference, as in Langley's text), same slabs: HC 112 ± 73 vs PD 106 ± 62 mm³; d 0.18 [−0.09, 0.46]; AUROC 0.50 |
+| R1b [Hwang 2023] | Emory Siemens, AUROC 0.756 / 0.749 | CI contains the published AUROC | **Not reproduced** (v1): 0.475 and 0.513 on the authors' own Dryad release (doi:10.6086/D1709N, CC0). **v2**: cohort 1 0.558 [0.361, 0.737], not reproduced; cohort 2 0.671 [0.540, 0.792], reproduced by the CI rule. Volumes are 4–6 times below the published scale |
+| R2 [Lillebostad 2025] | PPMI Siemens TSE-FS, snceg CR vs crus, AUROC 0.743 | CI contains 0.743, lower bound > 0.5 | **Reproduced.** AUROC 0.710 [0.611, 0.799] (TSE-FS echo 1, earliest TSE-FS session, same-day T1) |
 
-**Why the R1 pilot differs from Langley 2025** (diagnosed across all scans, without group labels).
+Langley's threshold volume is not reproduced with public substitute regions, on PPMI or on the authors' own data. Their SNc atlas, its dilation and their peduncle ROI are not public. They were requested from the authors on 27 September 2026, and a version 3 waits on that material; nothing is tuned against these results in the meantime. snceg on the PPMI TSE-FS scans reproduces its published result. On the R1 GRE-MT scans, the snceg contrast ratio against the crus separated de novo PD from HC at d 0.39 [0.15, 0.65], AUROC 0.60. That is descriptive, because there is no published GRE-MT target.
+
+**Why R1 differs from Langley 2025** (diagnosed on the pilot scans, without group labels).
 - PIE's search region is the Biondetti nigra plus a 1 mm ring: about 1,600 mm³ on the native slab.
 - After MP-PCA the crus is very uniform (CV 3.7 %), so the mean + 2.8 SD threshold sits only about 10 % above the crus.
 - The nigra's mean contrast is about 12 %, so roughly half its voxels fall on either side of the threshold, and the volume tracks noise around it.
 - PIE's control volumes (706 mm³) are about 1.8 times Langley's (395 mm³).
 
 With the public Biondetti ROIs, this is therefore not Langley's measure. A faithful reproduction needs their SNc atlas and cerebral-peduncle ROI, which are not public; the corresponding author is X. P. Hu, UC Riverside. PIE has not tuned the search region or k after seeing the pilot. Any such change would be exploratory.
-
-On the same scans, snceg's segmented-nigra contrast against the crus separated de novo PD from HC at d 0.54 [0.16, 0.98] (p = 0.01), AUROC 0.62. That is exploratory: there is no published PPMI GRE-MT target. The snceg volume did not separate the groups (d −0.06).
 
 ## Neuromelanin-sensitive MRI (`nm.py`)
 
@@ -73,24 +77,33 @@ descriptions matching `NM_PATTERN` and not `EXCLUDE` (`MTC-NO|B0|Map|TRACEW|ADC|
    timestamps are counted (`n_missing_acquisition_identity`) and must be resolved before an
    independent-acquisition reliability study.
 2. **`average_repeats(niis, sampling_seed=0, transforms_dir=None)`** — rigid MI alignment of each repeat to the
-   first, then the mean. Returns `(image, meta, n_repeats, max_motion_mm)`; `meta["PIERepeatSelection"]` holds
-   the selection record (written to `<work>/<patno>/repeat_selection.json`). With `transforms_dir` it also saves
-   `repeat_<i>_to_anchor.tfm` and `repeat_support_fraction.nii.gz`.
+   first, then the mean. Returns `(image, meta, n_repeats, max_motion_mm, support)`: `support` is, per voxel, the
+   share of repeats whose field of view reaches it (1 = every repeat; a repeat that moved leaves the slab's edge
+   slices averaged over fewer images). `meta["PIERepeatSelection"]` holds the selection record (written to
+   `<work>/<patno>/repeat_selection.json`). With `transforms_dir` it also saves `repeat_<i>_to_anchor.tfm` and
+   the support as `repeat_support_fraction.nii.gz`.
 3. **`register_slab(nm_img, fastsurfer_dir, sampling_seed=0)`** — **`register_nm_to_t1(nm_img, t1_img,
    target_center=None, sampling_seed=0)`** with the slab as fixed image (every metric sample lies inside the
    ~24 mm slab) against the *unmasked* T1: with a brain-masked T1 a thin slab matched several heights equally
    well and settled on the striatum for some subjects, whereas eyes, sinuses and skull pin the height (MI
-   metric -0.73 vs -0.43). Header
-   initialisation first; if the atlas SN does not land on the slab, a second start at the atlas SN centroid in T1
-   space; the result covering more SN wins (`reg_init` = `header` | `sn_centroid`). The T1 → MNI affine is the
-   one cached by `dwi.register_t1_to_mni`, so the CIT168 atlas (`dwi.pauli_atlas()`, MNI2009c v1.0) maps onto the
-   slab with the FastSurfer labels.
+   metric -0.73 vs -0.43). Both starts are always fitted: the same-session headers, and the slab centred on the
+   atlas SN centroid in T1 space. Of the fits whose slab holds at least 90 % of each side's atlas SN
+   (`slab_coverage(points, tx_t1_nm, grid)`), the lowest MI metric wins; if neither does, the better-covered one
+   (the study's rule, ported 27 Sep 2026; `reg_init` = `header` | `sn_centroid`). T1 → MNI is the subject's SyN
+   (`nm_template.syn_cache`, fitted when missing, so `nm` now includes the `syn` stage): the CIT168 atlas
+   (`dwi.pauli_atlas()`, MNI2009c v1.0) and the anatomical hemispheres reach the slab in one label resampling
+   (`nm_native.pull_labels`, slab → T1 rigid, T1 → MNI inverse SyN), as in the study. Until 27 Sep 2026 the
+   mapping was the affine cached by `dwi.register_t1_to_mni` (`reg_t1_mni_mi`). On 24 development slabs, re-mapped
+   without reading diagnosis, the SyN put the atlas SN nearer the neuromelanin band: the position refinement
+   reached its ±2 mm edge on 35 % of sides against 73 % through the affine, the unrefined left contrast rose
+   (median +0.02), and the refined contrast was unchanged (median −0.007 left, −0.004 right). The SyN's SN mask
+   is about 20 % larger on the slab, because it follows the subject's own midbrain shape.
 4. **`nm_rois(fs_lab, pauli_lab, spacing_mm, left_mask=None)`** — SN = CIT168 SNc + SNr per side; reference ring
    = SN dilated `DILATE_MM` (3 mm, anisotropic) minus the dilated nuclei (SNc, SNr, RN, VTA, STN, PBP), inside
    brainstem / ventral DC / cerebral WM / thalamus labels. Hemispheres come from `atlas_left_mask(tgt, chain)`
    (the MNI left half-space mapped onto the slab), because the slab's voxel x direction is not an anatomical
    label; without it, bilateral putamen landmarks are required or it raises.
-5. **`features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None)`** — each side's
+5. **`features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None, support=None)`** — each side's
    atlas SN is refined by the translation (<= `REFINE_MM` = 2 mm along each in-plane axis, +-1 slice; the
    Euclidean shift can exceed 2 mm) that maximises the ROI mean on a 1 mm-smoothed copy while keeping >= 95 % of
    the ROI in brainstem labels (the cistern lateral to the peduncle is bright). Masks are shifted with zero
@@ -130,7 +143,7 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 
 | Flag | Meaning |
 |---|---|
-| `--refeature` | Recompute the feature columns of every finished subject from the saved slab and label maps (`refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None, registration_reference_sha256=None)`), without registering. Needs `--keep-nifti` outputs. The saved atlas map is reused only when the row's `atlas_sha256` **and** `registration_reference_sha256` match the bundled atlas and its reference template: the current atlas hash alone does not authorise an old mapping, because the map may have been made against another reference. Otherwise (rows from before 2026-09-15) the atlas and hemisphere maps are regenerated from `slab_to_t1.tfm` and the verified T1 → MNI cache and rewritten, `sn_slab_coverage` and the provenance columns are recomputed, and a subject without those transforms (or with an unverified cache) gets an `error` instead of stale-atlas values. Rows are labelled `<PROCESSING_VERSION>-refeatured`. The previous table is kept once as `nm_features.pre_refeature.csv`; `--patnos` restricts the run; `--zips` is required by the parser but unused |
+| `--refeature` | Recompute the feature columns of every finished subject from the saved slab and label maps (`refeature_subject(work_dir, patno, fastsurfer_dir=None, atlas_sha256=None, registration_reference_sha256=None)`), without registering. Needs `--keep-nifti` outputs. The saved atlas map is reused only when the row's `atlas_sha256` **and** `registration_reference_sha256` match the bundled atlas and its reference template: the current atlas hash alone does not authorise an old mapping, because the map may have been made against another reference. Otherwise (rows from before 2026-09-15, and affine-mapped rows from before 2026-09-27, whose `registration_reference_sha256` is the 2 mm template's rather than the SyN's 1 mm TemplateFlow T1w) the atlas and hemisphere maps are regenerated from `slab_to_t1.tfm` and the subject's SyN cache (`nm_template syn`) and rewritten, `sn_slab_coverage_{l,r}` and the provenance columns are recomputed, and a subject without those transforms gets an `error` instead of stale-atlas values. Rows are labelled `<PROCESSING_VERSION>-refeatured`. The previous table is kept once as `nm_features.pre_refeature.csv`; `--patnos` restricts the run; `--zips` is required by the parser but unused |
 
 `--keep-nifti` saves, per subject: `nm_mean.nii.gz`, `pauli_nm.nii.gz`, `aseg_nm.nii.gz`, `ref_nm.nii.gz`,
 `left_nm.nii.gz`, `sn_refined_nm.nii.gz` (1 = left, 2 = right), `slab_to_t1.tfm` (T1 point → slab point; reused by
@@ -146,15 +159,22 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 | `nm_sn_mean_cnr`, `nm_sn_posterior_mean_cnr`, `nm_sn_anterior_mean_cnr`, `nm_sn_min_cnr`, `nm_sn_asym_cnr`, `nm_sn_mean_cnr_atlas` | Bilateral mean, min, \|L−R\| |
 | `nm_sn_{l,r}_mean`, `nm_ring_mean`, `nm_ring_sd`, `n_ring`, `nm_ref_{l,r}_mean`, `nm_ref_{l,r}_sd`, `n_ref_{l,r}`, `n_sn_{l,r}` | Raw intensities and voxel counts |
 | `nm_sn_shift_mm_{l,r}` | Refinement displacement (mm) |
-| `n_repeats`, `repeat_motion_mm_max`, `nm_clipped_fraction`, `reg_nm_t1_mi`, `reg_t1_mni_mi`, `reg_init`, `sn_slab_coverage` | QC |
+| `n_repeats`, `repeat_motion_mm_max`, `nm_clipped_fraction`, `reg_nm_t1_mi`, `reg_t1_mni_mi` (affine-era rows only), `reg_init`, `sn_slab_coverage_{l,r}`, `nm_valid_{l,r,ref}`, `nm_support_{l,r,ref}` | QC |
 | `shape`, `voxel_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `flip_angle`, `mt_flag`, `series_desc`, `n_series` | Acquisition |
 | `patno`, `acquisition_date`, `fs_image_id`, `processing_version`, `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold`, `registration_reference_space`, `registration_reference_sha256`, `error` | Lineage |
 
-`sn_slab_coverage` is (SN voxels on the slab x voxel volume) / atlas SN voxels in 1 mm T1 space: a resampled-volume
-ratio, not a bounded fraction. New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-09-16-explicit-mni2009c-reference-v5`; `--refeature` rows get that string plus `-refeatured`.
-`manifest.QC["nm"]`: `n_sn_l >= 20`, `n_sn_r >= 20`, `sn_slab_coverage >= 0.5`, `repeat_motion_mm_max < 3`, and
+`sn_slab_coverage_{l,r}` is the share of each side's atlas SN voxels (1 mm T1 space) that the chosen rigid maps
+inside the slab (voxel centres ± half a voxel): a bounded geometric fraction. Tables written before 27 Sep 2026 have
+`sn_slab_coverage` instead, (SN voxels on the slab x voxel volume) / atlas SN voxels in T1 space, a resampled-volume
+ratio that exceeds 1 on fine slabs and can pass a slab that misses one side. `nm_valid_{l,r,ref}` is the share of
+the measured masks (refined SN per side, ring) with signal (finite, > 0); `nm_support_{l,r,ref}` the share that every
+repeat reaches (support ≥ 0.99). New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-09-27-study-syn-slab-qc-v6`
+(`…-v5` before the study's slab checks were ported); `--refeature` rows get that string plus `-refeatured`.
+`manifest.QC["nm"]`: `n_sn_l >= 20`, `n_sn_r >= 20`, `min(sn_slab_coverage_l, sn_slab_coverage_r) >= 0.9` (older
+rows: `sn_slab_coverage >= 0.5`), `repeat_motion_mm_max < 3`, and
 `nm_ref_{l,r}_sd < 0.4 x nm_ref_{l,r}_mean` (a reference partly outside the slab has CV near 1 and meaningless
-CNR; this rejected 7 of 646 Philips scans in the September 2026 snapshot), and `nm_clipped_fraction <= 0.01`.
+CNR; this rejected 7 of 646 Philips scans in the September 2026 snapshot), `nm_clipped_fraction <= 0.01`, and every
+`nm_valid_*` and `nm_support_*` ≥ 0.95 (the study's voxel checks; tables without these columns pass them).
 `nm_clipped_fraction` is the largest fraction, over the raw repeats, of voxels at that repeat's maximum value.
 - A clean slab reaches its maximum in a handful of voxels (about 3 × 10⁻⁷ of the slab).
 - A scanner-clipped one saturates the brain. On a PPMI Siemens Prisma_fit scan, 37 % of voxels sat at the 12-bit ceiling of 4095, and snceg found 2 mm³ of nigra.
@@ -289,7 +309,7 @@ Every averaged slab goes into a 0.5 mm MNI midbrain box (`BOX_ORIGIN_RAS=(-30, -
 
 | Stage | Function(s) | Writes |
 |---|---|---|
-| `syn` | `syn_cache(fastsurfer_dir, syn_type=SYN_TYPE)` (`antsRegistrationSyNQuick[s]` to the brain-masked 1 mm MNI152NLin2009cAsym, `atlases.mni2009c_brain_1mm()`; ~7 CPU-minutes per subject), `crop_warp` | `<fastsurfer>/<IMAGE_ID>/mri/transforms/t1_to_MNI152NLin2009cAsym_syn_1Warp.nii.gz` (cropped to the box + 20 mm) and `…_0GenericAffine.mat`. Caches named `t1_to_mni_syn_*` were fitted to nilearn's 2009a template before 25 September 2026 and are not reused |
+| `syn` | `syn_cache(fastsurfer_dir)`: the study's registration (its `registration_stability.py`). The brain-masked T1 and the brain-masked MNI152NLin2009cAsym (`atlases.mni2009c_brain_1mm()`) are both put on a 2 mm grid, with intensities scaled to their 99.5th percentile. It uses ANTs SyN with a CC (radius 2) metric, affine iterations 1000/500/250/100 and deformable 40/20/10, seeded (`SYN_SEED`); about 8 CPU-minutes per subject. On 10 control scans it placed the NM masks at Dice 0.84 with the study's own, with 0.94 of their volume. `antsRegistrationSyNQuick[s]`, used before 27 September 2026, gave 0.72 and 1.23. `crop_warp` then crops the result | `<fastsurfer>/<IMAGE_ID>/mri/transforms/t1_to_MNI152NLin2009cAsym_syncc2mm_1Warp.nii.gz` (cropped to the box + 20 mm) and `…_0GenericAffine.mat`. Caches from before are never reused: `t1_to_mni_syn_*` was fitted to nilearn's 2009a template (before 25 September 2026), and `t1_to_MNI152NLin2009cAsym_syn_*` by SyNQuick |
 | `normalize` | `normalize_subject(work_dir, patno, fastsurfer_dir)`, `slab_in_t1` | `<work>/<patno>/nm_mni.nii.gz`, `nm_normalize_log.csv` (`mni_nonzero_frac`) |
 | `template` | `build_template(work_dir, patnos, min_frac=0.5)` → `(template, count, n)`; `template_masks(template, crus_mm=(4.0, 9.0), sn_mm=3.0, cnr_min=0.06)`; `save_template`; `template_figure` | `<work>/template/nm_template.nii.gz`, `nm_template_count.nii.gz`, `nm_template_masks.nii.gz` (1 sn_l, 2 sn_r, 3 crus_l, 4 crus_r), `template_info.txt`, `template_qc.png` |
 | `features` | `load_masks(work_dir)`, `template_features(nm_mni, masks, prefix="nmt_")` | `<work>/nm_template_features.csv` |
@@ -421,14 +441,43 @@ venv_imaging/bin/python -m pie.imaging.nm_native --sessions … --fastsurfer-dir
 - **NIfTI instead of LONI zips:** `nm.process_subject` reads a series row that carries `"nifti"` as is. A 4D file counts as its repeats.
   - This is how the Emory release of Hwang et al. 2023 (7 repeats per scan) goes through the same `--denoise` → `syn` → `nm_native` chain.
 
-`manifest.assemble_features` keeps `nml_sn_volume*_mm3` and `nms_sn*_{mm3,cr,cnr}`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`. Tests are in `tests/test_nm_native.py`:
+**The study's measure (`--study`, 27 Sep 2026).** This is the neuromelanin quantity of the Study 1 manuscript (Methods 4.13), whose regional family passed that study's PD-vs-HC control (AUROC 0.756, 148 PD / 41 HC).
+
+Regions:
+- `study_labels()`: the Biondetti territories + 100 × side, and the *complete* published background ROI as its three parts (`STUDY_REF + 1..3`: left crus, midline, right crus).
+- Unlike `region_labels`, no ring is cut from the background.
+- The regions are pulled onto the slab in one resampling and saved as `study_regions_nm.nii.gz`.
+
+Measure:
+- `study_features(nm, codes, support, cov, acquisition_ok)` ports the study's `measure()`.
+- For the whole nigra and each territory, each side's contrast ratio against the background is mean / mean − 1: `nm_bion_{whole,associative,limbic,sensorimotor}_{l,r,mean}_cr`.
+
+A region's contrasts are NaN on both sides unless every one of these holds:
+- ≥ 20 valid voxels per side and in the reference;
+- ≥ 95 % of them with signal and reached by every repeat (support ≥ 0.99);
+- reference CV < 0.4;
+- ≥ 90 % slab coverage of each side and of each background part;
+- an acceptable acquisition: ≥ 3 identified repeats, repeat motion and nigral RMS displacement (`repeat_nigral_rms`) < 3 mm.
+
+`nm_bion_qc_pass` and `nm_bion_qc_failed_checks` come from the whole-nigra measure. `syn_numerical_qc` adds the study's transform checks on the SyN cache, and a failure blanks every contrast:
+- the MNI → T1 → MNI round trip ≤ 0.5 mm at the nigral points (`syn_roundtrip_mm_max`);
+- a positive Jacobian there (`syn_jacobian_min`);
+- a positive affine determinant.
+
+Run `nm --keep-nifti` *without* `--denoise` for the study's quantity, then `nm_native … --study`.
+
+`manifest.assemble_features` keeps `nml_sn_volume*_mm3`, `nms_sn*_{mm3,cr,cnr}` and `nm_bion_*_cr`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`. Tests are in `tests/test_nm_native.py`:
 - a real ANTs SyN between synthetic volumes;
 - an oblique thin slab;
 - coverage;
 - region codes;
 - the threshold volume per side;
 - snceg features;
-- the snceg environment contract.
+- the snceg environment contract;
+- the study's labels, measure and checks (including each failure mode, and one-sided territories blanked on both sides);
+- nigral repeat motion;
+- the SyN numerical QC (a real SyN passes, a reflected affine fails);
+- `study_subject` end to end on a synthetic subject.
 
 ### References (neuromelanin)
 

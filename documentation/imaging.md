@@ -718,7 +718,9 @@ models and decision rules.
 | Match the selected T1/session and avoid future/conflicting SAA labels | `batch.py`, `labels.py`, `manifest.py` | Existing pipeline safeguards; explicit opt-in for unmatched labels |
 | Keep affine and acquisition timing/PE differences when assembling DWI | `dwi.py:assemble`, `acquisition_metadata_key` | Existing pipeline safeguards; estimated timing detects mismatches but cannot authorize eddy |
 | Rotate FSL gradients in the correct physical frame after rigid motion | `dwi.py:rotate_bvec`, `preprocess` | Existing pipeline; oblique-grid regression fixtures |
-| Separate NM reconstructions from independent acquisitions; preserve repeat support and hemisphere coordinates | `nm.py:compatible_repeats`, `average_repeats`, `nm_rois` | Existing pipeline; strict study eligibility thresholds remain study-specific |
+| Separate NM reconstructions from independent acquisitions; preserve repeat support and hemisphere coordinates | `nm.py:compatible_repeats`, `average_repeats`, `nm_rois` | Existing pipeline |
+| Bounded per-side slab coverage ≥ 0.9; rigid fit from both starts, lowest MI among fits covering both sides; ≥ 95 % of the measured voxels with signal and reached by every repeat | `nm.py:slab_coverage`, `register_slab`, `features`; `manifest.QC["nm"]` | Ported 27 Sep 2026; older tables keep the old coverage bar |
+| Map the atlas onto the NM slab through the subject's nonlinear (SyN) T1 → MNI registration, not an affine | `nm.py:_atlas_on`, `register_slab`, `refeature_subject` | Ported 27 Sep 2026; `refeature` regenerates affine-era maps |
 | Keep one complete tensor acquisition and its own b0s; validate slice groups; preserve odd-sized grids | `dwi_correction.py` | New reusable opt-in selection/command/geometry helpers; no study imports |
 | Inspect raw tensor eigenvalues and nonpositive signal before accepting FA/MD/AD/RD | `dwi_tensor_qc.py:tensor_measurements` | Opt-in measurement API already used by the reassessment, not silently substituted for legacy free-water features |
 | Expose free-water optimizer status, residuals and raw tensor failures | `dwi_acquisition.py:diagnostic_multishell` | Development diagnostics only; positive-definite initialization repair is not a validated estimator |
@@ -727,7 +729,8 @@ models and decision rules.
 
 Corrected study controls also require both hemispheres, complete signal coverage of the new mask, and a single
 tensor acquisition with its own b0 images. The NM recovery runner calculates geometric slab coverage from
-transformed source-atlas points; the legacy API's resampled-volume ratio is not a bounded coverage fraction.
+transformed source-atlas points; `nm.py` does the same since 27 Sep 2026 (`sn_slab_coverage_{l,r}`), in place of
+its earlier resampled-volume ratio, which was not a bounded coverage fraction.
 Anatomical correctness, repeat stability and biological validity remain separate checks. Physical fit acceptance
 alone does not establish any of them.
 

@@ -22,6 +22,13 @@ def _col(d, c):
     return pd.to_numeric(d[c], errors="coerce") if c in d else pd.Series(np.nan, index=d.index)
 
 
+def _nm_slab_coverage_ok(d):
+    """Each side's atlas SN >= 90 % inside the slab (``nm.slab_coverage``, the study's bounded geometric rule, 27 Sep
+    2026). Rows written before then carry only the unbounded volume ratio ``sn_slab_coverage`` and keep its old bar."""
+    side = np.minimum(_col(d, "sn_slab_coverage_l"), _col(d, "sn_slab_coverage_r"))
+    return (side >= 0.9).where(side.notna(), _col(d, "sn_slab_coverage") >= 0.5)
+
+
 # QC rules per modality (the same thresholds the study used); keep in one place
 T1_KEY_VOLUMES = ["vol_Left_Putamen", "vol_Right_Putamen", "vol_Left_Caudate", "vol_Right_Caudate", "vol_Left_Thalamus", "vol_Right_Thalamus"]
 QC = {
@@ -33,9 +40,12 @@ QC = {
     "dwi": lambda d: ((d["n_sn_l"] + d["n_sn_r"] >= 20) & (_col(d, "sn_brain_mask_fraction") >= 0.95)
                       & (_col(d, "sn_physical_fraction") >= 0.8) & (_col(d, "motion_mm_mean") <= 2)
                       & np.isfinite(_col(d, "sn_posterior_l_fa")) & np.isfinite(_col(d, "sn_posterior_r_fa")) & (d["fa_wm_median"] > 0.25)),
-    "nm": lambda d: (d["n_sn_l"] >= 20) & (d["n_sn_r"] >= 20) & (d["sn_slab_coverage"] >= 0.5) & (d["repeat_motion_mm_max"] < 3)
+    "nm": lambda d: (d["n_sn_l"] >= 20) & (d["n_sn_r"] >= 20) & _nm_slab_coverage_ok(d) & (d["repeat_motion_mm_max"] < 3)
     & (d["nm_ref_l_sd"] < 0.4 * d["nm_ref_l_mean"]) & (d["nm_ref_r_sd"] < 0.4 * d["nm_ref_r_mean"])   # reference ring partly outside the slab -> CV ~1, CNR garbage
-    & ~(_col(d, "nm_clipped_fraction") > 0.01),   # scanner-clipped repeats (tables before 26 Sep 2026 lack the column: pass)
+    & ~(_col(d, "nm_clipped_fraction") > 0.01)   # scanner-clipped repeats (tables before 26 Sep 2026 lack the column: pass)
+    # the study's voxel checks on the measured masks: >= 95 % with signal and reached by every repeat (tables before
+    # 27 Sep 2026 lack the columns: pass)
+    & ~d.reindex(columns=[f"nm_{k}_{s}" for k in ("valid", "support") for s in ("l", "r", "ref")]).lt(0.95).any(axis=1),
     "flair": lambda d: (d["reg_flair_t1_mi"] < -0.2) & (d["wm_mm3"] > 200000) & (d["flair_wm_mad"] > 0),
     # nm_template: the template SN mask has data on both sides and the crus reference is homogeneous
     "nmt": lambda d: (d["nmt_sn_cov_l"] >= 0.9) & (d["nmt_sn_cov_r"] >= 0.9) & (d["nmt_crus_cv_l"] < 0.3) & (d["nmt_crus_cv_r"] < 0.3),
@@ -237,7 +247,7 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
         df = df.merge(nmb[["patno"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     nat = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_native_features.csv")
     if nat is not None:      # native-space published measures (nm_native): Langley SNc volume, snceg volume and contrast
-        cols = [c for c in nat.columns if c.startswith(("nml_sn_volume", "nms_sn")) and c.endswith(("_mm3", "_cr", "_cnr"))]
+        cols = [c for c in nat.columns if c.startswith(("nml_sn_volume", "nms_sn", "nm_bion_")) and c.endswith(("_mm3", "_cr", "_cnr"))]
         df = df.merge(nat[["patno"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
     fl = _read(_modality_dir(derived, "flair", modality_dirs) / "flair_features.csv")
     if fl is not None:
@@ -252,7 +262,7 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
             df.loc[bad, feat_cols] = np.nan
     if "nm_qc_pass" in df:   # the slab's own QC (motion, coverage) holds for every NM method read from it
         df.loc[~df["nm_qc_pass"].fillna(False).astype(bool),
-               [c for c in df if c.startswith(("nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_cr", "_mm3"))]] = np.nan
+               [c for c in df if c.startswith(("nmt_", "nmb_", "nml_", "nms_", "nm_bion_")) and c.endswith(("_cnr", "_cr", "_mm3"))]] = np.nan
     # one intracranial volume for head-size adjustment: PIE's FreeSurfer eTIV (same T1 as the volumes), else PPMI's
     # FreeSurfer 7 eTIV of the same visit; never MaskVol or BrainSegVol
     nan = pd.Series(np.nan, index=df.index)

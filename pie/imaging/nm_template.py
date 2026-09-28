@@ -30,7 +30,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-SYN_TYPE = "antsRegistrationSyNQuick[s]"
+SYN_SEED = 20260915            # the study's registration seed (measurement_recovery registration_stability.py)
 
 
 def mni_brain_path():
@@ -42,8 +42,9 @@ def mni_brain_path():
 
 def syn_paths(fastsurfer_dir):
     tdir = Path(fastsurfer_dir) / "mri" / "transforms"
-    # named after the target space: the legacy t1_to_mni_syn_* caches were fitted to nilearn's 2009a template
-    return {"fwd": [tdir / "t1_to_MNI152NLin2009cAsym_syn_1Warp.nii.gz", tdir / "t1_to_MNI152NLin2009cAsym_syn_0GenericAffine.mat"]}
+    # named after the target space and the registration: the legacy t1_to_mni_syn_* caches were fitted to nilearn's 2009a
+    # template, and t1_to_MNI152NLin2009cAsym_syn_* by antsRegistrationSyNQuick[s] (before 27 Sep 2026); neither is reused
+    return {"fwd": [tdir / "t1_to_MNI152NLin2009cAsym_syncc2mm_1Warp.nii.gz", tdir / "t1_to_MNI152NLin2009cAsym_syncc2mm_0GenericAffine.mat"]}
 
 
 def syn_cached(fastsurfer_dir):
@@ -68,22 +69,36 @@ def crop_warp(path, margin_mm=20.0):
     nib.save(cropped, path)
 
 
-def syn_cache(fastsurfer_dir, syn_type=SYN_TYPE):
-    """ANTs SyN of the brain-masked conformed T1 to MNI152 (1 mm), cached under <subject>/mri/transforms. Returns the
-    forward transform list in ANTs order (``fwd`` warps T1-space images into MNI). The inverse warp is not kept: a
-    displacement field is ~70 MB per subject, and MNI -> T1 mappings can be recomputed when a study needs them."""
+def _unit(img):
+    """Intensities over the 99.5th percentile of the non-zero voxels, clipped to [0, 1] (the study's normalisation)."""
+    a = img.numpy()
+    return img.new_image_like(np.clip(a / np.percentile(a[a > 0], 99.5), 0, 1))
+
+
+def syn_cache(fastsurfer_dir):
+    """ANTs SyN of the brain-masked conformed T1 to the MNI152NLin2009cAsym brain, fitted as the study fitted it
+    (measurement_recovery registration_stability.py): both images on a 2 mm grid, intensities scaled to their 99.5th
+    percentile, SyN with a CC (radius 2) metric, affine 1000/500/250/100 and deformable 40/20/10 iterations, seeded
+    (``SYN_SEED``); ~8 CPU-minutes per subject. On 10 control scans the NM masks it gives matched the study's at Dice 0.84
+    with 0.94 of their volume, where antsRegistrationSyNQuick[s] (PIE's choice before 27 Sep 2026) gave 0.72 and 1.23.
+    Cached under <subject>/mri/transforms; returns the forward transform list in ANTs order (``fwd`` warps T1-space
+    images into MNI). The inverse warp is not kept here (``nm_native.inverse_warp`` caches it when needed)."""
     paths = syn_paths(fastsurfer_dir)
     if syn_cached(fastsurfer_dir):
         return {k: [str(p) for p in v] for k, v in paths.items()}
     import ants
 
+    from .features import _drop_transforms, _seed_ants
+
     mri = Path(fastsurfer_dir) / "mri"
     t1 = ants.image_read(str(mri / "orig.mgz"))
     t1b = t1 * ants.threshold_image(ants.image_read(str(mri / "mask.mgz")), 0.5, 1e9)
-    reg = ants.registration(fixed=ants.image_read(str(mni_brain_path())), moving=t1b, type_of_transform=syn_type)
+    two = lambda i: ants.resample_image(i, (2, 2, 2), use_voxels=False, interp_type=0)
+    _seed_ants(SYN_SEED)
+    reg = ants.registration(fixed=_unit(two(ants.image_read(str(mni_brain_path())))), moving=_unit(two(t1b)), type_of_transform="SyN",
+                            aff_iterations=(1000, 500, 250, 100), reg_iterations=(40, 20, 10), syn_metric="CC", syn_sampling=2)
     paths["fwd"][0].parent.mkdir(parents=True, exist_ok=True)
     partial = paths["fwd"][0].with_name("partial_" + paths["fwd"][0].name)
-    from .features import _drop_transforms
     try:
         shutil.copy(reg["fwdtransforms"][0], partial)            # 1Warp, cropped before it counts as cached
         crop_warp(partial)

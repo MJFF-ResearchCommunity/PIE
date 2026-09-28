@@ -217,3 +217,219 @@ def test_prepare_tse_creates_its_work_dir(tmp_path):
     N.main(["--prepare-tse", "--zips", str(zp), "--sessions", str(tmp_path / "s.csv"), "--fastsurfer-dir", str(tmp_path / "fs"),
             "--work-dir", str(work)])
     assert (work / "tse_index.csv").exists()
+
+
+# ------------------------------------------------------------------------------------------ the study's measure (Methods 4.13)
+def _bion():
+    """A small Biondetti-like MNI image: territories 1-3 on each side, a background ROI of three parts, one touching the SN."""
+    aff = np.eye(4)
+    aff[:3, 3] = (-20, -30, -25)
+    lab = np.zeros((41, 30, 20), np.int16)                   # MNI x = -20..20
+    lab[8:14, 10:14, 8:12] = [[[1]], [[1]], [[2]], [[2]], [[3]], [[3]]]   # left: associative, limbic, sensorimotor along x
+    lab[27:33, 10:14, 8:12] = [[[3]], [[3]], [[2]], [[2]], [[1]], [[1]]]
+    lab[4:8, 10:14, 8:12] = 4                                # left crus, touching the left SN
+    lab[33:37, 10:14, 8:12] = 4                              # right crus, touching the right SN
+    lab[18:23, 2:5, 8:12] = 4                                # midline tegmental part
+    return nib.Nifti1Image(lab, aff)
+
+
+def test_study_labels_keep_the_complete_background_as_three_components():
+    """The study's reference is the whole published background ROI: no ring is cut from it (unlike region_labels)."""
+    codes = np.asarray(N.study_labels(_bion()).dataobj)
+    region, side = codes % 100, codes // 100
+    assert (region[8:10, 10:14, 8:12] == 1).all() and (side[8:14, 10:14, 8:12] == 1).all() and (side[27:33, 10:14, 8:12] == 2).all()
+    assert (region[12:14, 10:14, 8:12] == 3).all() and (region[27:29, 10:14, 8:12] == 3).all()
+    assert (codes[4:8, 10:14, 8:12] == N.STUDY_REF + 1).all()           # left crus, including the voxels next to the SN
+    assert (codes[18:23, 2:5, 8:12] == N.STUDY_REF + 2).all()           # midline
+    assert (codes[33:37, 10:14, 8:12] == N.STUDY_REF + 3).all()         # right crus
+    assert set(np.unique(codes)) == {0, 101, 102, 103, 201, 202, 203, 11, 12, 13}
+
+
+def _study_slab():
+    """Codes on a slab grid (x, y, z) as study_labels + pull_labels give them, with a planted signal."""
+    codes = np.zeros((40, 20, 8), np.int16)
+    for x0, side in ((2, 100), (28, 200)):                   # each territory on each side, 4 x 10 x 4 voxels
+        codes[x0:x0 + 4, 5:15, 2:6], codes[x0 + 4:x0 + 7, 5:15, 2:6], codes[x0 + 7:x0 + 10, 5:15, 2:6] = side + 1, side + 2, side + 3
+    codes[14:18, 5:15, 2:6], codes[18:22, 5:15, 2:6], codes[22:26, 5:15, 2:6] = 11, 12, 13
+    nm = np.where(codes // 100 == 1, 120.0, np.where(codes // 100 == 2, 110.0, 100.0))
+    nm = nm + np.random.default_rng(0).normal(0, 1, nm.shape)
+    cov = {k: 1.0 for k in ("whole_l", "whole_r", "associative_l", "associative_r", "limbic_l", "limbic_r",
+                            "sensorimotor_l", "sensorimotor_r", "ref_1", "ref_2", "ref_3")}
+    return nm, codes, np.ones(nm.shape), cov
+
+
+def test_study_measure_is_the_contrast_ratio_against_the_whole_background():
+    nm, codes, support, cov = _study_slab()
+    out = N.study_features(nm, codes, support, cov, acquisition_ok=True)
+    ref = nm[(codes > 10) & (codes < 20)].mean()
+    assert out["nm_bion_qc_pass"] and out["nm_bion_qc_failed_checks"] == ""
+    assert out["nm_bion_whole_l_cr"] == pytest.approx(nm[codes // 100 == 1].mean() / ref - 1)
+    assert out["nm_bion_whole_r_cr"] == pytest.approx(nm[codes // 100 == 2].mean() / ref - 1)
+    assert abs(out["nm_bion_whole_l_cr"] - 0.20) < 0.01 and abs(out["nm_bion_whole_mean_cr"] - 0.15) < 0.01
+    assert out["nm_bion_associative_l_cr"] == pytest.approx(nm[codes == 101].mean() / ref - 1)
+    assert out["nm_bion_sensorimotor_r_cr"] == pytest.approx(nm[codes == 203].mean() / ref - 1)
+    codes[codes == 201] = 0                                   # no right associative voxels: that territory fails on both
+    one_sided = N.study_features(nm, codes, support, cov, acquisition_ok=True)   # sides (the study never promotes a unilateral
+    assert np.isnan(one_sided["nm_bion_associative_l_cr"]) and one_sided["nm_bion_qc_pass"]   # result); the whole nigra stands
+
+
+@pytest.mark.parametrize("spoil, check", [
+    (lambda nm, codes, sup, cov: sup.__setitem__(codes == 101, 0.8), "l_repeat_support"),
+    (lambda nm, codes, sup, cov: nm.__setitem__((codes == 202) & (np.indices(nm.shape)[0] % 2 == 0), 0.0), "r_invalid_signal"),
+    (lambda nm, codes, sup, cov: cov.__setitem__("whole_r", 0.85), "r_slab_coverage"),
+    (lambda nm, codes, sup, cov: cov.__setitem__("ref_2", 0.85), "reference_component_slab_coverage"),
+    (lambda nm, codes, sup, cov: nm.__setitem__(codes == 12, 400.0), "reference_cv"),
+])
+def test_study_measure_fails_the_studys_checks(spoil, check):
+    nm, codes, support, cov = _study_slab()
+    spoil(nm, codes, support, cov)
+    out = N.study_features(nm, codes, support, cov, acquisition_ok=True)
+    assert not out["nm_bion_qc_pass"] and check in out["nm_bion_qc_failed_checks"]
+    assert np.isnan(out["nm_bion_whole_l_cr"]) and np.isnan(out["nm_bion_whole_mean_cr"])
+
+
+def test_study_measure_needs_an_acceptable_acquisition():
+    nm, codes, support, cov = _study_slab()
+    out = N.study_features(nm, codes, support, cov, acquisition_ok=False)
+    assert not out["nm_bion_qc_pass"] and "acquisition" in out["nm_bion_qc_failed_checks"]
+
+
+def test_nigral_repeat_motion_is_the_largest_rms_displacement_of_the_nigral_points():
+    import SimpleITK as sitk
+    pts = np.array([[0.0, 0, 0], [10, 0, 0], [0, 10, 5]])
+    moves = [sitk.TranslationTransform(3, (1.0, 0, 0)), sitk.TranslationTransform(3, (0, 3.0, 4.0))]
+    assert N.repeat_nigral_rms(pts, moves) == pytest.approx(5.0)
+    assert N.repeat_nigral_rms(np.empty((0, 3)), moves) == np.inf
+
+
+def test_syn_numerical_qc_measures_round_trip_jacobian_and_affine_determinant(syn, tmp_path):
+    """The study's transform QC: round trip MNI -> T1 -> MNI at the nigral points, Jacobian of the warp there, and the
+    affine's determinant; a real SyN passes, a reflected affine fails."""
+    import ants
+    import SimpleITK as sitk
+    pts = nib.affines.apply_affine(syn["lab"].affine, np.argwhere(np.asarray(syn["lab"].dataobj) > 0)) * [-1, -1, 1]   # LPS mm
+    ok = N.syn_numerical_qc(syn["warp"], syn["affine"], pts)
+    assert ok["syn_roundtrip_mm_max"] < 0.5 and ok["syn_jacobian_min"] > 0 and ok["syn_affine_det"] > 0 and ok["syn_numerical_qc_pass"]
+    zero = tmp_path / "t1_to_MNI152NLin2009cAsym_syn_1Warp.nii.gz"
+    ants.image_write(ants.image_read(syn["warp"]) * 0, str(zero))
+    sitk.WriteTransform(sitk.AffineTransform((-1.0, 0, 0, 0, 1, 0, 0, 0, 1), (0.0, 0, 0)), str(tmp_path / "flip.mat"))
+    bad = N.syn_numerical_qc(str(zero), str(tmp_path / "flip.mat"), pts)
+    assert bad["syn_roundtrip_mm_max"] < 0.01 and bad["syn_jacobian_min"] == pytest.approx(1.0) and bad["syn_affine_det"] < 0
+    assert not bad["syn_numerical_qc_pass"]
+
+
+def _study_subject(tmp_path, left_support=1.0):
+    """A synthetic ``nm --keep-nifti`` subject whose slab (identity rigid, zero SyN) covers _bion()'s regions."""
+    import json
+    import SimpleITK as sitk
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_nm import _zero_syn_cache
+
+    fs, d = tmp_path / "fs", tmp_path / "work" / "1"
+    _zero_syn_cache(fs)
+    (d / "repeat_transforms").mkdir(parents=True)
+    aff = np.diag([0.5, 0.5, 1.5, 1.0])
+    aff[:3, 3] = (-20, -30, -25)                             # RAS x -20..19.5, y -30..-0.5, z -25..-5.5
+    shape = (80, 60, 14)
+    nib.save(nib.Nifti1Image((100 + np.random.default_rng(0).normal(0, 2, shape)).astype(np.float32), aff), d / "nm_mean.nii.gz")
+    support = np.ones(shape, np.float32)
+    support[:40] = left_support                              # RAS x < 0: the left hemisphere
+    nib.save(nib.Nifti1Image(support, aff), d / "repeat_transforms" / "repeat_support_fraction.nii.gz")
+    sitk.WriteTransform(sitk.Euler3DTransform(), str(d / "slab_to_t1.tfm"))
+    for i in (1, 2):
+        sitk.WriteTransform(sitk.Euler3DTransform((0, 0, 0), 0, 0, 0, (0.5, 0, 0)), str(d / "repeat_transforms" / f"repeat_{i}_to_anchor.tfm"))
+    (d / "repeat_selection.json").write_text(json.dumps({"volumes": [{}, {}, {}], "n_missing_acquisition_identity": 0}))
+    return tmp_path / "work", fs
+
+
+def test_study_subject_joins_regions_support_repeats_and_transform_checks(tmp_path):
+    work, fs = _study_subject(tmp_path)
+    out = N.study_subject(work, 1, fs, labels=N.study_labels(_bion()))
+    assert out["nm_bion_qc_pass"], out["nm_bion_qc_failed_checks"]
+    assert abs(out["nm_bion_whole_l_cr"]) < 0.02 and out["nm_bion_n_sn_l"] >= 20 and out["nm_bion_cov_ref_2"] > 0.99
+    assert out["syn_numerical_qc_pass"] and out["repeat_nigral_rms_mm_max"] == pytest.approx(0.5)
+    assert (work / "1" / "study_regions_nm.nii.gz").exists()
+    work, fs = _study_subject(tmp_path / "b", left_support=0.8)     # the support map's left half, read in the slab's own order
+    out = N.study_subject(work, 1, fs, labels=N.study_labels(_bion()))
+    assert "l_repeat_support" in out["nm_bion_qc_failed_checks"] and "r_repeat_support" not in out["nm_bion_qc_failed_checks"]
+
+
+
+def test_study_subject_refuses_a_denoised_slab(tmp_path):
+    # the study's quantity is defined without MP-PCA; nm records its denoising in nm_features.csv
+    import pandas as pd
+    work, fs = _study_subject(tmp_path)
+    pd.DataFrame({"patno": [1], "denoise": ["mppca"]}).to_csv(work / "nm_features.csv", index=False)
+    with pytest.raises(ValueError, match="without --denoise"):
+        N.study_subject(work, 1, fs, labels=N.study_labels(_bion()))
+    pd.DataFrame({"patno": [1], "denoise": ["none"]}).to_csv(work / "nm_features.csv", index=False)
+    assert N.study_subject(work, 1, fs, labels=N.study_labels(_bion()))["nm_bion_qc_pass"]
+
+# ------------------------------------------------------------------------------------------ Langley version 2 (peduncle reference)
+def _peduncle(like):
+    """A JHU-like cerebral peduncle on _bion()'s grid: lateral to each nigra, touching it, over its crus part."""
+    ped = np.zeros(like.shape, np.int16)
+    ped[3:8, 10:14, 6:14] = 16                               # left peduncle, up to the left nigra (x index 8)
+    ped[33:38, 10:14, 6:14] = 15                             # right, from the right nigra's edge (x index 32)
+    return nib.Nifti1Image(ped, like.affine)
+
+
+def test_langley_labels_swap_the_crus_reference_for_the_peduncle_outside_the_search_region():
+    bion = _bion()
+    codes = np.asarray(N.langley_labels(bion, _peduncle(bion)).dataobj)
+    region, side = codes % 100, codes // 100
+    assert (region[8:14, 10:14, 8:12] > 0).all() and (region[8:14, 10:14, 8:12] <= 3).all()   # the nigra keeps its territories
+    assert (region[3:7, 10:14, 6:14] == N.PEDUNCLE).all() and (side[3:7, 10:14, 6:14] == 1).all()
+    assert (region[34:38, 10:14, 6:14] == N.PEDUNCLE).all() and (side[34:38, 10:14, 6:14] == 2).all()
+    assert not np.isin(region, [N.CRUS, N.TEGMENTUM]).any()                                    # no Biondetti reference left
+    assert region[7, 11, 9] == N.RING and region[33, 11, 9] == N.RING   # the search ring wins over the peduncle next to the nigra
+
+
+def test_langley_volume_can_use_the_peduncle_as_its_reference():
+    codes = np.zeros((30, 20, 6), np.int16)
+    codes[5:10, 5:15, 1:5] = 101                             # left nigra: 200 voxels
+    codes[20:25, 5:15, 1:5] = 201
+    codes[0:4, 5:15, 1:5] = 100 + N.PEDUNCLE                 # peduncle reference: 160 voxels
+    codes[26:30, 5:15, 1:5] = 200 + N.PEDUNCLE
+    codes[12:18, 5:15, 1:5] = 100 + N.CRUS                   # a bright "crus" that must not be the reference now
+    rng = np.random.default_rng(0)
+    nm = np.where(codes % 100 == N.PEDUNCLE, 100 + rng.normal(0, 5, codes.shape), 100.0)
+    nm[codes % 100 == N.CRUS] = 300.0
+    nm[(codes == 101) & (np.indices(codes.shape)[1] < 10)] = 200.0     # half of the left nigra is bright
+    img = nib.Nifti1Image(nm.astype(np.float32), np.diag([0.5, 0.5, 1.0, 1.0]))
+    out = N.langley_features(img, codes, ref_region=N.PEDUNCLE, prefix="nmlp_")
+    assert out["nmlp_sn_volume_l_mm3"] == pytest.approx(100 * 0.25) and out["nmlp_sn_volume_r_mm3"] == 0
+    assert abs(out["nmlp_ref_mean"] - 100) < 1.5 and abs(out["nmlp_threshold"] - (out["nmlp_ref_mean"] + 2.8 * out["nmlp_ref_sd"])) < 1e-6
+
+
+def test_peduncle_bridge_qc_wants_the_peduncle_lateral_to_the_nigra_and_apart_from_it():
+    from pie.imaging.atlases import peduncle_bridge_qc
+    bion = _bion()
+    lab = np.asarray(bion.dataobj)
+    ok = peduncle_bridge_qc(np.asarray(_peduncle(bion).dataobj), lab, bion.affine)
+    assert ok["pass"], ok
+    medial = np.zeros(lab.shape, np.int16)
+    medial[16:20, 10:14, 6:14], medial[21:25, 10:14, 6:14] = 16, 15     # medial to the nigra: the wrong structure
+    assert not peduncle_bridge_qc(medial, lab, bion.affine)["pass"]
+    off = np.zeros(lab.shape, np.int16)
+    off[3:8, 0:4, 6:14], off[33:38, 0:4, 6:14] = 16, 15     # lateral, but nowhere near the crus: a misplaced bridge
+    assert not peduncle_bridge_qc(off, lab, bion.affine)["pass"]
+    over = np.asarray(_peduncle(bion).dataobj).copy()
+    over[8:10, 10:14, 8:12] = 16                             # JHU's coarse label spills over the nigra's lateral edge:
+    q = peduncle_bridge_qc(over, lab, bion.affine)           # reported, not a failure (the search region wins in langley_labels)
+    assert q["pass"] and q["l_sn_overlap"] > 0.3
+
+
+def test_process_subject_adds_the_peduncle_version_beside_version_1(tmp_path, monkeypatch):
+    work, fs = _study_subject(tmp_path)
+    bion = _bion()
+    monkeypatch.setattr(N, "region_labels", lambda *a: _real_region(bion))    # the synthetic atlas, not the real one
+    monkeypatch.setattr(N, "langley_labels", lambda *a: _real_langley(bion, _peduncle(bion)))
+    row = N.process_subject(work, 1, fs, langley_peduncle=True)
+    assert {"nml_sn_volume_mm3", "nmlp_sn_volume_mm3", "nmlp_threshold", "native_cov_peduncle_l"} <= set(row)
+    assert row["native_cov_peduncle_l"] > 0.99 and np.isfinite(row["nmlp_sn_volume_l_mm3"]) and np.isfinite(row["nmlp_ref_sd"])
+    assert (work / "1" / "langley_regions_nm.nii.gz").exists()
+
+
+_real_region, _real_langley = N.region_labels, N.langley_labels

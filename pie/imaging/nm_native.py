@@ -35,6 +35,9 @@ import pandas as pd
 LANGLEY_K = 2.8                 # Langley et al.: SNc = voxels > reference mean + 2.8 SD
 SEARCH_DILATE_MM = 1.0
 RING, CRUS, TEGMENTUM = 5, 21, 23   # region codes beside the Biondetti territories 1-3; code = region + 100 * side (1 left, 2 right)
+PEDUNCLE = 25                       # langley_labels: the JHU cerebral peduncle, Langley's reference (version 2)
+STUDY_REF = 10                      # study_labels: the background ROI's three parts are STUDY_REF + 1..3 (MNI x order)
+TERRITORIES = {1: "associative", 2: "limbic", 3: "sensorimotor"}   # atlases.BIONDETTI_TERRITORIES
 SNCEG_REVISION = "6bcddc5f33d324c3ebef7303b68ff36d0e82257b"   # huggingface.co/lillepeder/SNceg-0.1, MIT (verified 26 September 2026)
 SNCEG_FILES = {"SNceg-0.1.pkl": "fd554eed386296a53a44786cced90af73c621a374b72d647559984e91f0674c3",
                "vars_SNceg-0.1.pkl": "a9ef917ffc75cd0216d377a92382fe2ab8bc4ff6fd8ce7009cad5ff032d27c57"}
@@ -63,6 +66,45 @@ def region_labels(biondetti_img=None):
         part = (parts == i) & (region == 0)
         region[part] = CRUS if np.abs(x[parts == i].mean()) > 5 else TEGMENTUM
     return nib.Nifti1Image((region + 100 * np.where(x < 0, 1, 2)).astype(np.int16), biondetti_img.affine)
+
+
+def langley_labels(biondetti_img=None, peduncle_img=None):
+    """Version 2 of the Langley regions: ``region_labels``' search region (Biondetti territories + the 1 mm RING) with
+    the JHU cerebral peduncle (``atlases.jhu_peduncle_mni2009c``) as the reference, PEDUNCLE + 100 x side, outside the
+    search region; the Biondetti crus and tegmental parts are dropped. Langley et al. 2025 and Hwang et al. 2023 use "a
+    reference ROI in the cerebral peduncle ... created using the MNI template", whose own geometry is unpublished."""
+    if peduncle_img is None:
+        from .atlases import jhu_peduncle_mni2009c
+        peduncle_img = nib.load(jhu_peduncle_mni2009c())
+    codes = np.asarray(region_labels(biondetti_img).dataobj)
+    ped = np.asarray(peduncle_img.dataobj) > 0
+    if ped.shape != codes.shape:
+        raise ValueError("the peduncle and Biondetti labels are not on one grid")
+    region, side = codes % 100, codes // 100
+    keep = np.isin(region, [1, 2, 3, RING])
+    region = np.where(keep, region, np.where(ped, PEDUNCLE, 0))
+    return nib.Nifti1Image((region + 100 * side).astype(np.int16), peduncle_img.affine)
+
+
+def study_labels(biondetti_img=None):
+    """The study's native NM regions (manuscript Methods 4.13): Biondetti territory + 100 x side (MNI x < 0 left) and the
+    complete background ROI as its three parts, STUDY_REF + 1..3 in MNI x order (left crus, midline, right crus). Unlike
+    ``region_labels`` no search ring is cut from the background: the study's reference is the whole published ROI."""
+    from scipy import ndimage
+
+    if biondetti_img is None:
+        from .atlases import biondetti_mni2009c
+        biondetti_img = nib.load(biondetti_mni2009c())
+    lab = np.asarray(biondetti_img.dataobj).astype(np.int16)
+    ix = np.indices(lab.shape, sparse=True)
+    x = np.broadcast_to(biondetti_img.affine[0, 3] + sum(biondetti_img.affine[0, k] * ix[k] for k in range(3)), lab.shape)
+    codes = np.where(np.isin(lab, [1, 2, 3]), lab + 100 * np.where(x < 0, 1, 2), 0)
+    parts, n = ndimage.label(lab == 4, structure=np.ones((3, 3, 3)))
+    if n != 3:
+        raise ValueError(f"the published background ROI should have three parts, found {n}")
+    for rank, i in enumerate(np.argsort([x[parts == i].mean() for i in (1, 2, 3)]), 1):
+        codes[parts == i + 1] = STUDY_REF + rank
+    return nib.Nifti1Image(codes.astype(np.int16), biondetti_img.affine)
 
 
 # ------------------------------------------------------------------------------------------ transforms
@@ -125,14 +167,15 @@ def _side_masks(codes):
     return region, {"l": side == 1, "r": side == 2}
 
 
-def langley_features(nm_img, codes, k=LANGLEY_K, prefix="nml_"):
-    """SNc volume (mm^3, total and per side): search-region voxels (nigra + 1 mm ring) above crus mean + k SD
-    (``nm.hyperintense_volume``); one threshold from both crus parts, as the published cerebral-peduncle reference."""
+def langley_features(nm_img, codes, k=LANGLEY_K, prefix="nml_", ref_region=CRUS):
+    """SNc volume (mm^3, total and per side): search-region voxels (nigra + 1 mm ring) above reference mean + k SD
+    (``nm.hyperintense_volume``); one threshold from both sides of the reference, as the published cerebral-peduncle
+    ROI. ``ref_region``: CRUS (version 1, the Biondetti crus parts) or PEDUNCLE (version 2, ``langley_labels``)."""
     from .nm import hyperintense_volume
 
     region, sides = _side_masks(codes)
     search = np.isin(region, [1, 2, 3, RING])
-    ref = nib.Nifti1Image((region == CRUS).astype(np.uint8), nm_img.affine)
+    ref = nib.Nifti1Image((region == ref_region).astype(np.uint8), nm_img.affine)
     out = {}
     for name, m in (("", search), ("_l", search & sides["l"]), ("_r", search & sides["r"])):
         r = hyperintense_volume(nm_img, nib.Nifti1Image(m.astype(np.uint8), nm_img.affine), ref, k=k)
@@ -157,6 +200,95 @@ def snceg_features(nm_img, sn, codes, prefix="nms_"):
         out.update({f"{prefix}sn_volume_{s}_mm3": float(v.sum() * vox), f"{prefix}sn_{s}_cr": i / mu - 1, f"{prefix}sn_{s}_cnr": (i - mu) / sd})
     for m in ("cr", "cnr"):
         out[f"{prefix}sn_mean_{m}"] = (out[f"{prefix}sn_l_{m}"] + out[f"{prefix}sn_r_{m}"]) / 2
+    return out
+
+
+def _study_measure(nm, sides, reference, support, coverage, acquisition_ok):
+    """The study's ``measure`` (``nm_rescue_measurements.py``): a strict bilateral contrast ratio. Returns the values and
+    the failed checks; a unilateral result is never promoted."""
+    good = np.isfinite(nm) & (nm > 0)
+    reference = reference & (sides == 0)
+    r, failures = {}, []
+    for name, mask in (("reference", reference), ("l", sides == 1), ("r", sides == 2)):
+        n, pos = int(mask.sum()), nm[mask & good]
+        r["n_" + name], r[name + "_mean"] = n, float(pos.mean()) if len(pos) else np.nan
+        if len(pos) < 20:
+            failures.append(name + "_fewer_than_20_valid_voxels")
+        if (good[mask].mean() if n else 0.0) < 0.95:
+            failures.append(name + "_invalid_signal")
+        if ((support[mask] >= 0.99).mean() if n else 0.0) < 0.95:
+            failures.append(name + "_repeat_support")
+    ref = nm[reference & good]
+    r["reference_cv"] = float(ref.std() / ref.mean()) if len(ref) else np.nan
+    if not np.isfinite(r["reference_cv"]) or r["reference_cv"] >= 0.4:
+        failures.append("reference_cv")
+    for side, cov in zip("lr", coverage):
+        r[side + "_cr"] = r[side + "_mean"] / r["reference_mean"] - 1 if r["reference_mean"] > 0 else np.nan
+        if cov < 0.9:
+            failures.append(side + "_slab_coverage")
+    r["mean_cr"] = float(np.mean([r["l_cr"], r["r_cr"]]))
+    if not acquisition_ok:
+        failures.append("acquisition")
+    if not np.isfinite(r["mean_cr"]):
+        failures.append("nonfinite_bilateral_cr")
+    return r, failures
+
+
+def study_features(nm, codes, support, cov, acquisition_ok, prefix="nm_bion_"):
+    """The study's native NM measure (Methods 4.13; its ``nonlinear_nm_measurements_v2``): for the whole nigra and each
+    Biondetti territory, each side's contrast ratio against the complete background ROI (mean / mean - 1), NaN on both
+    sides unless that region passes every check: >= 20 valid voxels per side and in the reference, >= 95 % of them with
+    signal and reached by every repeat (``support`` >= 0.99), reference CV < 0.4, >= 90 % slab coverage of each side and
+    of each background part, and an acceptable acquisition. ``codes`` is ``study_labels`` on the slab grid and ``cov``
+    the ``pull_labels`` coverage of "<region>_<side>" and "ref_<k>"; arrays share one voxel order."""
+    region, side = codes % 100, codes // 100
+    target, reference = codes > 100, (codes > STUDY_REF) & (codes <= STUDY_REF + 3)
+    ref_ok = min(cov[f"ref_{k}"] for k in (1, 2, 3)) >= 0.9
+    out = {}
+    for name, keep in [("whole", target)] + [(t, target & (region == k)) for k, t in TERRITORIES.items()]:
+        r, failures = _study_measure(nm, np.where(keep, side, 0), reference, support, (cov[f"{name}_l"], cov[f"{name}_r"]), acquisition_ok)
+        failures += [] if ref_ok else ["reference_component_slab_coverage"]
+        for s in ("l", "r", "mean"):
+            out[f"{prefix}{name}_{s}_cr"] = r[f"{s}_cr"] if not failures else np.nan
+        if name == "whole":
+            out.update({f"{prefix}qc_pass": not failures, f"{prefix}qc_failed_checks": ";".join(failures), f"{prefix}n_sn_l": r["n_l"],
+                        f"{prefix}n_sn_r": r["n_r"], f"{prefix}n_reference": r["n_reference"], f"{prefix}reference_cv": r["reference_cv"]})
+    return out
+
+
+def repeat_nigral_rms(points, transforms):
+    """Largest RMS displacement (mm) of the nigral ``points`` (LPS mm, slab space) under the repeat -> anchor rigids: the
+    study's nigral repeat-motion check (< 3 mm). No points: infinite."""
+    if not len(points):
+        return np.inf
+    return max((float(np.sqrt(np.mean(np.sum((np.array([t.TransformPoint(tuple(map(float, p))) for p in points]) - points) ** 2, axis=1))))
+                for t in transforms), default=0.0)
+
+
+def syn_numerical_qc(warp, affine, points, max_roundtrip_mm=0.5):
+    """The study's transform QC on a cached SyN at ``points`` (MNI, LPS mm): round trip MNI -> T1 -> MNI (the forward
+    warp and affine, then the affine's inverse and the inverse warp), the forward warp's Jacobian determinant, and the
+    affine's determinant. Passes when the round trip stays within ``max_roundtrip_mm`` and every Jacobian and the
+    determinant are finite and positive."""
+    import ants
+    import SimpleITK as sitk
+
+    field = lambda path: sitk.DisplacementFieldTransform(sitk.ReadImage(str(path), sitk.sitkVectorFloat64))
+    aff = sitk.ReadTransform(str(affine))
+    fwd, back = sitk.CompositeTransform(3), sitk.CompositeTransform(3)
+    fwd.AddTransform(aff), fwd.AddTransform(field(warp))                       # the last added acts first: warp, then affine
+    back.AddTransform(field(inverse_warp(warp))), back.AddTransform(aff.GetInverse())
+    pts = [tuple(map(float, p)) for p in points]
+    trip = np.array([back.TransformPoint(fwd.TransformPoint(p)) for p in pts]) - np.array(pts)
+    probes = np.array([aff.TransformPoint(tuple(v)) for v in np.vstack([np.zeros(3), np.eye(3)])])
+    det = float(np.linalg.det((probes[1:] - probes[0]).T))
+    jac = ants.create_jacobian_determinant_image(ants.image_read(str(warp)).split_channels()[0], str(warp))
+    j = sitk.GetImageFromArray(jac.numpy().T.copy())
+    j.SetOrigin(jac.origin), j.SetSpacing(jac.spacing), j.SetDirection(tuple(np.asarray(jac.direction).ravel()))
+    idx = [j.TransformPhysicalPointToIndex(p) for p in pts]
+    vals = np.array([j.GetPixel(i) if all(0 <= a < b for a, b in zip(i, j.GetSize())) else np.nan for i in idx])
+    out = {"syn_roundtrip_mm_max": float(np.linalg.norm(trip, axis=1).max()), "syn_jacobian_min": float(np.min(vals)), "syn_affine_det": det}
+    out["syn_numerical_qc_pass"] = bool(out["syn_roundtrip_mm_max"] <= max_roundtrip_mm and np.isfinite(vals).all() and (vals > 0).all() and det > 0)
     return out
 
 
@@ -236,10 +368,13 @@ def _tse_job(args):
 
 
 # ------------------------------------------------------------------------------------------ driver
-def process_subject(work_dir, patno, fastsurfer_dir, snceg=False, min_cov=0.9):
+def process_subject(work_dir, patno, fastsurfer_dir, snceg=False, min_cov=0.9, langley_peduncle=False):
     """<work>/<patno>/nm_mean.nii.gz + slab_to_t1.tfm (``nm --keep-nifti``) and the cached SyN (``nm_template syn``)
     -> native region labels (saved), coverage, Langley volume and optionally snceg measures. A side whose search region
-    or crus is less than ``min_cov`` inside the slab is missing."""
+    or crus is less than ``min_cov`` inside the slab is missing. ``langley_peduncle`` adds version 2 of the Langley
+    volume (``nmlp_*``: the JHU cerebral peduncle as reference, ``langley_labels``, regions saved as
+    langley_regions_nm.nii.gz): whatever part of the peduncle the slab holds is the reference (>= 20 voxels, else NaN),
+    and a side whose search region is less than ``min_cov`` inside the slab is missing."""
     import SimpleITK as sitk
 
     from .nm_template import syn_cached, syn_paths
@@ -255,6 +390,19 @@ def process_subject(work_dir, patno, fastsurfer_dir, snceg=False, min_cov=0.9):
     row = {f"native_cov_{k}": v for k, v in cov.items()}
     ok = {s: cov[f"search_{s}"] >= min_cov and cov[f"crus_{s}"] >= min_cov for s in "lr"}
     row.update(langley_features(nm_img, codes))
+    if langley_peduncle:
+        pgroups = {"peduncle_l": [100 + PEDUNCLE], "peduncle_r": [200 + PEDUNCLE]}
+        pcodes, pcov = pull_labels(langley_labels(), nm_img, sitk.ReadTransform(str(d / "slab_to_t1.tfm")), warp, affine, codes=pgroups)
+        nib.save(nib.Nifti1Image(pcodes, nm_img.affine), d / "langley_regions_nm.nii.gz")
+        row.update({f"native_cov_{k}": v for k, v in pcov.items()})
+        try:
+            prow = langley_features(nm_img, pcodes, prefix="nmlp_", ref_region=PEDUNCLE)
+        except ValueError:                  # fewer than 20 peduncle voxels in the slab
+            prow = {f"nmlp_sn_volume{s}_mm3": np.nan for s in ("", "_l", "_r")}
+        for s in "lr":
+            if cov[f"search_{s}"] < min_cov:
+                prow[f"nmlp_sn_volume_{s}_mm3"] = prow["nmlp_sn_volume_mm3"] = np.nan
+        row.update(prow)
     if snceg:
         sn = snceg_mask(d / "nm_mean.nii.gz", d / "snceg_sn_nm.nii.gz")
         row.update(snceg_features(nm_img, sn, codes))
@@ -265,10 +413,53 @@ def process_subject(work_dir, patno, fastsurfer_dir, snceg=False, min_cov=0.9):
     return row
 
 
+def study_subject(work_dir, patno, fastsurfer_dir, labels=None):
+    """<work>/<patno> from ``nm --keep-nifti`` (slab, rigid, repeat transforms, repeat support and selection) and the
+    cached SyN -> the study's measure (``study_features``) with its acquisition checks (>= 3 identified repeats, repeat
+    motion and nigral RMS displacement < 3 mm) and transform checks (``syn_numerical_qc``; a failure blanks every
+    contrast). ``labels`` defaults to ``study_labels()``; the regions on the slab are saved as study_regions_nm.nii.gz."""
+    import json
+
+    import SimpleITK as sitk
+
+    from .nm_template import syn_paths
+
+    d = Path(work_dir) / str(patno)
+    runs = Path(work_dir) / "nm_features.csv"          # nm records its denoising per subject
+    if runs.exists():
+        den = pd.read_csv(runs, usecols=lambda c: c in ("patno", "denoise")).astype(str)
+        if den.get("denoise", pd.Series(dtype=str))[den["patno"].eq(str(patno))].eq("mppca").any():
+            raise ValueError("the study's measure is defined on slabs without MP-PCA: run nm without --denoise")
+    rt = d / "repeat_transforms"
+    nm_img = nib.load(d / "nm_mean.nii.gz")
+    labels = study_labels() if labels is None else labels
+    warp, affine = syn_paths(fastsurfer_dir)["fwd"]
+    groups = {f"{name}_{s}": [100 * k + t for t in ts] for name, ts in [("whole", (1, 2, 3))] + [(n, (t,)) for t, n in TERRITORIES.items()]
+              for s, k in (("l", 1), ("r", 2))}
+    groups.update({f"ref_{k}": [STUDY_REF + k] for k in (1, 2, 3)})
+    codes, cov = pull_labels(labels, nm_img, sitk.ReadTransform(str(d / "slab_to_t1.tfm")), warp, affine, codes=groups)
+    nib.save(nib.Nifti1Image(codes, nm_img.affine), d / "study_regions_nm.nii.gz")
+    moves = [sitk.ReadTransform(str(p)) for p in sorted(rt.glob("repeat_*_to_anchor.tfm"))]
+    motion = max((float(np.linalg.norm(np.array(t.GetParameters())[3:6])) for t in moves), default=0.0)   # as nm.average_repeats
+    nigral = repeat_nigral_rms(nib.affines.apply_affine(nm_img.affine, np.argwhere(codes > 100)) * [-1, -1, 1], moves)
+    sel = json.loads((d / "repeat_selection.json").read_text())
+    ok = len(sel["volumes"]) >= 3 and sel.get("n_missing_acquisition_identity", 0) == 0 and motion < 3 and nigral < 3
+    lab = np.asarray(labels.dataobj)
+    qc = syn_numerical_qc(warp, affine, nib.affines.apply_affine(labels.affine, np.argwhere(lab > 100)) * [-1, -1, 1])
+    row = study_features(np.asarray(nm_img.dataobj, float), codes, np.asarray(nib.load(rt / "repeat_support_fraction.nii.gz").dataobj), cov, ok)
+    if not qc["syn_numerical_qc_pass"]:
+        row = {k: np.nan if k.endswith("_cr") else v for k, v in row.items()}
+        row["nm_bion_qc_pass"] = False
+        row["nm_bion_qc_failed_checks"] = ";".join(filter(None, [row["nm_bion_qc_failed_checks"], "syn_numerical_qc"]))
+    return {**row, **qc, "repeat_nigral_rms_mm_max": nigral, **{f"nm_bion_cov_{k}": v for k, v in cov.items()}}
+
+
 def _job(args):
-    work, patno, fs_dir, snceg = args
+    work, patno, fs_dir, snceg, *rest = args
+    study, peduncle = (list(rest) + [False, False])[:2]
     try:
-        return {"patno": patno, "error": "", **process_subject(work, patno, fs_dir, snceg=snceg)}
+        row = process_subject(work, patno, fs_dir, snceg=snceg, langley_peduncle=peduncle)
+        return {"patno": patno, "error": "", **row, **(study_subject(work, patno, fs_dir) if study else {})}
     except Exception as e:
         return {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
@@ -283,6 +474,10 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--patnos")
     ap.add_argument("--snceg", action="store_true", help="also segment with snceg (needs PIE_SNCEG_PYTHON)")
+    ap.add_argument("--langley-peduncle", action="store_true", help="also version 2 of the Langley volume (nmlp_*): the JHU "
+                    "cerebral peduncle as the reference (langley_labels)")
+    ap.add_argument("--study", action="store_true", help="also the study's measure (study_subject: Biondetti territories vs "
+                    "the complete background, the study's QC); needs nm --keep-nifti without --denoise for the study's quantity")
     ap.add_argument("--prepare-tse", action="store_true", help="first stage for dual-echo TSE input: convert, pick the echo, "
                     "register; writes <work>/nm_features.csv (then run nm_template syn and this CLI without the flag)")
     ap.add_argument("--zips", nargs="+", help="with --prepare-tse: the PPMI zips holding the TSE series")
@@ -304,8 +499,10 @@ def main(argv=None):
         return
     subjects = _subjects(work, a.sessions, a.fastsurfer_dir, a.patnos)
     region_labels()                    # build the atlas bridge once before the workers start
+    if a.langley_peduncle:
+        langley_labels()               # and the JHU peduncle bridge
     with ProcessPoolExecutor(max_workers=a.workers) as ex:
-        rows = list(ex.map(_job, [(str(work), p, str(fs), a.snceg) for p, fs in subjects]))
+        rows = list(ex.map(_job, [(str(work), p, str(fs), a.snceg, a.study, a.langley_peduncle) for p, fs in subjects]))
     out = pd.DataFrame(rows)
     out.to_csv(work / "nm_native_features.csv", index=False)
     print(f"{int((out['error'] == '').sum())}/{len(out)} subjects -> {work / 'nm_native_features.csv'}", flush=True)
