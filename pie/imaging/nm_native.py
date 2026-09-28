@@ -132,8 +132,8 @@ def _affine_file(tx, path):
     return path
 
 
-def pull_labels(label_img, grid_img, tx_t1_grid, warp, affine, codes=None, pad=12):
-    """``label_img`` (MNI space) on ``grid_img``'s voxels in one genericLabel resampling: grid -> T1 by the inverse of
+def pull_labels(label_img, grid_img, tx_t1_grid, warp, affine, codes=None, pad=12, interpolator="genericLabel"):
+    """``label_img`` (MNI space) on ``grid_img``'s voxels in one ``interpolator`` (ANTs) resampling: grid -> T1 by the inverse of
     ``tx_t1_grid`` (SimpleITK, T1 point -> grid point, as ``nm.register_slab`` returns), T1 -> MNI by the inverse of
     the SyN (``warp``, ``affine``: the forward ``ants.registration`` pair, fixed = MNI). Returns (labels on the grid,
     coverage): for each name in ``codes`` ({name: [label values]}), the share of that region the grid holds, from the
@@ -152,7 +152,7 @@ def pull_labels(label_img, grid_img, tx_t1_grid, warp, affine, codes=None, pad=1
         nib.save(nib.Nifti1Image(np.asarray(label_img.dataobj).astype(np.float32), label_img.affine), f"{d}/labels.nii.gz")
         chain = [str(_affine_file(tx_t1_grid.GetInverse(), f"{d}/grid_to_t1.mat")), str(affine), str(inverse_warp(warp))]
         out = ants.apply_transforms(ants.image_read(f"{d}/grid.nii.gz"), ants.image_read(f"{d}/labels.nii.gz"), chain,
-                                    whichtoinvert=[False, True, False], interpolator="genericLabel")
+                                    whichtoinvert=[False, True, False], interpolator=interpolator)
         ext = np.rint(out.numpy()).astype(np.int16)
     inside = [slice(None)] * 3
     inside[axis] = slice(pad, pad + grid_img.shape[axis])

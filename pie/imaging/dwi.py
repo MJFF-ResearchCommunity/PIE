@@ -121,8 +121,9 @@ def _pe_from_name(meta):
     return dict(meta, PhaseEncodingDirection=axis + PE_NAME_SIGN[m.group(1).upper()], TotalReadoutTime=trt, pe_from_description=True)
 
 
-def assemble(runs):
-    """Choose/concatenate runs into one dataset. Returns dict(data, affine, bvals, bvecs, meta, n_runs)."""
+def assemble(runs, main=None):
+    """Choose/concatenate runs into one dataset; ``main`` (a NIfTI path) takes that run alone as the main acquisition.
+    Returns dict(data, affine, bvals, bvecs, meta, n_runs)."""
     loaded = []
     for nii, bval, bvec, js in runs:
         img = nib.load(nii)
@@ -143,25 +144,37 @@ def assemble(runs):
     for img, b, v, meta in loaded:
         key = (img.shape[:3], tuple(np.round(img.affine, 4).ravel()), acquisition_metadata_key(meta))
         groups.setdefault(key, []).append((img, b, v, meta))
-    best = max(groups.values(), key=lambda g: sum((x[1] > 50).sum() for x in g))
+    best = [x for x in loaded if x[0].get_filename() == main] if main else max(groups.values(), key=lambda g: sum((x[1] > 50).sum() for x in g))
+    if not best:
+        raise ValueError(f"{main} is not a diffusion-weighted run")
     data = np.concatenate([np.asanyarray(x[0].dataobj).astype(np.float32) for x in best], axis=3)
     bvals = np.concatenate([x[1] for x in best])
     bvecs = np.concatenate([x[2] for x in best], axis=1)
     meta = best[0][3]
     pe = meta.get("PhaseEncodingDirection")
-    # Full opposite-PE runs (e.g. Philips LR/RL) also contain usable reverse b0s.
-    rev = [x for x in b0_runs + loaded if x[0].shape[:3] == best[0][0].shape[:3]
-           and np.allclose(x[0].affine, best[0][0].affine, atol=1e-4, rtol=0)
-           and (x[1] <= 50).any() and x[3].get("PhaseEncodingDirection") not in (None, pe)
-           and x[3].get("PhaseEncodingDirection", "")[:1] == (pe or "")[:1]]
-    # Keep one reverse acquisition; it can have a different readout time from the main acquisition.
-    reverse = max(rev, key=lambda x: int((x[1] <= 50).sum())) if rev and pe else None
-    rev_b0 = np.asanyarray(reverse[0].dataobj)[..., reverse[1] <= 50].astype(np.float32) if reverse else None
+    # The study's reverse-b0 rule (run_scientific_dwi.prepare): opposite PE with b0s, same shape and axes, same TE and TR,
+    # recorded PE and readout; any origin (PPMI's GE L/R - R/L pairs sit 2-3.5 mm apart); the nearest origin. Full
+    # opposite-PE runs (e.g. Philips LR/RL) also contain usable reverse b0s; the readout time may differ.
+    ref = best[0][0].affine
+    opposite = (pe[:-1] if pe.endswith("-") else pe + "-") if pe else None
+    rev = [x for x in b0_runs + loaded if x[3].get("PhaseEncodingDirection") == opposite and (x[1] <= 50).any()
+           and x[0].shape[:3] == best[0][0].shape[:3] and np.allclose(x[0].affine[:3, :3], ref[:3, :3], atol=1e-5, rtol=0)
+           and x[3].get("EchoTime") == meta.get("EchoTime") and x[3].get("RepetitionTime") == meta.get("RepetitionTime")
+           and _pe_recorded(x[3])]
+    reverse = min(rev, key=lambda x: np.linalg.norm(x[0].affine[:3, 3] - ref[:3, 3])) if rev else None
+    rev_b0 = None
+    if reverse:
+        from .dwi_acquisition import regrid_volume
+
+        vols = np.asanyarray(reverse[0].dataobj)[..., reverse[1] <= 50].astype(np.float32)
+        rev_b0 = np.stack([regrid_volume(vols[..., i], reverse[0].affine, vols.shape[:3], ref) for i in range(vols.shape[3])], axis=3)
     if not (bvals <= 50).any():
         raise ValueError("diffusion dataset has no b0 reference")
     if not np.isfinite(bvecs).all() or np.any(np.linalg.norm(bvecs[:, bvals > 50], axis=0) < 1e-6):
         raise ValueError("missing or invalid diffusion gradients")
+    stops = np.cumsum([len(x[1]) for x in best])
     return {"data": data, "affine": best[0][0].affine, "bvals": bvals, "bvecs": bvecs, "meta": meta, "n_runs": len(best),
+            "run_bounds": [(int(a), int(z)) for a, z in zip(np.r_[0, stops[:-1]], stops)],
             "shells": sorted(set(int(round(x / 100.0)) * 100 for x in bvals if x > 50)), "rev_b0": rev_b0,
             "rev_meta": reverse[3] if reverse else {}, "source_nifti": [x[0].get_filename() for x in best]}
 
@@ -255,16 +268,17 @@ def susceptibility_correct(ds, work_dir, threads=2):
 
 
 def eddy_correct(ds, work_dir, cuda=True, timeout=None, threads=8):
-    """topup + FSL eddy (outlier replacement, eddy-rotated gradients) on the RAW data of a scan with a reverse-PE b0,
+    """topup + FSL eddy (outlier replacement, eddy-rotated gradients) on the RAW data (eddy alone without a reverse-PE b0),
     replacing both ``susceptibility_correct`` and ``preprocess``'s rigid motion correction: gradients are rotated once,
     by eddy. Command and slice-timing decisions come from ``dwi_correction.build_eddy_command``; PE direction and readout
     time must be recorded for both acquisitions (``pe_row`` raises otherwise). ``timeout`` defaults to 2 h on the GPU and
     24 h for eddy_cpu, which runs on ``threads`` threads. The working directory is removed, also when a step fails."""
     from .dwi_acquisition import pe_row
 
-    rows = [pe_row(ds["meta"]), pe_row(ds.get("rev_meta") or {})]
-    if ds.get("rev_b0") is None or not FSLDIR:
-        raise ValueError("eddy needs a reverse-PE b0 and FSL")
+    reverse = ds.get("rev_b0") is not None
+    rows = [pe_row(ds["meta"])] + ([pe_row(ds.get("rev_meta") or {})] if reverse else [])   # without a reverse run: eddy alone
+    if not FSLDIR:
+        raise ValueError("eddy needs FSL")
     timeout = timeout or (7200 if cuda else 86400)
     work = Path(work_dir) / "eddy"
     work.mkdir(parents=True, exist_ok=True)
@@ -275,27 +289,29 @@ def eddy_correct(ds, work_dir, cuda=True, timeout=None, threads=8):
 
 
 def _eddy_in(work, ds, rows, cuda, timeout, threads):
-    from dipy.segment.mask import median_otsu
-
     from .dwi_correction import build_eddy_command, topup_config, validate_corrected_geometry
 
     env = dict(os.environ, FSLDIR=FSLDIR, PATH=f"{FSLDIR}/bin:" + os.environ.get("PATH", ""), FSLOUTPUTTYPE="NIFTI_GZ")
     b, data, aff = ds["bvals"], ds["data"], ds["affine"]
     b0 = data[..., b <= 50].mean(axis=3)
     nib.save(nib.Nifti1Image(data, aff), work / "raw.nii.gz")
-    nib.save(nib.Nifti1Image(np.stack([b0, ds["rev_b0"].mean(axis=3)], axis=3), aff), work / "b0_pair.nii.gz")
-    _, mask = median_otsu(b0, median_radius=3, numpass=2)
-    nib.save(nib.Nifti1Image(mask.astype(np.uint8), aff), work / "eddy_mask.nii.gz")
+    topup = len(rows) == 2
+    if topup:
+        nib.save(nib.Nifti1Image(np.stack([b0, ds["rev_b0"].mean(axis=3)], axis=3), aff), work / "b0_pair.nii.gz")
     (work / "acqparams.txt").write_text("".join(" ".join(f"{int(v)}" for v in r[:3]) + f" {r[3]}\n" for r in rows))
     (work / "index.txt").write_text(" ".join(["1"] * len(b)) + "\n")
     np.savetxt(work / "bvals", b[None], fmt="%.0f")
     np.savetxt(work / "bvecs", ds["bvecs"], fmt="%.6f")
     (work / "metadata.json").write_text(json.dumps(ds["meta"]))
-    r = subprocess.run([f"{FSLDIR}/bin/topup", "--imain=b0_pair.nii.gz", "--datain=acqparams.txt", f"--config={topup_config(data.shape)}",
-                        "--out=topup"], cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
-    if r.returncode:
-        raise RuntimeError(f"topup failed: {(r.stderr or r.stdout)[-300:]}")
-    cmd, record = build_eddy_command(f"{FSLDIR}/bin", ds["meta"], int(data.shape[2]), use_topup=True, raw_is_uncorrected=True,
+    if topup:
+        r = subprocess.run([f"{FSLDIR}/bin/topup", "--imain=b0_pair.nii.gz", "--datain=acqparams.txt", f"--config={topup_config(data.shape)}",
+                            "--out=topup", "--iout=topup_b0"], cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
+        if r.returncode:
+            raise RuntimeError(f"topup failed: {(r.stderr or r.stdout)[-300:]}")
+        b0 = np.asanyarray(nib.load(work / "topup_b0.nii.gz").dataobj).mean(axis=3)
+    # the study's eddy mask (run_scientific_dwi.mask_b0), on topup's corrected mean b0 when topup ran
+    nib.save(nib.Nifti1Image(_b0_brain(b0).astype(np.uint8), aff), work / "eddy_mask.nii.gz")
+    cmd, record = build_eddy_command(f"{FSLDIR}/bin", ds["meta"], int(data.shape[2]), use_topup=topup, raw_is_uncorrected=True,
                                      cuda=cuda, nthr=1 if cuda else threads)
     r = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
     if r.returncode:
@@ -306,7 +322,7 @@ def _eddy_in(work, ds, rows, cuda, timeout, threads):
     outliers = np.loadtxt(work / "eddy.eddy_outlier_map", skiprows=1, ndmin=2)
     rms = np.loadtxt(work / "eddy.eddy_movement_rms", ndmin=2)[:, 0]          # RMS displacement from the first volume, mm
     out = dict(ds, data=np.clip(np.asanyarray(corrected.dataobj).astype(np.float32), 0, None), bvecs=bvecs, bvecs_rotated=True,
-               eddy=True, topup=True, eddy_outlier_fraction=float(outliers.mean()), motion_mm_max=float(rms.max()),
+               eddy=True, topup=topup, eddy_outlier_fraction=float(outliers.mean()), motion_mm_max=float(rms.max()),
                motion_mm_mean=float(rms.mean()), eddy_record=record)
     return out
 
@@ -398,18 +414,32 @@ def preprocess(ds, sampling_seed=0):
                 motion_mm_mean=float(np.mean(fd)), motion_mm_max=float(np.max(fd)), rotation_deg_max=float(np.max(rot)))
 
 
+def _pe_recorded(meta):
+    from .dwi_acquisition import pe_row
+
+    try:
+        pe_row(meta)
+        return True
+    except ValueError:
+        return False
+
+
+def _b0_brain(b0):
+    """median_otsu on the mean b0, dilated twice and hole-filled (the study's ``mask_b0``)."""
+    from dipy.segment.mask import median_otsu
+
+    return ndimage.binary_fill_holes(ndimage.binary_dilation(median_otsu(b0, median_radius=3, numpass=2)[1], iterations=2))
+
+
 def correct(ds, work_dir, fsl=False, eddy=False, cuda=True):
-    """Distortion and motion correction. With ``eddy`` and a reverse-PE b0: topup + eddy (``eddy_correct``), then the
+    """Distortion and motion correction. With ``eddy`` and a reverse-PE b0: topup + eddy (``eddy_correct``); with a
+    recorded PE direction and readout time but no reverse b0, eddy alone (the study's eddy_no_reverse_PE tier). Then the
     brain mask and mean b0 of the corrected data. Otherwise: optional topup (``fsl``) and rigid volume-to-b0 alignment
     (``preprocess``). The returned dataset records which path ran (``eddy``, ``topup``)."""
-    if eddy and ds.get("rev_b0") is not None:
-        from dipy.segment.mask import median_otsu
-
+    if eddy and (ds.get("rev_b0") is not None or _pe_recorded(ds["meta"])):
         ds = eddy_correct(ds, work_dir, cuda=cuda)
         b0 = ds["data"][..., ds["bvals"] <= 50].mean(axis=3)
-        _, mask = median_otsu(b0, median_radius=3, numpass=2)
-        mask = ndimage.binary_fill_holes(ndimage.binary_dilation(mask, iterations=2))
-        return dict(ds, b0=b0, mask=mask, rotation_deg_max=np.nan, motion_metric="eddy_rms_mm")
+        return dict(ds, b0=b0, mask=_b0_brain(b0), rotation_deg_max=np.nan, motion_metric="eddy_rms_mm")
     if fsl:
         ds = susceptibility_correct(ds, work_dir)
     return dict(preprocess(ds), motion_metric="rigid_translation_mm")
@@ -783,12 +813,120 @@ def features(maps, rois, min_voxels=3):
 
 
 # ------------------------------------------------------------------------------------------ per-subject driver
+# ------------------------------------------------------------------------------------------ the study's nigral measure
+STUDY_SEED = 20260909    # the study's b0 -> T1 rigid sampling seed (run_scientific_nm.SEED)
+
+
+def study_acquisition(bvals, run_bounds):
+    """The study's single b ~ 1000 acquisition (``run_diffusion_controls.single_acquisition_selection``): the run with one
+    nonzero shell at b <= 1050 and its own b0s, nearest b = 1000, then the most diffusion volumes, then the earliest;
+    b0s are never pooled across runs. Without run bounds, b <= 1050 must be one shell. Returns a volume selection."""
+    b = np.asarray(bvals, float)
+    if not run_bounds:
+        keep = b <= 1050
+        if len(np.unique(np.rint(b[keep & (b > 50)] / 100))) != 1:
+            raise ValueError("cannot establish a single-shell b ~ 1000 acquisition")
+        return keep
+    candidates = []
+    for start, stop in run_bounds:
+        rb = b[start:stop]
+        shells = np.unique(np.rint(rb[rb > 50] / 100) * 100)
+        if len(shells) == 1 and shells[0] <= 1050 and (rb <= 50).any():
+            candidates.append((abs(shells[0] - 1000), -int((rb > 50).sum()), start, stop))
+    if not candidates:
+        raise ValueError("no single-shell b <= 1050 acquisition with its own b0")
+    _, _, start, stop = min(candidates)
+    keep = np.zeros(len(b), bool)
+    keep[start:stop] = True
+    return keep
+
+
+def study_dataset(runs):
+    """The study's tensor acquisition as a dataset of its own (``run_scientific_dwi.choose_tensor_acquisition``; the study
+    corrected nothing else): of the runs with their own b0s, the shell nearest b = 1000 in 500-1500 with >= 12 directions
+    (then more directions, then the path); that run's b0s and that shell's volumes, with the run's reverse b0 (``assemble``)."""
+    cands = []
+    for nii, bval, *_ in runs:
+        b = np.loadtxt(bval).ravel()
+        for shell in sorted(set(np.round(b[b > 50] / 100).astype(int) * 100)):
+            sel = (b <= 50) | (np.abs(b - shell) <= 50)
+            n = int(((b > 50) & sel).sum())
+            if 500 <= shell <= 1500 and n >= 12 and (b <= 50).any():
+                cands.append((abs(shell - 1000), -n, nii, sel, shell))
+    if not cands:
+        raise ValueError("no acquisition with its own b0 and >= 12 directions at b = 500-1500")
+    _, _, nii, sel, shell = min(cands, key=lambda c: c[:3])
+    ds = assemble(runs, main=nii)
+    return dict(ds, data=ds["data"][..., sel], bvals=ds["bvals"][sel], bvecs=ds["bvecs"][:, sel], run_bounds=[(0, int(sel.sum()))],
+                shells=[int(shell)])
+
+
+def study_nigra_labels(b0_img, fastsurfer_dir, tx_t1_dwi, atlas=None):
+    """CIT168 SNc (7) and SNr (9) on the DWI grid as 10 * label + hemisphere (1 left, 2 right, from the atlas's own RAS x;
+    the study packs both so they share one interpolation), through the subject's T1 -> MNI SyN (``nm_template.syn_cache``,
+    the study's registration) and the rigid ``tx_t1_dwi`` (T1 point -> DWI point), in one nearest-neighbour resampling as
+    the study sampled them (``nm_transform_chain.sample``)."""
+    from .atlases import cit168_mni2009c
+    from .nm_native import pull_labels
+    from .nm_template import syn_cache
+
+    atlas = cit168_mni2009c() if atlas is None else atlas
+    a = np.asarray(atlas.dataobj).astype(int)
+    idx = np.argwhere(np.isin(a, (7, 9)))
+    codes = np.zeros(a.shape, np.int16)
+    codes[tuple(idx.T)] = 10 * a[tuple(idx.T)] + np.where(nib.affines.apply_affine(atlas.affine, idx)[:, 0] < 0, 1, 2)
+    warp, affine = syn_cache(fastsurfer_dir)["fwd"]
+    return pull_labels(nib.Nifti1Image(codes, atlas.affine), b0_img, tx_t1_dwi, warp, affine, interpolator="nearestNeighbor")[0]
+
+
+def study_features(data, bvals, bvecs, affine, run_bounds, codes, brain, motion_for_qc):
+    """The study's nigral tensor measure (``measurement_recovery_20260915``: ``run_diffusion_controls.measure``,
+    ``make_rois`` and ``roi_summary``, with the QC of ``nonlinear_dwi_measurements_v2``). The WLS tensor with the
+    physicality rule (``dwi_tensor_qc``) on the single b ~ 1000 acquisition, in the nigral voxels of ``codes``
+    (``study_nigra_labels``); per side, SN, SNc, SNr and the posterior and anterior halves split at the side's median
+    LPS y (posterior: above it). A region's value is the mean of its physical voxels when there are >= 3 and >= 80 % of
+    the region, else missing; ``*_mean`` averages the sides. QC: >= 20 nigral voxels, >= 95 % inside ``brain``, >= 80 %
+    physical fits, ``motion_for_qc`` <= 2 mm (eddy's mean RMS displacement; rigid runs, the maximum translation) and
+    both posterior FA values present. Columns ``dwis_*``; the primary measure is ``dwis_md_sn_posterior_mean``."""
+    from .dwi_tensor_qc import tensor_measurements
+
+    b = np.asarray(bvals, float)
+    keep = study_acquisition(b, run_bounds)
+    xyz = np.argwhere(np.isin(codes // 10, (7, 9)))
+    if not len(xyz):
+        raise ValueError("no native nigral voxels")
+    lab, left = codes[tuple(xyz.T)] // 10, codes[tuple(xyz.T)] % 10 == 1
+    t = tensor_measurements(data[tuple(xyz.T)][:, keep].astype(float), b[keep], np.asarray(bvecs)[:, keep])
+    lps_y = -(xyz @ affine[1, :3] + affine[1, 3])
+    rois = {}
+    for s, hemi in (("l", left), ("r", ~left)):
+        cut = np.median(lps_y[hemi]) if hemi.any() else np.nan
+        rois.update({f"sn_{s}": hemi, f"sn_posterior_{s}": hemi & (lps_y > cut), f"sn_anterior_{s}": hemi & (lps_y <= cut),
+                     f"snc_{s}": hemi & (lab == 7), f"snr_{s}": hemi & (lab == 9)})
+    row = {"dwis_n_sn": len(xyz), "dwis_shell": int(np.rint(b[keep & (b > 50)].mean() / 100) * 100)}
+    for k in ("fa", "md", "ad", "rd"):
+        for name, m in rois.items():
+            ok = m & t["accepted"] & np.isfinite(t[k])
+            row[f"dwis_{k}_{name}"] = float(t[k][ok].mean()) if ok.sum() >= 3 and ok.sum() >= 0.8 * m.sum() else np.nan
+        for base in ("sn", "sn_posterior", "sn_anterior", "snc", "snr"):
+            row[f"dwis_{k}_{base}_mean"] = float(np.mean([row[f"dwis_{k}_{base}_l"], row[f"dwis_{k}_{base}_r"]]))
+    coverage, physical = float(brain[tuple(xyz.T)].mean()), float(t["accepted"].mean())
+    checks = {"sn_size": len(xyz) >= 20, "brain_coverage": coverage >= 0.95, "physical_fraction": physical >= 0.8,
+              "motion": bool(np.isfinite(motion_for_qc) and motion_for_qc <= 2),
+              "bilateral_posterior": all(np.isfinite(row[f"dwis_fa_sn_posterior_{s}"]) for s in "lr")}
+    row.update(dwis_sn_brain_mask_fraction=coverage, dwis_physical_fraction=physical, dwis_motion_for_qc_mm=motion_for_qc,
+               dwis_qc_pass=all(checks.values()), dwis_qc_failed_checks=";".join(k for k, ok in checks.items() if not ok))
+    return row
+
+
 def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False, fba=False, keep_preproc=False,
-                    eddy=False, cuda=True):
-    """All steps for one subject. Returns a flat dict (features + QC). ``fba`` adds the MRtrix3 nigrostriatal fixel measures
+                    eddy=False, cuda=True, study=False):
+    """All steps for one subject. ``study`` adds the study's nigral tensor measure (``study_features``, ``dwis_*``) on the study's tensor acquisition (``study_dataset``), corrected on its own when it is not the whole dataset. Returns a flat dict (features + QC). ``fba`` adds the MRtrix3 nigrostriatal fixel measures
     (pie.imaging.fba); ``keep_preproc`` keeps the preprocessed DWI + gradients under <work>/<patno>/fba/."""
     import SimpleITK as sitk
 
+    if study and denoise:
+        raise ValueError("the study's measure is on undenoised data")
     sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)
     work = Path(work_dir) / str(patno)
     work.mkdir(parents=True, exist_ok=True)
@@ -820,6 +958,18 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     tx_t1_dwi, m_rigid = register_b0_to_t1(b0_img, t1, t1_mask)
     tx_mni_t1, m_mni = register_t1_to_mni(t1, t1_mask, cache_path=mni_cache_path(fastsurfer_dir))
     row.update({"reg_b0_t1_mi": m_rigid, "reg_t1_mni_mi": m_mni})
+    if study:
+        # the study corrected its tensor acquisition alone; PIE's correction serves when that acquisition is the whole dataset
+        sds = study_dataset(runs)
+        own = sds["source_nifti"] != ds["source_nifti"] or len(sds["bvals"]) != row["n_volumes"]
+        sds = correct(sds, work, fsl=fsl, eddy=eddy, cuda=cuda) if own else ds
+        s_b0 = nib.Nifti1Image(sds["b0"], sds["affine"])
+        tx_study, _ = register_b0_to_t1(s_b0, t1, t1_mask, sampling_seed=STUDY_SEED)
+        motion = sds["motion_mm_mean"] if sds.get("eddy") else sds["motion_mm_max"]
+        row.update(study_features(sds["data"], sds["bvals"], sds["bvecs"], sds["affine"], sds.get("run_bounds"),
+                                  study_nigra_labels(s_b0, fastsurfer_dir, tx_study), _b0_brain(sds["b0"]), motion))
+        row["dwis_own_correction"] = own
+        row["dwis_tier"] = ("topup_eddy" if sds.get("topup") else "eddy_no_reverse_PE") if sds.get("eddy") else ("topup_rigid" if sds.get("topup") else "rigid")
     tgt = _sitk_native(ds["b0"], ds["affine"])       # native DWI grid: label arrays and maps share (z, y, x) order
     fs_lab = labels_to_dwi(aseg, tgt, [tx_t1_dwi])
     pauli_lab = labels_to_dwi(pauli_atlas(), tgt, [tx_mni_t1, tx_t1_dwi])
@@ -874,10 +1024,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep, fsl, denoise, fba, keep_preproc, eddy, cuda = args
+    patno, rows, fs_dir, work_dir, keep, fsl, denoise, fba, keep_preproc, eddy, cuda, study = args
     try:
         out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl, denoise=denoise, fba=fba, keep_preproc=keep_preproc,
-                              eddy=eddy, cuda=cuda)
+                              eddy=eddy, cuda=cuda, study=study)
         out["error"] = ""
     except Exception as e:  # keep the batch going
         out = {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -899,9 +1049,10 @@ def main(argv=None):
     ap.add_argument("--fba", action="store_true", help="MRtrix3 nigrostriatal fixel measures (FOD, iFOD2 tractography SN -> striatum, AFD along the tract)")
     ap.add_argument("--keep-preproc", action="store_true", help="keep the preprocessed DWI + gradients under <work>/<patno>/fba/")
     ap.add_argument("--priority", help="text file of PATNOs to process first")
-    ap.add_argument("--eddy", action="store_true", help="topup + FSL eddy (outlier replacement, eddy-rotated gradients) where a reverse-PE b0 "
-                    "with recorded PE direction and readout time exists; replaces the rigid motion correction for those scans")
+    ap.add_argument("--eddy", action="store_true", help="FSL eddy (outlier replacement, eddy-rotated gradients) where the PE direction and "
+                    "readout time are recorded, with topup where a reverse-PE b0 exists; replaces the rigid motion correction for those scans")
     ap.add_argument("--eddy-cpu", action="store_true", help="use eddy_cpu instead of eddy_cuda (hours per three-shell scan)")
+    ap.add_argument("--study", action="store_true", help="add the study's nigral tensor measure (dwis_*; primary dwis_md_sn_posterior_mean)")
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -910,7 +1061,7 @@ def main(argv=None):
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
     out_csv = work / "dwi_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu)
+    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu, a.study)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
     if a.priority:
         order = {int(p): i for i, p in enumerate(Path(a.priority).read_text().split())}

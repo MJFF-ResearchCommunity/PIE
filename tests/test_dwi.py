@@ -168,3 +168,148 @@ def test_philips_polarity_comes_from_the_series_name(tmp_path):
     # no direction in the name: nothing is guessed, so no reverse pair and no topup/eddy
     ds = dwi.assemble([_philips(tmp_path, "b1000", 10, "DTI_b1000_64dir"), _philips(tmp_path, "rev", 0, "DTI_revB0")])
     assert "PhaseEncodingDirection" not in ds["meta"] and ds["rev_b0"] is None
+
+
+# ------------------------------------------------------------------------------------------ the study's nigral measure
+def test_assemble_records_where_each_run_sits(tmp_path):
+    ds = dwi.assemble([_run(tmp_path, "b700", 10, bval=700), _run(tmp_path, "b1000", 10), _run(tmp_path, "rev", 0, pe="j-")])
+    assert ds["run_bounds"] == [(0, 11), (11, 22)]
+    assert np.flatnonzero(dwi.study_acquisition(ds["bvals"], ds["run_bounds"])).tolist() == list(range(11, 22))
+
+
+def test_study_acquisition_is_one_b1000_run_with_its_own_b0():
+    b = np.r_[0, 0, [700] * 6, 0, [1000] * 6, 0, [2000] * 6, [1000] * 8].astype(float)
+    bounds = [(0, 8), (8, 15), (15, 22), (22, 30)]            # b700+b0, b1000+b0, b2000+b0, b1000 without its own b0
+    assert np.flatnonzero(dwi.study_acquisition(b, bounds)).tolist() == list(range(8, 15))
+    import pytest
+    with pytest.raises(ValueError, match="own b0"):
+        dwi.study_acquisition(b, [(22, 30)])
+    mixed = np.r_[0, [700] * 6, [1000] * 6].astype(float)       # one run holding two shells: no single acquisition
+    with pytest.raises(ValueError):
+        dwi.study_acquisition(mixed, [(0, 13)])
+    assert dwi.study_acquisition(np.r_[0, [1000] * 6].astype(float), None).all()
+
+
+def _study_grid():
+    """A 2 mm grid (RAS y rising with j) with SNc/SNr codes on both sides: left 71/91 at i 2-4, right 72/92 at i 7-9,
+    j 3-8, z 3 SNc and z 4 SNr. Posterior voxels (low j: low RAS y, high LPS y) and anterior ones get different tensors,
+    as do the two sides; a b700 run with a different tensor precedes the b1000 run the measure must use."""
+    rng = np.random.default_rng(5)
+    g = rng.normal(size=(3, 12))
+    g /= np.linalg.norm(g, axis=0)
+    b = np.r_[0, 0, [700] * 12, 0, 0, [1000] * 12].astype(float)
+    v = np.c_[np.zeros((3, 2)), g, np.zeros((3, 2)), g]
+    codes = np.zeros((12, 12, 8), int)
+    data = np.zeros((12, 12, 8, len(b)), np.float32)
+    md = {("l", True): 0.9e-3, ("l", False): 0.7e-3, ("r", True): 0.8e-3, ("r", False): 0.6e-3}
+    for side, xs, k in (("l", range(2, 5), 1), ("r", range(7, 10), 2)):
+        for i in xs:
+            for j in range(3, 9):
+                for z, lab in ((3, 7), (4, 9)):
+                    codes[i, j, z] = 10 * lab + k
+                    D = np.diag([1.5, 1.0, 0.5]) * md[(side, j <= 5)]
+                    sig = 1000 * np.exp(-b * np.einsum("in,ij,jn->n", v, D, v))
+                    sig[:14] = 1000 * np.exp(-b[:14] * 2e-3)          # the b700 run: a wrong, isotropic tissue
+                    data[i, j, z] = sig
+    aff = np.diag([2.0, 2.0, 2.0, 1.0])
+    aff[:3, 3] = (-12, -30, -16)
+    return data, b, v, aff, [(0, 14), (14, 28)], codes
+
+
+def test_study_features_split_posterior_by_side_and_use_only_the_b1000_run():
+    data, b, v, aff, bounds, codes = _study_grid()
+    brain = np.ones(codes.shape, bool)
+    row = dwi.study_features(data, b, v, aff, bounds, codes, brain, 0.5)
+    assert abs(row["dwis_md_sn_posterior_l"] - 0.9e-3) < 1e-6 and abs(row["dwis_md_sn_posterior_r"] - 0.8e-3) < 1e-6
+    assert abs(row["dwis_md_sn_anterior_l"] - 0.7e-3) < 1e-6 and abs(row["dwis_md_sn_posterior_mean"] - 0.85e-3) < 1e-6
+    assert row["dwis_n_sn"] == 72 and row["dwis_shell"] == 1000 and row["dwis_qc_pass"], row["dwis_qc_failed_checks"]
+    bad = data.copy()
+    bad[2:4, 3:5, 3] = 0                                         # 4 of the 18 left posterior voxels have no usable fit
+    row = dwi.study_features(bad, b, v, aff, bounds, codes, brain, 2.5)
+    assert np.isnan(row["dwis_md_sn_posterior_l"]) and np.isnan(row["dwis_md_sn_posterior_mean"])  # < 80 % valid
+    assert set(row["dwis_qc_failed_checks"].split(";")) == {"motion", "bilateral_posterior"}
+    row = dwi.study_features(data, b, v, aff, bounds, codes, np.zeros(codes.shape, bool), 0.5)
+    assert row["dwis_qc_failed_checks"] == "brain_coverage"
+
+
+def test_study_nigra_labels_reach_the_dwi_grid_with_their_hemisphere(tmp_path):
+    import SimpleITK as sitk
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_nm import _zero_syn_cache
+
+    fs = tmp_path / "fs"
+    _zero_syn_cache(fs)                                          # T1 = MNI
+    a = np.zeros((40, 40, 30), np.int16)
+    aff = np.eye(4)
+    aff[:3, 3] = (-20, -38, -25)                                 # 1 mm RAS grid over the midbrain
+    a[10:13, 18:22, 12:14] = 7                                   # left SNc (RAS x -10..-8)
+    a[27:30, 18:22, 12:14] = 9                                   # right SNr (RAS x 7..9)
+    a[18:22, 18:22, 12:14] = 8                                   # red nucleus: not nigra
+    grid = nib.Nifti1Image(np.zeros((20, 20, 15), np.float32), np.array([[2, 0, 0, -20], [0, 2, 0, -38], [0, 0, 2, -25], [0, 0, 0, 1.0]]))
+    codes = dwi.study_nigra_labels(grid, fs, sitk.Euler3DTransform(), atlas=nib.Nifti1Image(a, aff))
+    assert set(np.unique(codes)) == {0, 71, 92}
+    assert (np.argwhere(codes == 71)[:, 0] < 10).all() and (np.argwhere(codes == 92)[:, 0] >= 10).all()
+
+
+# ------------------------------------------------------------------------------------------ equivalence Addendum 1 (28 Sep 2026)
+def _pe_run(tmp, name, n_dirs, pe, origin=(0.0, 0.0, 0.0), zoom=2.0, bvals=None, **meta):
+    """A run with PE, readout, TE and TR recorded (``meta`` overrides) whose every volume holds its voxels' RAS x (mm)."""
+    shape = (8, 8, 6)
+    aff = np.diag([zoom, zoom, zoom, 1.0])
+    aff[:3, 3] = origin
+    x = nib.affines.apply_affine(aff, np.indices(shape).reshape(3, -1).T)[:, 0].reshape(shape)
+    b = np.r_[0, np.full(n_dirs, 1000)] if bvals is None else np.asarray(bvals)
+    nib.save(nib.Nifti1Image(np.repeat(x[..., None], len(b), 3).astype(np.float32), aff), tmp / f"{name}.nii.gz")
+    np.savetxt(tmp / f"{name}.bval", b[None])
+    v = np.random.default_rng(1).normal(size=(3, len(b)))
+    v[:, b <= 50] = 0
+    np.savetxt(tmp / f"{name}.bvec", v / np.maximum(np.linalg.norm(v, axis=0), 1e-9))
+    json.dump({"PhaseEncodingDirection": pe, "TotalReadoutTime": 0.05, "EchoTime": 0.08, "RepetitionTime": 9.0, **meta}, open(tmp / f"{name}.json", "w"))
+    return tuple(str(tmp / f"{name}{e}") for e in (".nii.gz", ".bval", ".bvec", ".json"))
+
+
+def test_reverse_b0_is_chosen_and_regridded_as_the_study_chose_it(tmp_path):
+    # run_scientific_dwi.prepare: opposite PE with b0s, same shape and axes, same TE and TR, recorded PE and readout, any
+    # origin (PPMI's GE L/R - R/L pairs sit 2-3.5 mm apart, Siemens revB0 0.03 mm); the nearest origin; regridded onto the main grid
+    main = _pe_run(tmp_path, "main", 12, "i")
+    far, near = _pe_run(tmp_path, "far", 12, "i-", origin=(3.0, 0, 0)), _pe_run(tmp_path, "near", 0, "i-", origin=(1.0, 0, 0))
+    ds = dwi.assemble([main, far, near])
+    assert ds["rev_b0"].shape == (8, 8, 6, 1) and ds["rev_meta"]["PhaseEncodingDirection"] == "i-"
+    x = nib.affines.apply_affine(ds["affine"], np.indices((8, 8, 6)).reshape(3, -1).T)[:, 0].reshape(8, 8, 6)
+    assert np.allclose(ds["rev_b0"][1:, ..., 0], x[1:], atol=1e-4)          # each voxel holds its own RAS x: on the main grid
+    for bad in (_pe_run(tmp_path, "te", 0, "i-", EchoTime=0.09), _pe_run(tmp_path, "zoom", 0, "i-", zoom=2.5),
+                _pe_run(tmp_path, "trt", 0, "i-", TotalReadoutTime=None)):
+        assert dwi.assemble([main, bad])["rev_b0"] is None, bad[0]
+
+
+def test_study_dataset_is_the_tensor_acquisition_alone(tmp_path):
+    # run_scientific_dwi.choose_tensor_acquisition: one run's b0s and the shell nearest b = 1000 (500-1500, >= 12
+    # directions; then more directions, then the path), with that run's reverse b0; the study corrected nothing else
+    runs = [_pe_run(tmp_path, "b700", 12, "j", bvals=[0] + [700] * 12), _pe_run(tmp_path, "b1000", 12, "j"),
+            _pe_run(tmp_path, "b2000", 12, "j", bvals=[0] + [2000] * 12), _pe_run(tmp_path, "rev", 0, "j-")]
+    assert dwi.assemble(runs)["data"].shape[3] == 39                        # PIE's own dataset: every shell
+    ds = dwi.study_dataset(runs)
+    assert ds["source_nifti"] == [runs[1][0]] and ds["bvals"].tolist() == [0] + [1000] * 12 and ds["bvecs"].shape == (3, 13)
+    assert ds["run_bounds"] == [(0, 13)] and ds["data"].shape[3] == 13 and ds["rev_b0"].shape[3] == 1
+    ds = dwi.study_dataset([_pe_run(tmp_path, "mixed", 12, "j", bvals=[0] + [1000] * 12 + [2000] * 12)])
+    assert ds["bvals"].tolist() == [0] + [1000] * 12 and ds["data"].shape[3] == 13     # one run, two shells: b0s + b1000
+    ds = dwi.study_dataset([_pe_run(tmp_path, "z_rl", 12, "i-"), _pe_run(tmp_path, "a_lr", 12, "i")])
+    assert ds["source_nifti"] == [str(tmp_path / "a_lr.nii.gz")] and ds["rev_meta"]["PhaseEncodingDirection"] == "i-"
+
+
+def test_study_nigra_labels_are_sampled_nearest_neighbour(tmp_path):
+    # the study sampled its nigra labels nearest-neighbour (nm_transform_chain.sample); genericLabel's per-label linear
+    # vote drops a small region's voxel whose nearest grid point is off-centre (0.915 vs 0.967 of the study's voxels on 8 scans)
+    import SimpleITK as sitk
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_nm import _zero_syn_cache
+
+    fs = tmp_path / "fs"
+    _zero_syn_cache(fs)
+    a = np.zeros((40, 40, 30), np.int16)
+    aff = np.eye(4)
+    aff[:3, 3] = (-20, -38, -25)
+    a[10, 20, 13] = 7                                            # one left SNc voxel at RAS (-10, -18, -12)
+    grid = nib.Nifti1Image(np.zeros((40, 40, 30), np.float32), np.array([[1, 0, 0, -19.6], [0, 1, 0, -37.6], [0, 0, 1, -24.6], [0, 0, 0, 1.0]]))
+    codes = dwi.study_nigra_labels(grid, fs, sitk.Euler3DTransform(), atlas=nib.Nifti1Image(a, aff))
+    assert (codes == 71).sum() == 1

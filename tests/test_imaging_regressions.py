@@ -676,8 +676,8 @@ def test_pe_restricted_sdc_recovers_a_phase_encoding_shift():
 def test_eddy_correct_consumes_eddy_outputs_once_and_cleans_up(tmp_path, monkeypatch):
     fsl = tmp_path / "fsl" / "bin"
     fsl.mkdir(parents=True)
-    (fsl / "topup").write_text("#!/bin/sh\nfor a in \"$@\"; do case $a in --out=*) o=${a#--out=};; esac; done\n"
-                               "cp b0_pair.nii.gz ${o}_fieldcoef.nii.gz; printf '0 0 0 0 0 0\\n0 0 0 0 0 0\\n' > ${o}_movpar.txt\n")
+    (fsl / "topup").write_text("#!/bin/sh\nfor a in \"$@\"; do case $a in --out=*) o=${a#--out=};; --iout=*) i=${a#--iout=};; esac; done\n"
+                               "cp b0_pair.nii.gz ${o}_fieldcoef.nii.gz; cp b0_pair.nii.gz ${i}.nii.gz; printf '0 0 0 0 0 0\\n0 0 0 0 0 0\\n' > ${o}_movpar.txt\n")
     (fsl / "eddy_cuda").write_text(
         "#!/bin/sh\ncp raw.nii.gz eddy.nii.gz\n"
         f"{sys.executable} -c \"import numpy as n; v=n.loadtxt('bvecs'); v[:, 2:] = n.roll(v[:, 2:], 1, axis=0); n.savetxt('eddy.eddy_rotated_bvecs', v)\"\n"
@@ -695,6 +695,35 @@ def test_eddy_correct_consumes_eddy_outputs_once_and_cleans_up(tmp_path, monkeyp
     assert out["motion_mm_max"] == 0.4 and not (tmp_path / "work" / "eddy").exists()
     with pytest.raises(ValueError, match="PhaseEncodingDirection"):
         dwi.eddy_correct({**ds, "rev_meta": {}}, tmp_path / "work", cuda=True)       # unverified reverse PE: no eddy
+
+
+def test_eddy_without_a_reverse_b0_runs_eddy_alone(tmp_path, monkeypatch):
+    # the study's eddy_no_reverse_PE tier: recorded PE direction and readout time but no reverse run -> eddy, no topup
+    fsl = tmp_path / "fsl" / "bin"
+    fsl.mkdir(parents=True)
+    (fsl / "topup").write_text("#!/bin/sh\nexit 1\n")
+    (fsl / "eddy_cuda").write_text(
+        "#!/bin/sh\necho \"$@\" > ../eddy_args.txt\ncp acqparams.txt ../acqparams_seen.txt\ncp raw.nii.gz eddy.nii.gz\n"
+        "cp bvecs eddy.eddy_rotated_bvecs\nprintf 'hdr\\n0 0\\n0 0\\n0 0\\n0 0\\n' > eddy.eddy_outlier_map\n"
+        "printf '0 0\\n0.3 0\\n0.2 0\\n0.1 0\\n' > eddy.eddy_movement_rms\n")
+    for f in fsl.iterdir():
+        f.chmod(0o755)
+    monkeypatch.setattr(dwi, "FSLDIR", str(tmp_path / "fsl"))
+    ds = {"data": np.ones((4, 4, 4, 4), np.float32), "affine": np.eye(4), "bvals": np.array([0., 0., 1000., 1000.]),
+          "bvecs": np.c_[np.zeros((3, 2)), np.eye(3)[:, [0, 1]]], "meta": {"PhaseEncodingDirection": "j-", "TotalReadoutTime": 0.05},
+          "rev_b0": None}
+    out = dwi.eddy_correct(ds, tmp_path / "work", cuda=True)
+    assert out["eddy"] and not out["topup"] and out["motion_mm_max"] == 0.3
+    assert "--topup" not in (tmp_path / "work" / "eddy_args.txt").read_text()
+    assert (tmp_path / "work" / "acqparams_seen.txt").read_text().split() == ["0", "-1", "0", "0.05"]
+    with pytest.raises(ValueError, match="PhaseEncodingDirection"):
+        dwi.eddy_correct({**ds, "meta": {}}, tmp_path / "work", cuda=True)          # nothing recorded: no eddy
+    calls = []
+    monkeypatch.setattr(dwi, "eddy_correct", lambda d, work, cuda=True: (calls.append("eddy"), dict(d, eddy=True, topup=False))[1])
+    monkeypatch.setattr(dwi, "preprocess", lambda d, sampling_seed=0: (calls.append("rigid"), dict(d, motion_mm_max=1.))[1])
+    dwi.correct(ds, "w", eddy=True)
+    dwi.correct({**ds, "meta": {"PhaseEncodingDirection": "j"}}, "w", eddy=True)     # no readout time: rigid
+    assert calls == ["eddy", "rigid"]
 
 
 def test_eddy_path_replaces_rigid_motion_only_when_a_reverse_b0_exists(monkeypatch):
@@ -851,8 +880,8 @@ def test_eddy_cpu_is_multithreaded_and_a_failed_eddy_leaves_no_working_folder(tm
     assert "--nthr=8" in build_eddy_command("/fsl/bin", meta, 60, raw_is_uncorrected=True, cuda=False, nthr=8)[0]
     fsl = tmp_path / "fsl" / "bin"
     fsl.mkdir(parents=True)
-    (fsl / "topup").write_text("#!/bin/sh\nfor a in \"$@\"; do case $a in --out=*) o=${a#--out=};; esac; done\n"
-                               "cp b0_pair.nii.gz ${o}_fieldcoef.nii.gz\n")
+    (fsl / "topup").write_text("#!/bin/sh\nfor a in \"$@\"; do case $a in --out=*) o=${a#--out=};; --iout=*) i=${a#--iout=};; esac; done\n"
+                               "cp b0_pair.nii.gz ${o}_fieldcoef.nii.gz; cp b0_pair.nii.gz ${i}.nii.gz\n")
     (fsl / "eddy_cpu").write_text("#!/bin/sh\necho \"$@\" > ../eddy_args.txt\nexit 1\n")
     for f in fsl.iterdir():
         f.chmod(0o755)
@@ -1176,3 +1205,33 @@ def test_a_progressing_gpu_batch_is_not_cut_off_by_a_per_scan_budget(tmp_path, m
     fastsurfer.segment_batch([tmp_path / f"S{i}_T1w.nii.gz" for i in range(20)], tmp_path / "fs", device="cuda")
     timeout, stall_seconds = calls[0]
     assert stall_seconds == fastsurfer.STALL_SECONDS and timeout >= 20 * stall_seconds
+
+
+def test_eddy_mask_is_the_studys_mask_on_the_topup_b0(tmp_path, monkeypatch):
+    # run_scientific_dwi: mask_b0 (median Otsu 3/2, dilated twice, holes filled) of topup's corrected mean b0 when topup ran,
+    # else of the raw mean b0
+    fsl = tmp_path / "fsl" / "bin"
+    fsl.mkdir(parents=True)
+    big = np.zeros((16, 16, 16, 2), np.float32)
+    big[3:13, 3:13, 3:13] = 100.0
+    np.save(tmp_path / "topup_b0.npy", big)
+    (fsl / "topup").write_text(
+        "#!/bin/sh\nfor a in \"$@\"; do case $a in --out=*) o=${a#--out=};; --iout=*) i=${a#--iout=};; esac; done\n"
+        "cp b0_pair.nii.gz ${o}_fieldcoef.nii.gz; printf '0 0 0 0 0 0\\n0 0 0 0 0 0\\n' > ${o}_movpar.txt\n"
+        f"{sys.executable} -c \"import numpy as n, nibabel as b; b.save(b.Nifti1Image(n.load('{tmp_path}/topup_b0.npy'), n.eye(4)), '$i.nii.gz')\"\n")
+    (fsl / "eddy_cuda").write_text(
+        "#!/bin/sh\ncp eddy_mask.nii.gz ../mask_seen.nii.gz\ncp raw.nii.gz eddy.nii.gz\ncp bvecs eddy.eddy_rotated_bvecs\n"
+        "printf 'hdr\\n0 0\\n0 0\\n0 0\\n0 0\\n' > eddy.eddy_outlier_map\nprintf '0 0\\n0.3 0\\n0.2 0\\n0.1 0\\n' > eddy.eddy_movement_rms\n")
+    for f in fsl.iterdir():
+        f.chmod(0o755)
+    monkeypatch.setattr(dwi, "FSLDIR", str(tmp_path / "fsl"))
+    raw = np.zeros((16, 16, 16, 4), np.float32)
+    raw[6:10, 6:10, 6:10] = 100.0
+    ds = {"data": raw, "affine": np.eye(4), "bvals": np.array([0., 0., 1000., 1000.]),
+          "bvecs": np.c_[np.zeros((3, 2)), np.eye(3)[:, [0, 1]]], "meta": {"PhaseEncodingDirection": "j-", "TotalReadoutTime": 0.05},
+          "rev_b0": raw[..., :1].copy(), "rev_meta": {"PhaseEncodingDirection": "j", "TotalReadoutTime": 0.05}}
+    seen = lambda: np.asarray(nib.load(tmp_path / "work" / "mask_seen.nii.gz").dataobj) > 0
+    dwi.eddy_correct(ds, tmp_path / "work", cuda=True)
+    assert np.array_equal(seen(), dwi._b0_brain(big.mean(axis=3)))
+    dwi.eddy_correct({**ds, "rev_b0": None}, tmp_path / "work", cuda=True)
+    assert np.array_equal(seen(), dwi._b0_brain(raw[..., :2].mean(axis=3)))
