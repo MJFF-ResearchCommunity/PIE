@@ -12,7 +12,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setuptools.setup(
     name="parkinsons-insight-engine",
     version="0.0.1",
-    author="Cameron Hamilton and the Data Modality and Methodology Task Force",
+    author="Cameron Hamilton, Victoria Catterson and the Data Modality and Methodology Task Force",
     author_email="cameron@allianceai.co",
     description="A data preprocessing and analysis pipeline for Parkinson's research (PIE)",
     long_description=long_description,
