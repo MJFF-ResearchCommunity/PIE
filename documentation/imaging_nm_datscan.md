@@ -5,9 +5,9 @@ Part of the [imaging layer](imaging.md). Both read the subject's FastSurfer T1 (
 
 | Module | Output | External tools |
 |---|---|---|
-| `nm.py` | `nm_features.csv`: nigral contrast ratios on the native NM slab | dcm2niix, SimpleITK (the MNI target is bundled with PIE) |
+| `nm.py` | `nm_features.csv`: the averaged slab, its QC, and the atlas-ROI ring contrast (a diagnostic since 11 Oct 2026) | dcm2niix, SimpleITK (the MNI target is bundled with PIE) |
 | `nm_template.py` | `nm_template_features.csv`: contrast in a study NM template | + ANTsPy (`ants`), scikit-image, nilearn; the 1 mm MNI152NLin2009cAsym target is fetched from TemplateFlow once |
-| `nm_native.py` | `nm_native_features.csv`: published measures on the native slab (Langley SNc volume, snceg segmentation) | + ANTsPy; snceg in its own environment (`PIE_SNCEG_PYTHON`) |
+| `nm_native.py` | `nm_native_features.csv`: published measures on the native slab (Langley SNc volume; snceg segmentation, **PIE's default NM measure**) | + ANTsPy; snceg in its own environment (`PIE_SNCEG_PYTHON`) |
 | `datscan.py` | `datscan_sbr.csv`: striatal binding ratios from raw projections | pydicom, scikit-image, SimpleITK |
 
 ## Neuromelanin MRI in PIE: methods, evidence and status
@@ -33,6 +33,12 @@ Neuromelanin-sensitive MRI shows the pigmented dopaminergic neurons of the subst
 - PIE's download held NM for 48 HC and 170 PD, where PPMI's acquisition metadata lists 112 HC and 631 PD. The missing scans, mostly baseline, are the main limit on precision.
 
 **PIE's position.**
+- **Default measure (11 Oct 2026): snceg** (`nm_native --snceg`): the SN contrast ratio against each side's crus on the
+  slices holding that side's segmented SN (`nms_sn_mean_cr`), and the segmented SN volume (`nms_sn_volume_mm3`),
+  assembled as `nm_primary_cr` and `nm_primary_volume_mm3`. It is the only NM measure that reproduced a published PPMI
+  result (R2). On PPMI's 2D GRE-MT it is not validated (`NM_VALIDATED` stays False); a Siemens-only re-test is
+  pre-registered in [preregistration_nm_snceg.md](preregistration_nm_snceg.md). `nm.py`'s ring contrast
+  (`nm_sn_*_cnr`) is kept, under its old names, as a diagnostic.
 - **Native-space threshold volume (`nm_native`, Langley method).** It did not reproduce (R1, R1-v2 and R1b below), so it is exploratory until the authors' regions are available.
 - **snceg segmentation.** This is the state-of-the-art alternative, and it reproduced its published PPMI TSE-FS result (R2).
 - **The study's contrast ratio** (`nm_native --study`, `nm_bion_*`). It was tested in a pre-registered out-of-sample replication (27 September 2026) on 369 HC/PD that no NM test had used, 298 of them usable (251 PD, 47 HC; 293 Siemens).
@@ -77,7 +83,9 @@ descriptions matching `NM_PATTERN` and not `EXCLUDE` (`MTC-NO|B0|Map|TRACEW|ADC|
    timestamps are counted (`n_missing_acquisition_identity`) and must be resolved before an
    independent-acquisition reliability study.
 2. **`average_repeats(niis, sampling_seed=0, transforms_dir=None)`** — rigid MI alignment of each repeat to the
-   first, then the mean. Returns `(image, meta, n_repeats, max_motion_mm, support)`: `support` is, per voxel, the
+   first, then the coverage-weighted mean: each voxel over the repeats whose field of view reaches it. Until 11 Oct
+   2026 the sum was divided by the number of repeats, which darkened a moved repeat's missing edge slices by 1/n per
+   missing repeat. Returns `(image, meta, n_repeats, max_motion_mm, support)`: `support` is, per voxel, the
    share of repeats whose field of view reaches it (1 = every repeat; a repeat that moved leaves the slab's edge
    slices averaged over fewer images). `meta["PIERepeatSelection"]` holds the selection record (written to
    `<work>/<patno>/repeat_selection.json`). With `transforms_dir` it also saves `repeat_<i>_to_anchor.tfm` and
@@ -103,7 +111,8 @@ descriptions matching `NM_PATTERN` and not `EXCLUDE` (`MTC-NO|B0|Map|TRACEW|ADC|
    brainstem / ventral DC / cerebral WM / thalamus labels. Hemispheres come from `atlas_left_mask(tgt, chain)`
    (the MNI left half-space mapped onto the slab), because the slab's voxel x direction is not an anatomical
    label; without it, bilateral putamen landmarks are required or it raises.
-5. **`features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None, support=None)`** — each side's
+5. **`features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None, support=None, refine=False)`** —
+   the atlas SN is read where the SyN puts it. With `refine=True` (the default until 11 Oct 2026) each side's
    atlas SN is refined by the translation (<= `REFINE_MM` = 2 mm along each in-plane axis, +-1 slice; the
    Euclidean shift can exceed 2 mm) that maximises the ROI mean on a 1 mm-smoothed copy while keeping >= 95 % of
    the ROI in brainstem labels (the cistern lateral to the peduncle is bright). Masks are shifted with zero
@@ -115,8 +124,9 @@ The same-side ring part anterior to the SN (nominally crus cerebri) is kept as `
 approximation, not an expert-drawn crus-cerebri reference, and it is not the primary reference: it lies next to
 the neuromelanin band and is contaminated by it. Same-image intensity refinement can introduce selection bias;
 independent-repeat agreement and native anatomical review are needed, and neither conditional repeatability nor
-an atlas overlay establishes anatomical accuracy. A 20-person replication did not establish that independently
-anchor-refined ROIs beat same-image-refined ones, so the default ROI method was not changed. Order statistics on
+an atlas overlay establishes anatomical accuracy. Selecting the position on the image it then measures added about
++0.023 to the contrast on PPMI slabs, more than the HC–PD gap, so since 11 Oct 2026 refinement is off by default
+(`nm_sn_shift_mm_*` = 0, `*_cnr` = `*_cnr_atlas`); `features(refine=True)` keeps it for comparison. Order statistics on
 single voxels (brightest-fraction contrast, fixed-threshold volumes) were removed after the 2026-09 audit: they
 tracked the slab noise level (per-voxel CV ~0.13 in PPMI's 5-average 1.5 mm protocol; Spearman 0.65-0.71 with the
 reference CV) and showed no PD-vs-HC difference, whereas the refined ROI mean was ~9-10 % lower in de novo PD (AUROC
@@ -153,12 +163,12 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 
 | Column | Meaning |
 |---|---|
-| `nm_sn_{l,r}_cnr` | Refined SN vs the whole ring (primary) |
+| `nm_sn_{l,r}_cnr` | Atlas SN vs the whole ring (diagnostic; refined position only with `features(refine=True)`) |
 | `nm_sn_{posterior,anterior}_{l,r}_cnr` | Halves of the refined SN, split at its median A-P coordinate |
 | `nm_sn_{l,r}_cnr_crus`, `nm_sn_{l,r}_cnr_atlas` | Same-side anterior reference; unrefined atlas SN vs ring |
 | `nm_sn_mean_cnr`, `nm_sn_posterior_mean_cnr`, `nm_sn_anterior_mean_cnr`, `nm_sn_min_cnr`, `nm_sn_asym_cnr`, `nm_sn_mean_cnr_atlas` | Bilateral mean, min, \|L−R\| |
 | `nm_sn_{l,r}_mean`, `nm_ring_mean`, `nm_ring_sd`, `n_ring`, `nm_ref_{l,r}_mean`, `nm_ref_{l,r}_sd`, `n_ref_{l,r}`, `n_sn_{l,r}` | Raw intensities and voxel counts |
-| `nm_sn_shift_mm_{l,r}` | Refinement displacement (mm) |
+| `nm_sn_shift_mm_{l,r}` | Refinement displacement (mm); 0 unless `refine=True` |
 | `n_repeats`, `repeat_motion_mm_max`, `nm_clipped_fraction`, `reg_nm_t1_mi`, `reg_t1_mni_mi` (affine-era rows only), `reg_init`, `sn_slab_coverage_{l,r}`, `nm_valid_{l,r,ref}`, `nm_support_{l,r,ref}` | QC |
 | `shape`, `voxel_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `flip_angle`, `mt_flag`, `series_desc`, `n_series` | Acquisition |
 | `patno`, `acquisition_date`, `fs_image_id`, `processing_version`, `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold`, `registration_reference_space`, `registration_reference_sha256`, `error` | Lineage |
@@ -168,19 +178,24 @@ inside the slab (voxel centres ± half a voxel): a bounded geometric fraction. T
 `sn_slab_coverage` instead, (SN voxels on the slab x voxel volume) / atlas SN voxels in T1 space, a resampled-volume
 ratio that exceeds 1 on fine slabs and can pass a slab that misses one side. `nm_valid_{l,r,ref}` is the share of
 the measured masks (refined SN per side, ring) with signal (finite, > 0); `nm_support_{l,r,ref}` the share that every
-repeat reaches (support ≥ 0.99). New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-09-27-study-syn-slab-qc-v6`
-(`…-v5` before the study's slab checks were ported); `--refeature` rows get that string plus `-refeatured`.
+repeat reaches (support ≥ 0.99). New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-10-11-coverage-weighted-unrefined-v7`
+(`2026-09-27-study-syn-slab-qc-v6` before coverage-weighted averaging and unrefined ROIs, `…-v5` before the study's slab
+checks were ported); `--refeature` rows get that string plus `-refeatured`. `--refeature` applies the unrefined ROIs
+but not the averaging, which needs the raw repeats: re-run `nm`.
 `manifest.QC["nm"]`: `n_sn_l >= 20`, `n_sn_r >= 20`, `min(sn_slab_coverage_l, sn_slab_coverage_r) >= 0.9` (older
 rows: `sn_slab_coverage >= 0.5`), `repeat_motion_mm_max < 3`, and
 `nm_ref_{l,r}_sd < 0.4 x nm_ref_{l,r}_mean` (a reference partly outside the slab has CV near 1 and meaningless
 CNR; this rejected 7 of 646 Philips scans in the September 2026 snapshot), `nm_clipped_fraction <= 0.01`, and every
-`nm_valid_*` and `nm_support_*` ≥ 0.95 (the study's voxel checks; tables without these columns pass them).
+`nm_valid_*` and `nm_support_*` ≥ 0.95 (the study's voxel checks; tables without these columns pass them), and
+`n_repeats >= 3` (the study's acquisition check; 11 Oct 2026: four single-repeat slabs, three GE and one Siemens, passed
+before; tables without the column pass).
 `nm_clipped_fraction` is the largest fraction, over the raw repeats, of voxels at that repeat's maximum value.
 - A clean slab reaches its maximum in a handful of voxels (about 3 × 10⁻⁷ of the slab).
 - A scanner-clipped one saturates the brain. On a PPMI Siemens Prisma_fit scan, 37 % of voxels sat at the 12-bit ceiling of 4095, and snceg found 2 mm³ of nigra.
 - Tables written before 26 September 2026 lack the column, and their rows pass this criterion.
 
-The assembled table keeps `nm_*` columns ending `_cnr` (so not `_cnr_crus` / `_cnr_atlas`).
+The assembled table keeps `nm_*` columns ending `_cnr` (so not `_cnr_crus` / `_cnr_atlas`), plus `nm_vendor` and
+`nm_slab_mm` (the slab's thin-axis extent, from `shape` × `voxel_mm`) on every row, QC-failed or not.
 
 Tests: `tests/test_nm.py` (planted contrast, independent noise, band-offset refinement, reference excludes both
 refined masks) and the hemisphere / no-wrap cases in `tests/test_imaging_audit.py`; refeature versioning and stale-atlas handling
@@ -202,7 +217,8 @@ Neither method passes, so `manifest.NM_VALIDATED` is False and assembled NM colu
 treat them as exploratory. Published single-site NM-MRI studies report larger effects; possible reasons here are
 PPMI's multi-site 2D GRE-MT protocol, the affine atlas placement of `nm.py`, and a defect found in the template's crus
 reference, which lies mostly above the SN (median 7 mm; about 10 % of it at SN levels). Fixing that mask is an
-anatomical, outcome-blind change; its effect must then be tested on patients not in this sample.
+anatomical, outcome-blind change; its effect must then be tested on patients not in this sample. Fixed on 11 Oct 2026
+(`template_masks` takes the crus on the SN prior's axial levels); not re-tested.
 
 ### Re-test with published nigral territories (26 September 2026): not validated
 
@@ -248,7 +264,10 @@ This matches the lateral-to-medial gradient of nigral cell loss.
 | Siemens | 0.70 | 21 / 69 |
 | Toshiba | 0.97 | 6 / 5 |
 
-The PD–HC difference is small next to between-subject and between-scanner spread.
+The PD–HC difference is small next to between-subject and between-scanner spread. GE is 41 % of PIE's NM (264 of 649
+error-free rows in the September 2026 table), and 189 GE slabs are 20 mm thick against the protocol's 24 mm. The
+assembled `nm_vendor` and `nm_slab_mm` columns let an analysis restrict to Siemens or full coverage; no row is dropped
+for vendor.
 
 **Status.** NM columns stay exploratory (`manifest.NM_VALIDATED = False`). The held-out patients have now been used, so any further NM hypothesis, for example Siemens-only, needs new data.
 
@@ -317,8 +336,11 @@ Every averaged slab goes into a 0.5 mm MNI midbrain box (`BOX_ORIGIN_RAS=(-30, -
 
 Template: each normalised slab divided by its median inside the SN prior (bundled CIT168 SNc + SNr, `sn_prior()`)
 dilated 10 mm, averaged; voxels with data in fewer than `min_frac` of subjects are zero. Crus = darker half of the
-sector 4-9 mm anterior-lateral to the prior; SN = voxels within 3 mm of the prior with template CNR >=
-max(0.06, Otsu). Per subject, CNR = I / mode(crus) − 1. No threshold volume is reported (noise-driven).
+sector 4-9 mm anterior-lateral to the prior, on the prior's own axial levels (since 11 Oct 2026; the 3D shell before
+reached the darker peduncle above the SN, median 7 mm, so a through-slab gradient did not cancel). The crus *mode*
+still weights those levels by voxel count and noise, so a gradient within the SN's own levels cancels only
+approximately (the native snceg reference is a per-side mean on the SN's slices). SN = voxels within 3 mm of the prior
+with template CNR >= max(0.06, Otsu). Per subject, CNR = I / mode(crus) − 1. No threshold volume is reported (noise-driven).
 
 ```bash
 for stage in syn normalize template features; do
@@ -407,7 +429,7 @@ Every measure is read on the subject's own averaged slab (`nm_mean.nii.gz`). The
 | Measure | Function | Columns |
 |---|---|---|
 | **Langley SNc volume** [Langley 2025; Hwang 2023]: search region (nigra + 1 mm) voxels above the crus mean + 2.8 SD (`nm.hyperintense_volume`); run `nm --denoise` first. That is MP-PCA over the repeats before averaging [Veraart 2016], as published, on the slab's central in-plane half, which equals whole-slab MP-PCA in the midbrain at about 2 CPU-min per subject. On a phantom it cut the error of the average about threefold in uniform tissue, by about 20 % around a nigra-like block, and kept that block's contrast within 10 % | `langley_features(nm_img, codes, k=2.8)` | `nml_sn_volume_mm3`, `nml_sn_volume_{l,r}_mm3`, `nml_threshold`, `nml_ref_mean`, `nml_ref_sd`, `nml_n_ref`, `nml_k` |
-| **snceg** [Lillebostad 2025]: model output on the native slab; crus reference excludes segmented voxels | `snceg_mask(nm_path, out_path)`, `snceg_features(nm_img, sn, codes)` | `nms_sn_volume_mm3`, `nms_sn_volume_{l,r}_mm3`, `nms_sn_{l,r,mean}_cr` (I_SN / I_crus − 1), `nms_sn_{l,r,mean}_cnr` ((I_SN − I_crus) / SD_crus), `nms_crus_mean`, `nms_crus_sd` |
+| **snceg** [Lillebostad 2025], **PIE's default NM measure**: model output on the native slab. Each side's reference is that side's crus on the slices holding that side's segmented SN (the slab's thin axis), excluding segmented voxels, ≥ 20 voxels; a through-slab intensity gradient then cancels. Before 11 Oct 2026 one crus over all slices and both sides was used; it is kept as `*_cr_allslices` and `nms_crus_mean` / `nms_crus_sd` (diagnostics, not assembled) | `snceg_mask(nm_path, out_path)`, `snceg_features(nm_img, sn, codes)` | `nms_sn_volume_mm3`, `nms_sn_volume_{l,r}_mm3`, `nms_sn_{l,r,mean}_cr` (I_SN / I_crus − 1), `nms_sn_{l,r,mean}_cnr` ((I_SN − I_crus) / SD_crus), `nms_crus_{l,r}_mean`, `nms_crus_{l,r}_sd`, `nms_sn_{l,r,mean}_cr_allslices`, `nms_crus_mean`, `nms_crus_sd` |
 | QC | `process_subject` | `native_cov_search_{l,r}`, `native_cov_crus_{l,r}` |
 
 **Departures from the publications.**
@@ -466,7 +488,7 @@ A region's contrasts are NaN on both sides unless every one of these holds:
 
 Run `nm --keep-nifti` *without* `--denoise` for the study's quantity, then `nm_native … --study`.
 
-`manifest.assemble_features` keeps `nml_sn_volume*_mm3`, `nms_sn*_{mm3,cr,cnr}` and `nm_bion_*_cr`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`. Tests are in `tests/test_nm_native.py`:
+`manifest.assemble_features` keeps `nml_sn_volume*_mm3`, `nms_sn*_{mm3,cr,cnr}` and `nm_bion_*_cr`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`, and copies the default measure to `nm_primary_cr` (`nms_sn_mean_cr`) and `nm_primary_volume_mm3` (`nms_sn_volume_mm3`). Tests are in `tests/test_nm_native.py`:
 - a real ANTs SyN between synthetic volumes;
 - an oblique thin slab;
 - coverage;

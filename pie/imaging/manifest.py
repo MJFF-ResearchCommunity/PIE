@@ -47,6 +47,7 @@ QC = {
     "nm": lambda d: (d["n_sn_l"] >= 20) & (d["n_sn_r"] >= 20) & _nm_slab_coverage_ok(d) & (d["repeat_motion_mm_max"] < 3)
     & (d["nm_ref_l_sd"] < 0.4 * d["nm_ref_l_mean"]) & (d["nm_ref_r_sd"] < 0.4 * d["nm_ref_r_mean"])   # reference ring partly outside the slab -> CV ~1, CNR garbage
     & ~(_col(d, "nm_clipped_fraction") > 0.01)   # scanner-clipped repeats (tables before 26 Sep 2026 lack the column: pass)
+    & ~(_col(d, "n_repeats") < 3)   # the study's >= 3 averaged repeats (a single-repeat slab has ~2x the noise; tables without the column: pass)
     # the study's voxel checks on the measured masks: >= 95 % with signal and reached by every repeat (tables before
     # 27 Sep 2026 lack the columns: pass)
     & ~d.reindex(columns=[f"nm_{k}_{s}" for k in ("valid", "support") for s in ("l", "r", "ref")]).lt(0.95).any(axis=1),
@@ -58,6 +59,9 @@ QC = {
 # 45 HC + 45 PD: nm_template 0.58 [0.46, 0.70], nm.py 0.54 [0.42, 0.67]. Re-test with the published Biondetti
 # territories on 106 held-out PD + the 39 usable HC: sensorimotor contrast 0.62 [0.53, 0.72], rho with putamen SBR
 # 0.18; 8-territory model 0.67 [97.5 % CI 0.55, 0.78], rho 0.20 (both fail). Assembled NM columns are exploratory.
+# The default NM measure (11 Oct 2026) is snceg (``nm_primary_cr``, ``nm_primary_volume_mm3``): the only NM measure that
+# reproduced a published PPMI result (Lillebostad 2025 TSE-FS: AUROC 0.710 [0.611, 0.799] vs 0.743). It is not validated
+# on PPMI's 2D GRE-MT; a Siemens-only re-test is pre-registered (documentation/preregistration_nm_snceg.md).
 NM_VALIDATED = False
 # The study's posterior-nigral MD (``dwis_md_sn_posterior_mean``, the DWI primary) failed its pre-registered
 # PPMI 2.0 PD-vs-HC gate (AUROC >= 0.60, lower bound > 0.50; 29 Sep 2026): 0.574 [0.495, 0.652], 218 PD / 82 HC, rho with
@@ -330,9 +334,14 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
         df["dwi_nigral_validated"] = DWI_NIGRAL_VALIDATED
     nmf = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_features.csv")
     if nmf is not None:
-        cols = [c for c in nmf.columns if c.startswith("nm_") and c.endswith(("_cnr", "_voxels"))]
+        cols = [c for c in nmf.columns if c.startswith("nm_") and c.endswith(("_cnr", "_voxels"))]   # nm.py ring contrast: diagnostic
         blocks["nm"] = nmf[["patno"] + cols]
         df["nm_validated"] = NM_VALIDATED
+        # vendor and slab thickness (thin-axis extent) so analyses can restrict to Siemens / full coverage: 41 % of PIE's
+        # NM is GE, most of it 20 mm slabs against the protocol's 24 mm, and GE separated PD from HC far worse
+        dims = lambda c: nmf.get(c, pd.Series("", index=nmf.index)).astype(str).str.split("x", expand=True).apply(pd.to_numeric, errors="coerce")
+        df = df.merge(pd.DataFrame({"PATNO": nmf["patno"], "nm_vendor": _vendor(nmf["manufacturer"]),
+                                    "nm_slab_mm": (dims("shape") * dims("voxel_mm")).min(axis=1)}), on="PATNO", how="left")
     nmt = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_template_features.csv")
     if nmt is not None:      # template-space CNR (Cassidy/Wengler); its own QC, so a failed template row blanks only these
         nmt["nmt_qc_pass"] = QC["nmt"](nmt)
@@ -361,6 +370,8 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
     if "nm_qc_pass" in df:   # the slab's own QC (motion, coverage) holds for every NM method read from it
         df.loc[~df["nm_qc_pass"].fillna(False).astype(bool),
                [c for c in df if c.startswith(("nmt_", "nmb_", "nml_", "nms_", "nm_bion_")) and c.endswith(("_cnr", "_cr", "_mm3"))]] = np.nan
+    if "nms_sn_mean_cr" in df:   # PIE's default NM measure (11 Oct 2026): snceg contrast vs the crus on the SN's slices, and volume
+        df["nm_primary_cr"], df["nm_primary_volume_mm3"] = df["nms_sn_mean_cr"], df["nms_sn_volume_mm3"]
     # one intracranial volume for head-size adjustment: PIE's FreeSurfer eTIV (same T1 as the volumes), else PPMI's
     # FreeSurfer 7 eTIV of the same visit; never MaskVol or BrainSegVol
     nan = pd.Series(np.nan, index=df.index)
@@ -404,5 +415,6 @@ def feature_blocks(columns):
     return {"dat": [c for c in cols if c.startswith("dat_sbr")],
             "dat_core": [c for c in cols if c.startswith("dat_core_") and c != "dat_core_source"],
             "dwi": [c for c in cols if (c.startswith("dwi_") and is_dwi_feature(c)) or any(re.fullmatch(r, c) for r in STUDY_DWI.values())],
-            "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_voxels", "_cr", "_mm3"))],
+            "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_voxels", "_cr", "_mm3"))
+                   and not c.startswith("nm_primary_")],   # aliases of nms_* columns
             "flair": [c for c in cols if c.startswith("flair_wmh")]}

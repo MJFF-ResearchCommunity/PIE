@@ -343,7 +343,12 @@ ratings in the CSV. The assembled table also adds every `dat_sbr_*` (occipital) 
 `dat_sbrwm_*` (cerebral WM, PPMI's current reference) SBR with its anterior/posterior halves, putamen/caudate ratios and
 asymmetry indices, `dwi_*` tensor and tract features (`manifest.is_dwi_feature`; single-shell free water blanked
 unless `single_shell_fw=True`, see [imaging_dwi.md](imaging_dwi.md#single-shell-free-water-is-not-assembled-by-default)),
-`nm_*_cnr`, and `flair_wmh_*`. LONI-masked dates (year 9999) become missing, so no `*_days_from_t1` is computed from them. A modality failing QC is blanked
+`nm_*_cnr` (`nm.py`'s ring contrast, a diagnostic), and `flair_wmh_*`. The default NM measure is snceg
+(`nm_primary_cr` = `nms_sn_mean_cr`, the SN contrast against each side's crus on the SN's own slices, and
+`nm_primary_volume_mm3` = `nms_sn_volume_mm3`; aliases, left out of `feature_blocks`), read from
+`nm/nm_native_features.csv` (`nm_native --snceg`). `nm_vendor` and `nm_slab_mm` (the slab's thin-axis extent:
+PPMI's protocol is 24 mm, most GE slabs 20 mm) are kept for every NM row, QC-failed or not, so analyses can restrict
+to Siemens or full coverage explicitly. LONI-masked dates (year 9999) become missing, so no `*_days_from_t1` is computed from them. A modality failing QC is blanked
 entirely, so a failed left-side metric cannot let a valid-looking right side through.
 
 `assemble_features(..., ppmi_dir="PPMI")` also joins PPMI's own FreeSurfer 7 and MRIQC tables (`features.fs7_tables`:
@@ -752,9 +757,9 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Nigrostriatal tractography, fixel AFD | SOTA | Yes (`--fba`) |
 | | TBSS skeleton; NODDI | ENIGMA standard; SOTA | No (b ≤ 2000 limits NODDI) |
 | NM-MRI | SNc volume by reference-based threshold, native space | Gold (most replicated; Cho 2021, Langley 2025 on PPMI) | Implemented: `nm_native` (`nml_*`), MP-PCA-denoised repeats (`nm --denoise`). With the public Biondetti ROIs in place of Langley's unpublished atlas, the Siemens pilot did **not** reproduce the published PPMI effect (d 0.01 vs 0.83) |
-| | SN contrast vs a crus/tegmental reference | Gold | Yes (`nm.py` atlas ROI; `nm_template`; `nm_native` snceg CR/CNR) |
+| | SN contrast vs a crus/tegmental reference | Gold | Yes: **default** `nm_native` snceg CR vs the crus on the SN's slices (`nm_primary_cr`); `nm_template`; `nm.py` ring contrast (diagnostic) |
 | | Voxel-wise CNR vs crus in template space (Cassidy 2019, Wengler 2020) | SOTA; cited by the PPMI 2.0 MRI manual | Yes (`nm_template.py`) |
-| | Deep-learning SN segmentation (snceg, Lillebostad 2025) | SOTA | Yes: `nm_native --snceg` (pinned public weights, separate environment); reproduction pending |
+| | Deep-learning SN segmentation (snceg, Lillebostad 2025) | SOTA | Yes: `nm_native --snceg` (pinned public weights, separate environment), PIE's default NM measure. Reproduced on PPMI TSE-FS (AUROC 0.710 vs 0.743); GRE-MT re-test pre-registered ([preregistration_nm_snceg.md](preregistration_nm_snceg.md)) |
 | | Voxelwise template CNR, functional territories, multi-site harmonisation | SOTA (Wengler 2020/2021, Biondetti 2020) | Yes: `nm_template`, `published` stage, `nm_acquisition_batch` |
 | | NM SN volume loss rate (longitudinal) | SOTA progression marker | Cross-sectional volume only; no longitudinal pipeline |
 | | Locus coeruleus | SOTA in prodromal work | Not in PPMI's 24 mm slab |
@@ -786,7 +791,7 @@ before quoting their values), with PPMI cohort labels:
 | DWI single-shell FW | Age; PD vs HC | brain r +0.02, posterior SN AUROC 0.50: quarantined |
 | DWI nigral FA / MD | vs PPMI's hand-drawn SN ROIs (248 scans) | FA ρ 0.39 (PIE reads higher: 0.43 vs 0.32, peduncle partial volume), MD ρ −0.01 |
 | NM atlas ROI CNR | PD vs HC (166 / 45) | AUROC 0.54 overall, 0.60 posterior half |
-| NM, pre-registered gate (AUROC ≥ 0.70, CI lower bound > 0.55), 45 HC + 45 PD, 26 Sep 2026 | PD vs HC | template CNR (`nmt_sn_mean_cnr`) 0.58 [0.46, 0.70], posterior 0.61; atlas CNR re-run with current `nm.py` (`nm_sn_mean_cnr`) 0.54 [0.42, 0.67]. **Neither passes: NM measures are exploratory** (`manifest.NM_VALIDATED = False`, column `nm_validated`). The template's crus reference sits mostly above the SN (median 7 mm), a defect to fix before any re-test on new subjects |
+| NM, pre-registered gate (AUROC ≥ 0.70, CI lower bound > 0.55), 45 HC + 45 PD, 26 Sep 2026 | PD vs HC | template CNR (`nmt_sn_mean_cnr`) 0.58 [0.46, 0.70], posterior 0.61; atlas CNR re-run with current `nm.py` (`nm_sn_mean_cnr`) 0.54 [0.42, 0.67]. **Neither passes: NM measures are exploratory** (`manifest.NM_VALIDATED = False`, column `nm_validated`). The template's crus reference sat mostly above the SN (median 7 mm); restricted to the SN's axial levels on 11 Oct 2026 |
 | NM re-test, published Biondetti territories, pre-registered (same gate plus ρ ≥ 0.20 with the lowest putamen SBR); 106 held-out PD + the 39 usable HC (reused), GE/Siemens/Toshiba | PD vs HC | sensorimotor contrast (`nmb_sensorimotor_mean_cnr`, vendor/age/sex-adjusted) 0.62 [0.53, 0.72], ρ 0.18; 8-territory model (cross-validated) 0.67 [97.5 % CI 0.55, 0.78], ρ 0.20. Both fail; NM stays exploratory. Sensorimotor NM is lower and limbic NM higher in PD in both samples. Unadjusted sensorimotor AUROC by vendor: GE 0.53, Siemens 0.70, Toshiba 0.97 (6 HC / 5 PD) |
 | FLAIR registration | 30 scans that failed QC + 10 that passed, re-run 25 Sep 2026 | 21 / 30 now pass, 10 / 10 still pass; former failures' median WMH 11.1 → 2.5 mL |
 | FLAIR WMH (threshold) | Age; vs FastSurfer WM-hypointensities | ρ +0.18 (3D FLAIR +0.24); ρ 0.52 with the T1 measure, which itself tracks age at ρ +0.46 |

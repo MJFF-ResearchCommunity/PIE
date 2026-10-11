@@ -7,8 +7,8 @@ through the inverse of the cached ANTs SyN), so the slab itself is never interpo
              MP-PCA-denoised repeats (``nm --denoise``). Langley et al. 2025, npj Parkinson's Disease 11:181,
              doi:10.1038/s41531-025-00976-3 (PPMI); Hwang, Langley et al. 2023, PLOS ONE 18:e0282684.
     snceg    the neuromelanin-hyperintense SN segmented by the public snceg Attention U-Net (MIT licence, weights
-             pinned), its volume and contrast (CR, CNR) against the crus cerebri. Lillebostad et al. 2025, Imaging
-             Neuroscience, doi:10.1162/IMAG.a.158.
+             pinned), its volume and contrast (CR, CNR) against the crus cerebri on the SN's own slices. Lillebostad
+             et al. 2025, Imaging Neuroscience, doi:10.1162/IMAG.a.158. PIE's default NM measure (11 Oct 2026).
 
 Regions come from the published Biondetti et al. 2020 atlas (``atlases.biondetti_mni2009c``): the nigral mask (search
 region, dilated 1 mm as Langley dilate theirs; territories) and the crus parts of its background ROI (reference, the
@@ -132,6 +132,11 @@ def _affine_file(tx, path):
     return path
 
 
+def _slice_axis(img):
+    """The slab's thin axis (smallest physical extent): its slice direction."""
+    return int(np.argmin(np.array(img.shape[:3]) * np.linalg.norm(img.affine[:3, :3], axis=0)))
+
+
 def pull_labels(label_img, grid_img, tx_t1_grid, warp, affine, codes=None, pad=12, interpolator="genericLabel"):
     """``label_img`` (MNI space) on ``grid_img``'s voxels in one ``interpolator`` (ANTs) resampling: grid -> T1 by the inverse of
     ``tx_t1_grid`` (SimpleITK, T1 point -> grid point, as ``nm.register_slab`` returns), T1 -> MNI by the inverse of
@@ -140,7 +145,7 @@ def pull_labels(label_img, grid_img, tx_t1_grid, warp, affine, codes=None, pad=1
     same pull onto the grid padded by ``pad`` slices along its thinnest physical extent (the slab normal)."""
     import ants
 
-    axis = int(np.argmin(np.array(grid_img.shape[:3]) * np.linalg.norm(grid_img.affine[:3, :3], axis=0)))   # the slab's thin axis
+    axis = _slice_axis(grid_img)
     shape = list(grid_img.shape[:3])
     shape[axis] += 2 * pad
     shift = np.zeros(3)
@@ -187,18 +192,25 @@ def langley_features(nm_img, codes, k=LANGLEY_K, prefix="nml_", ref_region=CRUS)
 
 def snceg_features(nm_img, sn, codes, prefix="nms_"):
     """Volume (mm^3), contrast ratio (I_sn / I_crus - 1) and CNR ((I_sn - I_crus) / SD_crus) of a segmented SN, per
-    side and bilateral; the crus reference excludes segmented voxels (Lillebostad et al. 2025)."""
+    side and bilateral; the crus reference excludes segmented voxels (Lillebostad et al. 2025). Each side's reference is
+    its own crus on the slices that hold its segmented SN (>= 20 voxels, else NaN), so a through-slab intensity gradient
+    cancels; the crus over all slices and both sides (the reference before 11 Oct 2026) is kept as
+    ``*_cr_allslices`` and ``crus_mean`` / ``crus_sd`` (diagnostics)."""
     nm = np.asarray(nm_img.dataobj, float)
     region, sides = _side_masks(codes)
     vox = float(abs(np.linalg.det(nm_img.affine[:3, :3])))
-    ref = (region == CRUS) & ~sn & np.isfinite(nm)
-    mu, sd = (float(nm[ref].mean()), float(nm[ref].std())) if ref.sum() >= 20 else (np.nan, np.nan)
+    crus = (region == CRUS) & ~sn & np.isfinite(nm)
+    stats = lambda m: (float(nm[m].mean()), float(nm[m].std())) if m.sum() >= 20 else (np.nan, np.nan)
+    mu, sd = stats(crus)
+    inplane = tuple(a for a in range(3) if a != _slice_axis(nm_img))
     out = {f"{prefix}sn_volume_mm3": float(sn.sum() * vox), f"{prefix}crus_mean": mu, f"{prefix}crus_sd": sd}
     for s, m in sides.items():
         v = sn & m
+        smu, ssd = stats(crus & m & np.expand_dims(v.any(axis=inplane), inplane))
         i = float(nm[v].mean()) if v.any() else np.nan
-        out.update({f"{prefix}sn_volume_{s}_mm3": float(v.sum() * vox), f"{prefix}sn_{s}_cr": i / mu - 1, f"{prefix}sn_{s}_cnr": (i - mu) / sd})
-    for m in ("cr", "cnr"):
+        out.update({f"{prefix}sn_volume_{s}_mm3": float(v.sum() * vox), f"{prefix}crus_{s}_mean": smu, f"{prefix}crus_{s}_sd": ssd,
+                    f"{prefix}sn_{s}_cr": i / smu - 1, f"{prefix}sn_{s}_cnr": (i - smu) / ssd, f"{prefix}sn_{s}_cr_allslices": i / mu - 1})
+    for m in ("cr", "cnr", "cr_allslices"):
         out[f"{prefix}sn_mean_{m}"] = (out[f"{prefix}sn_l_{m}"] + out[f"{prefix}sn_r_{m}"]) / 2
     return out
 
