@@ -20,7 +20,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | this page | setup, T1 / FastSurfer IDPs, labels, FLAIR, manifest and QC galleries, CNN and embeddings, shared infrastructure |
 | [imaging_dwi.md](imaging_dwi.md) | `dwi`, `fba`, `dwi_refine`, `dwi_tensor_qc`, `freewater_qc`, `dwi_acquisition`, `dwi_correction`, `mrtrix_shim` |
 | [imaging_nm_datscan.md](imaging_nm_datscan.md) | `nm`, `nm_template`, `datscan` |
-| [fmriprep.md](fmriprep.md), [brain_viewer.md](brain_viewer.md), [fmri_viewer.md](fmri_viewer.md) | fMRI (`fmri*.py`) and the viewers |
+| [fmriprep.md](fmriprep.md), [brain_viewer.md](brain_viewer.md), [fmri_viewer.md](fmri_viewer.md) | fMRI (`fmri*.py`, `xcpd.py`) and the viewers |
 
 ## Modules
 
@@ -623,8 +623,8 @@ the map between the two vocabularies.
 | DaTscan SBR, occipital reference, caudate and putamen | `datscan.py` ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | subject-space FastSurfer regions rather than template masks |
 | Whole-brain GM and WM, putamen, caudate, pallidum, brainstem volumes | `features.tissue_volumes` | from FastSurfer labels |
 | Intracranial-volume adjustment | `features.adjust_for_head_size`, `features.tiv_from_registration` | prefer eTIV (FastSurfer `--tal_reg`, or PPMI's `FS7_ASEG_VOL`); the registration estimate correlates with it at r = 0.81 |
-| Basal ganglia network from group ICA, caudate and putamen weights | `fmri_connectivity.group_ica`, `select_component`, `dual_regression`, `roi_means` ([page](fmriprep.md)) | the template for BGN selection is the CIT168 striatum, independent of the patients |
-| Seed-based striatal connectivity | `fmri_connectivity.striatal_rois`, `roi_timeseries`, `seed_network_connectivity` ([page](fmriprep.md)) | BOLD must already be in MNI152NLin2009cAsym |
+| Basal ganglia network from group ICA, caudate and putamen weights | `fmri_connectivity.bgn_weights` (`load_reference_maps`, `select_component`, `dual_regression`, `roi_means`) ([page](fmriprep.md)) | dual regression matches FSL's; prefer a frozen external map set (maps from the analysed sample warn as circular); the CIT168 striatum picks the BGN |
+| Seed-based striatal connectivity | `xcpd.xcpd_striatal_features` on XCP-D's denoised BOLD; `fmri_connectivity.striatal_rois`, `roi_timeseries`, `seed_network_connectivity` ([page](fmriprep.md)) | BOLD must already be in MNI152NLin2009cAsym; optional anterior/posterior putamen split |
 | Neuromelanin SN volume and signal relative to white matter | `nm.hyperintense_volume`, `nm.mask_volume`, `nm.normalised_intensity` ([page](imaging_nm_datscan.md)) | the threshold volume depends several-fold on `k`; report it |
 | Tract FA on the 48-label JHU ICBM-DTI-81 atlas | `dwi.fetch_jhu`, `dwi.map_labels_to_subject`, `dwi.registration_qc`, `dwi.tract_features` ([page](imaging_dwi.md)) | the atlas FA template is registered to the subject FA, so no MNI variant is assumed; laterality is checked on load |
 | Partial correlations with bootstrap | `stats.small_sample.bootstrap_partial_correlation` ([page](stats.md#small_sample)) | no pingouin dependency |
@@ -670,10 +670,11 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Locus coeruleus | SOTA in prodromal work | Not in PPMI's 24 mm slab |
 | Iron | QSM, R2*, nigrosome-1 on SWI | SOTA | Not acquired by PPMI-1 or PPMI 2.0 (no multi-echo GRE or SWI) |
 | FLAIR | WMH volume | Gold (vascular covariate) | Threshold method; deep-learning segmenters not wrapped. Prefer FastSurfer's `vol_WM_hypointensities` (below) |
-| rs-fMRI | fMRIPrep + 24P + aCompCor + censoring, GSR as sensitivity | Best practice | Yes |
+| rs-fMRI | fMRIPrep + XCP-D (36P, censoring, respiratory notch filter at TR 1 s) | Best practice | Yes: `xcpd.py` pins XCP-D 26.2.0 ([page](fmriprep.md#5c-xcp-d-denoising-and-parcellation-pieimagingxcpd)); PIE's own 24P + aCompCor path kept as a cross-check |
+| | QC-FC and its distance dependence | Expected by reviewers | `fmri_connectivity.qc_fc`; validation plan on the [page](fmriprep.md#5e-validation-plan), not yet run |
 | | Schaefer cortex + CIT168 subcortex | SOTA default ("4S") | Yes (`atlases.schaefer400_mni2009c`, `striatal_rois`) |
 | | Striatal seed FC, basal-ganglia network (ICA + dual regression) | Canonical, poorly reproducible | Yes |
-| | ALFF / fALFF / ReHo | SOTA | `fmri_connectivity.local_measures` (unvalidated); XCP-D is the community implementation |
+| | ALFF / fALFF / ReHo | SOTA | XCP-D's ALFF (as mALFF) and ReHo via `xcpd_features`; `fmri_connectivity.local_measures` adds fALFF (unvalidated) |
 | PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | No PET processing. PPMI's analysed tables can be joined as labels; an AV-133 module (reusing `datscan.sbr_from_arrays` on the PET registered to the T1) is the first candidate |
 | CT | Safety head CT before the screening lumbar puncture | Not an imaging endpoint: the `Safety_Head_CT_Scan` form (`CTSCAN`, yes/no) records whether one was done; PPMI does not distribute the images | Nothing to process |
 | All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method; ComBat is the alternative) |
@@ -782,7 +783,7 @@ venv_imaging/bin/python -m pytest -q tests/test_imaging.py tests/test_imaging_au
     tests/test_manifest.py tests/test_nm.py tests/test_nm_template.py tests/test_qc.py tests/test_staging.py \
     tests/test_staging_files.py tests/test_imaging_regressions.py \
     tests/test_dwi_tracts.py tests/test_fmri_striatal.py tests/test_nm_volume.py tests/test_volumes.py tests/test_normative.py \
-    tests/test_fmri_connectivity.py tests/test_brain_viewer.py
+    tests/test_fmri_connectivity.py tests/test_xcpd.py tests/test_brain_viewer.py
 ```
 
 `tests/test_imaging_regressions.py` holds one regression test per bug fixed after the September 2026 audit
