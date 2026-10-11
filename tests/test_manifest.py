@@ -202,3 +202,15 @@ def test_modality_scanner_id_reaches_the_manifest(tmp_path):
     pd.DataFrame({"patno": [1], "reg_flair_t1_mi": [-0.5], "wm_mm3": [4e5], "flair_wm_mad": [1.0], "manufacturer": ["GE"], "flair_3d": [True],
                   "DeviceSerialNumber": [12345], "StationName": ["ST1"], "acquisition_date": ["2020-01-02"]}).to_csv(d / "flair" / "flair_features.csv", index=False)
     assert build_manifest(d).loc[0, "flair_scanner_id"] == "12345"
+
+
+def test_long_export_has_bids_style_identifiers_and_drops_blanked_values(tmp_path):
+    from pie.imaging.cohorts import OFFSET
+    from pie.imaging.manifest import export_long
+    df = pd.DataFrame({"PATNO": [3001, OFFSET["ADNI"] + 295], "EVENT_ID": ["BL", "UNK"], "t1_date": pd.to_datetime(["2020-01-01", "2010-05-01"]),
+                       "Manufacturer": ["Siemens", "GE"], "vol_Left_Putamen": [5000.0, np.nan], "dat_sbr_putamen_l": [2.1, np.nan]})
+    out = export_long(df, tmp_path / "deriv")
+    assert set(out["participant_id"]) == {"sub-PPMI3001"} and out["session_id"].iloc[0] == "ses-BL"   # blanked values dropped
+    assert set(out["block"]) == {"t1", "dat"} and (tmp_path / "deriv" / "dataset_description.json").exists()
+    out = export_long(df.fillna({"vol_Left_Putamen": 4000.0}), tmp_path / "deriv2")
+    assert out.loc[out.participant_id == "sub-ADNI295", "session_id"].item() == "ses-20100501"

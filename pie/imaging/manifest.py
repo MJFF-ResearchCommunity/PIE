@@ -516,3 +516,41 @@ def feature_blocks(columns):
                    and not c.startswith("nm_primary_")],   # aliases of nms_* columns
             "flair": [c for c in cols if c.startswith("flair_wmh") and c != "flair_wmh_method"],
             "pet_av133": [c for c in cols if c.startswith("pet_av133_sbr")]}
+
+
+def export_long(df, out_dir, blocks=None):
+    """The assembled table as a BIDS-Derivatives-style long table for pooling across cohorts: ``<out_dir>/
+    dataset_description.json`` and ``imaging_features.tsv`` with one row per participant, session and feature:
+    ``participant_id`` (sub-<cohort><native id>: PPMI PATNO, ADNI RID, else PIE's hashed key), ``session_id``
+    (ses-<EVENT_ID>, else the T1 date), ``cohort``, ``block`` (``feature_blocks``; T1 IDPs are "t1"), ``feature``, ``value``,
+    and the T1's scanner (``Manufacturer``, ``MagneticFieldStrength``, ``DeviceSerialNumber``) and ``fastsurfer_version``.
+    QC-failed values are already blank in ``df`` and are dropped. Returns the long frame."""
+    import json
+
+    from .cohorts import OFFSET, cohort_of
+
+    blocks = blocks or feature_blocks(df.columns)
+    blocks = {"t1": [c for c in df.columns if T1_MEASURE(c)], **blocks}
+    cohort = df["PATNO"].map(cohort_of)
+    native = np.where(cohort.eq("ADNI"), df["PATNO"] - OFFSET["ADNI"], df["PATNO"])
+    sess = df.get("EVENT_ID", pd.Series(np.nan, index=df.index)).astype(object)
+    sess = sess.where(sess.notna() & sess.ne("UNK"), pd.to_datetime(df["t1_date"]).dt.strftime("%Y%m%d"))
+    ident = pd.DataFrame({"participant_id": "sub-" + cohort.where(cohort.ne("PPMI"), "PPMI") + pd.Series(native, index=df.index).astype(str),
+                          "session_id": "ses-" + sess.astype(str), "cohort": cohort,
+                          **{c: df.get(c, pd.Series(np.nan, index=df.index)) for c in ("Manufacturer", "MagneticFieldStrength", "DeviceSerialNumber",
+                                                                                       "fastsurfer_version")}})
+    parts = []
+    for block, cols in blocks.items():
+        cols = [c for c in cols if c in df]
+        if cols:
+            long = ident.join(df[cols]).melt(id_vars=list(ident.columns), var_name="feature", value_name="value")
+            parts.append(long.assign(block=block).dropna(subset=["value"]))
+    out = pd.concat(parts, ignore_index=True)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "dataset_description.json").write_text(json.dumps({
+        "Name": "PIE imaging-derived features", "BIDSVersion": "1.9.0", "DatasetType": "derivative",
+        "GeneratedBy": [{"Name": "PIE", "Description": "Parkinson's Insight Engine imaging pipelines (pie.imaging)",
+                         "CodeURL": "https://github.com/MJFF-ResearchCommunity/PIE"}]}, indent=2))
+    out.to_csv(out_dir / "imaging_features.tsv", sep="\t", index=False)
+    return out

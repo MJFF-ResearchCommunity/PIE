@@ -615,6 +615,16 @@ The ranges never overlap, so cohorts can be pooled. `index.csv`, `sessions.csv` 
 - **Still PPMI-only:** clinical labels (`labels.py`), the DaT core-lab reader, the modality pipelines' BIDS input
   (DWI, NM and FLAIR read LONI zips; BIDS for them is next), and PPMI-specific series names in their selection rules.
 
+**Sharing across cohorts.** `manifest.export_long(df, out_dir)` writes the assembled table (cross-sectional or
+per-visit) as a BIDS-Derivatives-style long table: `dataset_description.json` and `imaging_features.tsv` with one row
+per participant, session and feature. Its columns are:
+- `participant_id`, `sub-<cohort><native id>`;
+- `session_id`, `ses-<EVENT_ID>`, else the T1 date;
+- `cohort`, `block`, `feature` and `value`;
+- the T1's vendor, field strength, serial number and `fastsurfer_version`.
+
+QC-blanked values are dropped. This is the format to pool or to hand to another site.
+
 ## Longitudinal T1 (`manifest.t1_visits`)
 
 The modality manifest (`build_manifest`, `assemble_features`) still has one row per participant: the earliest usable
