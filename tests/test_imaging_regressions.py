@@ -1315,3 +1315,13 @@ def test_dat_labels_record_whether_the_datscan_came_after_the_mri(tmp_path):
     assert d.loc[1, "days_datscan_after_mri"] == -14 and d.loc[1, "months_to_datscan"] == 0.5    # DaTscan month 01/2011
     later = labels.dat_labels(ppmi, sessions.assign(session_date="2010-12-01")).set_index("PATNO")
     assert later.loc[1, "days_datscan_after_mri"] == 31
+
+
+def test_scan_metadata_widens_instead_of_appending_a_longer_row(tmp_path):
+    from pie.imaging.run import append_meta
+    m = tmp_path / "scan_metadata.csv"
+    append_meta(m, {"image_id": "I1", "nifti": "a", "Manufacturer": "GE"})
+    append_meta(m, {"image_id": "I2", "nifti": "b", "Manufacturer": "GE", "ConversionSoftwareVersion": "v1"})   # newer PIE
+    append_meta(m, {"image_id": "I3", "nifti": "c", "Manufacturer": "GE", "ConversionSoftwareVersion": "v1"})
+    t = pd.read_csv(m)
+    assert t["image_id"].tolist() == ["I1", "I2", "I3"] and t["ConversionSoftwareVersion"].isna().tolist() == [True, False, False]

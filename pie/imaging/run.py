@@ -185,13 +185,24 @@ def _record(fut, row, meta, meta_csv, log_ok, log_fail, requeue):
     if image_id is None:
         log.warning("incomplete segmentation for %s; re-queued", row["image_id"])
         return requeue.append(row)
-    write_header = not meta_csv.exists()
-    with open(meta_csv, "a") as fh:
-        w = csv.DictWriter(fh, fieldnames=["image_id", *meta])
-        if write_header:
-            w.writeheader()
-        w.writerow({"image_id": image_id, **meta})
+    append_meta(meta_csv, {"image_id": image_id, **meta})
     log_ok(image_id)
+
+
+def append_meta(meta_csv, row):
+    """Append one row to scan_metadata.csv; a row with fields the table lacks (a newer PIE records more) widens the
+    table, keeping every earlier row, instead of appending a row the header does not describe."""
+    meta_csv = Path(meta_csv)
+    header = next(csv.reader(open(meta_csv)), []) if meta_csv.exists() and meta_csv.stat().st_size else []
+    if header and set(row) - set(header):
+        old = pd.read_csv(meta_csv, dtype=str)
+        pd.concat([old, pd.DataFrame([row])], ignore_index=True).to_csv(meta_csv, index=False)
+        return
+    with open(meta_csv, "a", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=header or list(row), extrasaction="ignore")
+        if not header:
+            w.writeheader()
+        w.writerow(row)
 
 
 def long_timepoints(sessions, subjects_dir):
