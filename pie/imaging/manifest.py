@@ -47,7 +47,8 @@ QC = {
     # the study's voxel checks on the measured masks: >= 95 % with signal and reached by every repeat (tables before
     # 27 Sep 2026 lack the columns: pass)
     & ~d.reindex(columns=[f"nm_{k}_{s}" for k in ("valid", "support") for s in ("l", "r", "ref")]).lt(0.95).any(axis=1),
-    "flair": lambda d: (d["reg_flair_t1_mi"] < -0.2) & (d["wm_mm3"] > 200000) & (d["flair_wm_mad"] > 0),
+    # S-I coverage under 130 mm leaves WM outside the slab (27 of 486 PPMI 2D FLAIRs; tables before Oct 2026 lack the column: pass)
+    "flair": lambda d: (d["reg_flair_t1_mi"] < -0.2) & (d["wm_mm3"] > 200000) & (d["flair_wm_mad"] > 0) & ~(_col(d, "flair_si_mm") < 130),
     # nm_template: the template SN mask has data on both sides and the crus reference is homogeneous
     "nmt": lambda d: (d["nmt_sn_cov_l"] >= 0.9) & (d["nmt_sn_cov_r"] >= 0.9) & (d["nmt_crus_cv_l"] < 0.3) & (d["nmt_crus_cv_r"] < 0.3),
 }
