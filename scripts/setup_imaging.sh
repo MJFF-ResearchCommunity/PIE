@@ -9,10 +9,15 @@ cd "$(dirname "$0")/.."
 BACKEND="${1:-cu128}"
 command -v uv >/dev/null || { echo "install uv first: https://docs.astral.sh/uv/"; exit 1; }
 
-# Pinned: PIE's T1 validation (FS7 agreement, eTIV) was run on FastSurfer 2.6.0-dev0; v2.6.0 is its release.
-# Each IDP row records the version that produced it (fastsurfer_version). Change the tag only with a re-validation.
-FASTSURFER_TAG="${PIE_FASTSURFER_TAG:-v2.6.0}"
-[ -d third_party/FastSurfer ] || git clone --depth 1 --branch "$FASTSURFER_TAG" https://github.com/Deep-MI/FastSurfer.git third_party/FastSurfer
+# Pinned: PIE's T1 validation (FS7 agreement, eTIV) ran on FastSurfer commit d0d7d39 (2.6.0-dev0), the same commit
+# docker/Dockerfile builds. The v2.6.0 release is different code (Python 3.14, torch 2.14) and is not validated.
+# Each IDP row records the version that produced it (fastsurfer_version). Change the commit only with a re-validation.
+FASTSURFER_REF="${PIE_FASTSURFER_REF:-d0d7d39369552f8f8b2f14c06d85a3516d06e4cb}"
+if [ ! -d third_party/FastSurfer ]; then
+  git init -q third_party/FastSurfer
+  git -C third_party/FastSurfer fetch -q --depth 1 https://github.com/Deep-MI/FastSurfer.git "$FASTSURFER_REF"
+  git -C third_party/FastSurfer checkout -q FETCH_HEAD
+fi
 uv venv venv_imaging --python 3.12
 uv pip install --python venv_imaging/bin/python --torch-backend="$BACKEND" -r third_party/FastSurfer/requirements.txt
 uv pip install --python venv_imaging/bin/python dcm2niix pydicom nibabel pandas numpy neuroCombat scikit-learn \
