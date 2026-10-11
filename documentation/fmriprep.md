@@ -10,9 +10,14 @@ IDA ZIP ──convert_archive_series──► NIfTI + conversion.json          (
        ──export_subject──► BIDS sub-<label>/{anat,func,fmap}          (fmri_bids.py)
        ──run_fmriprep──► fMRIPrep derivatives + pie_provenance/       (fmriprep.py)
        ──visual review──► montages, report-layer PNGs                 (fmri_qc.py)
-       ──extract_connectivity──► connectivity.json + .npz             (fmri_connectivity.py)
+       ──run_xcpd──► XCP-D denoised BOLD, matrices, ALFF/ReHo, QC     (xcpd.py, primary path)
+          └─xcpd_features / xcpd_striatal_features──► feature row
+       ──extract_connectivity──► connectivity.json + .npz             (fmri_connectivity.py, PIE's own path)
        ──caller──► table keyed on PATNO / EVENT_ID                    (recipe below)
 ```
+
+Denoising and parcellation are handed to a pinned XCP-D (section 5c). PIE's own path (section 5) stays for
+what XCP-D lacks: basal-ganglia-network dual regression, the QC-FC report, and a cross-check.
 
 | Module | What it does |
 |---|---|
@@ -22,7 +27,8 @@ IDA ZIP ──convert_archive_series──► NIfTI + conversion.json          (
 | `fmriprep.py` | fMRIPrep backend (native or Apptainer) with config validation, version pinning, execution identity and resume. |
 | `fmriprep_reuse.py` | Anatomical-only snapshot of earlier fMRIPrep derivatives, passed back in as precomputed input. |
 | `fmri_qc.py` | Physical-space montages and both layers of fMRIPrep's animated SVG comparisons, for human review. |
-| `fmri_connectivity.py` | Censoring, nuisance regression, parcel coverage checks and Fisher-z network connectivity. |
+| `xcpd.py` | XCP-D 26.2.0 backend (same config/identity/resume contract as `fmriprep.py`) and parsers of its outputs into `fmri_xcpd_*` feature rows, including striatal connectivity on its denoised BOLD. |
+| `fmri_connectivity.py` | Censoring, nuisance regression, parcel coverage, Fisher-z network connectivity, striatal seeds, group ICA / dual regression, QC-FC. |
 | `fmri_data.py` | `BOLDImageCache`: one read-only 4D array shared across QC variants. |
 
 Every step shares four properties:
@@ -47,6 +53,7 @@ Every step shares four properties:
 | `pydicom`, `nibabel`, `numpy`, `pandas`, `matplotlib` | all | Present in `venv_imaging`. |
 | fMRIPrep | preprocessing | Native install ([upstream instructions](https://fmriprep.org/en/stable/installation.html)) or a local Apptainer `.sif`. Contract tested against **25.2.5**. The pip package alone lacks the external tools. Docker is not a backend. |
 | FreeSurfer license | fMRIPrep | fMRIPrep 25.2.5 checks it even with `--fs-no-reconall`. Free from [FreeSurfer registration](https://surfer.nmr.mgh.harvard.edu/registration.html). |
+| XCP-D | denoising, parcellation | Local Apptainer `.sif` of `pennlinc/xcp_d:26.2.0` (pull command in 5c). A native install needs AFNI, ANTs and Workbench; use the container. |
 | FSL (`fsl_dir`) | pilot only | `motion_pilot`, `alignment_pilot` (`mcflirt`, `bet`, `flirt`). Not needed for the fMRIPrep path. |
 | `cairosvg` | `render_report_states` only | Optional; not installed in `venv_imaging`. |
 | Atlas + network table | connectivity | Any atlas in the BOLD derivative's standard space, or the default: Schaefer 2018 400 parcels / 7 networks in MNI152NLin2009cAsym (`atlases.schaefer400_mni2009c()`, fetched from TemplateFlow and sha256-pinned). |
@@ -314,6 +321,7 @@ result = run_fmriprep(config)              # execute or return the completed rec
 | `FMRIPrepConfig.paths()` | Resolved `bids_dir`, `output_dir`, `work_dir`, `cache_dir`. |
 | `build_command(config, *, version_only=False)` | Returns `(argv, env)`. No shell and no writes. `env` sets `TMPDIR=<work>/tmp`, `TEMPLATEFLOW_HOME=<cache>/templateflow`, `XDG_CACHE_HOME=<cache>/xdg`, BLAS threads 1. Apptainer adds `APPTAINER_CACHEDIR=<cache>/apptainer` and `APPTAINER_TMPDIR=<work>/tmp`. |
 | `run_fmriprep(config)` | See below. Returns the run record. |
+| `container_runtime`, `execute_recorded`, `tree_hashes` | The argv/environment builder, the once-per-identity execution and the file hashing behind `run_fmriprep`, shared with `xcpd.run_xcpd`. |
 
 Apptainer mapping: `exec --cleanenv --containall --home <cache>/home:/home/pie`,
 BIDS → `/data:ro`, output → `/out`, work → `/work`, `<work>/tmp` → `/tmp`,
@@ -445,20 +453,23 @@ benchmarks: 24 motion parameters + aCompCor + censoring is among the best-perfor
 (QC-FC) correlation and its distance dependence at a moderate loss of temporal degrees of freedom (Ciric et al. 2017,
 doi:10.1016/j.neuroimage.2017.03.020; Parkes et al. 2018, doi:10.1016/j.neuroimage.2017.12.073), and global signal regression is the variant that removes
 the most residual motion (Wang et al. 2024, doi:10.1371/journal.pcbi.1011942), so run it as the sensitivity analysis.
-ICA-AROMA left fMRIPrep in 23.1.0 and is not used. Before reporting, check QC-FC and lost degrees of freedom on
-your own data. PPMI 2.0 rs-fMRI is multiband (MB4, TR 1 s): respiration contaminates its motion parameters, so an
-FD threshold of 0.3 mm censors more there than on the legacy TR 2.4 s scans (Fair et al. 2020, doi:10.1016/j.neuroimage.2019.116400);
-treat protocol as a batch variable.
+ICA-AROMA left fMRIPrep in 23.1.0 and is not used. Before reporting, check QC-FC (`qc_fc`, below) and lost degrees of
+freedom on your own data. PPMI 2.0 rs-fMRI is multiband (MB4, TR 1 s): breathing contaminates its motion parameters
+and inflates FD (Fair et al. 2020, doi:10.1016/j.neuroimage.2019.116400), so at TR ≤ 1.5 s FD is computed from
+notch-filtered motion parameters, as XCP-D does. FD per frame still scales with TR; treat protocol as a batch variable.
 
 | Field | Default | Why |
 |---|---|---|
 | `discard_seconds` | `10` | Drops `ceil(10/TR)` frames before T1 equilibrium, plus any frame flagged in fMRIPrep's `non_steady_state_outlier*`. Must cover row 0: fMRIPrep writes `n/a` for the first FD, DVARS and motion derivatives, and a retained NaN is an error, not imputed. |
-| `fd_threshold` | `0.3` mm | Frames with FD above this are motion spikes. A common Power-style scrubbing threshold. |
+| `fd_threshold` | `0.3` mm | Frames with FD above this are motion spikes. A common Power-style scrubbing threshold. FD is fMRIPrep's column, or the filtered FD below. |
+| `motion_filter_max_tr` | `1.5` s | At this TR or shorter, FD comes from `filtered_fd`: motion parameters notch-filtered over the respiratory band, then Power FD (50 mm radius). `0` disables. |
+| `respiratory_low_bpm` / `respiratory_high_bpm` | `12` / `28` | The notch band in breaths/min (0.2–0.47 Hz): XCP-D's recommendation for ages 65–80. Same filter as XCP-D 26.2.0 (`iirnotch` at the centre, Q = centre/width, one `filtfilt` pass, band folded below Nyquist). |
+| `minimum_segment_frames` | `5` | Retained stretches shorter than this are censored too (Power et al. 2014; XCP-D `--censor-between 4`). |
 | `dvars_threshold` | `1.5` | Frames with `std_dvars` above this are spikes, which catches signal jumps FD misses. |
 | `censor_before` / `censor_after` | `1` / `2` | Also censors 1 frame before and 2 after each spike. Motion contaminates the BOLD signal for several seconds after the movement (Power et al. 2014 convention). |
 | `minimum_seconds` | `300` | At least 5 min of retained data. Shorter scans give unreliable correlation estimates. |
 | `minimum_residual_dof` | `60` | Retained frames minus design rank. Prevents a large nuisance model from "explaining" a short series. |
-| `minimum_parcel_coverage` | `0.9` | Every parcel needs ≥90 % of its voxels covered by valid BOLD signal. A truncated field of view (cerebellum, inferior temporal lobe, brainstem) would otherwise yield a parcel mean from its remaining edge. |
+| `minimum_parcel_coverage` | `0.9` | A parcel needs ≥90 % of its voxels covered by valid BOLD signal, or it is NaN (its edges too) and left out of the network means. A truncated field of view (cerebellum, inferior temporal lobe, brainstem) would otherwise yield a parcel mean from its remaining edge. One such parcel no longer excludes the scan. |
 | `compcor_components` | `5` | Top 5 aCompCor components from the **combined** WM+CSF mask, by singular value. |
 | `global_signal_regression` | `False` | Adds `global_signal` and `global_signal_derivative1`. Off by default because GSR changes the sign distribution of correlations. Run it as a separate sensitivity variant. |
 
@@ -467,8 +478,9 @@ treat protocol as a batch variable.
 `nuisance_design(confounds, metadata, tr, config=ConnectivityConfig())` → `(design, keep, audit)`
 
 - `keep` is a boolean mask over all frames. A frame is dropped if it is initial or
-  non-steady, if it is a spike (`FD > fd_threshold` or `std_dvars > dvars_threshold`), or
-  if it falls inside a spike's censoring window.
+  non-steady, if it is a spike (`FD > fd_threshold` or `std_dvars > dvars_threshold`), if it
+  falls inside a spike's censoring window, or if its retained stretch is shorter than
+  `minimum_segment_frames`. At TR ≤ `motion_filter_max_tr` the FD is `filtered_fd(motion, tr)`.
 - Design columns: intercept, linear trend, 24 motion regressors (`trans_*`/`rot_*`, each
   with `_derivative1`, `_power2` and `_derivative1_power2`), top `compcor_components`
   `a_comp_cor_*`, every `cosine*` (fMRIPrep's high-pass basis), and optionally GSR.
@@ -479,8 +491,9 @@ treat protocol as a batch variable.
   across censored frames would let spikes set the nuisance betas. Columns are
   norm-scaled, which doesn't change their span.
 - `audit` keys: `retained_frames`, `retained_seconds`, `initial_discarded`, `spike_frames`,
-  `nuisance_columns`, `nuisance_rank`, `residual_dof`, `mean_fd` (all non-initial frames),
-  `retained_indices`, `temporal_qc_pass`.
+  `short_segment_frames`, `motion_filtered`, `nuisance_columns`, `nuisance_rank`, `residual_dof`,
+  `mean_fd` (fMRIPrep's unfiltered FD, all non-initial frames, as XCP-D's `mean_fd`), `mean_fd_filtered`
+  (when filtered), `retained_indices`, `temporal_qc_pass`.
 
 `residual_connectivity(series, design, networks)` → `(residual, edges, network_means)`
 
@@ -489,9 +502,10 @@ treat protocol as a batch variable.
 - `edges`: Fisher z (`arctanh`, r clipped to ±(1−1e-7)) of the upper triangle in
   `np.triu_indices(P, 1)` order.
 - `network_means`: mean z per unordered network pair, keyed `"<A>__<B>"` with names
-  sorted. Within-network means exclude self-edges. `networks` must be nonempty strings; anything
-  else raises `ValueError`, since `1` and `"1"` would otherwise collide in the keys. A constant
-  residual parcel raises.
+  sorted (the same helper, `network_means(edges, networks)`, averages XCP-D's matrices). Within-network
+  means exclude self-edges. An all-NaN parcel column (no coverage) gives NaN edges that are left out; a
+  pair with no edge left is NaN. `networks` must be nonempty strings; anything else raises `ValueError`,
+  since `1` and `"1"` would otherwise collide in the keys. A constant residual parcel raises.
 
 ```python
 design, keep, audit = nuisance_design(confounds_df, confounds_json_dict, tr=2.5)
@@ -510,9 +524,10 @@ edges.shape, sorted(means)   # (15,), ['DMN__DMN', 'DMN__SMN', 'SMN__SMN']
   voxels whose nearest BOLD voxel is inside the brain mask with a finite, non-constant
   time series. Voxels outside the field of view count as uncovered.
 - Parcel signal is the mean over valid voxels (all frames, stored). Edges are computed from
-  retained frames after residualisation.
-- A scan failing coverage or the temporal gate gets `numerical_qc_pass: false`, an
-  `exclusion_reasons` entry (`insufficient_parcel_coverage`,
+  retained frames after residualisation. A parcel below `minimum_parcel_coverage` is NaN and listed in
+  `low_coverage_parcels`; network pairs left without an edge are `null` in `network_features`.
+- A scan with fewer than two covered parcels, or failing the temporal gate, gets
+  `numerical_qc_pass: false`, an `exclusion_reasons` entry (`insufficient_parcel_coverage`,
   `insufficient_retained_time_or_residual_dof`) and no features. Excluded scans are
   recorded, never imputed.
 
@@ -520,8 +535,8 @@ Outputs in `output_dir`:
 
 | File | Content |
 |---|---|
-| `connectivity.json` | `identity` (input paths + SHA-256, `config`, `tr`, `label_networks`, `implementation_sha256`, `data_reader_sha256`), `temporal` (the audit above), `parcel_coverage` `{id: fraction}`, `minimum_coverage`, `numerical_qc_pass`, `visual_qc_required: true`, `exclusion_reasons`, `outputs`, and on pass `network_features` `{"A__B": z}`. |
-| `connectivity.npz` | Only on pass: `parcel_timeseries` (T×P, all frames), `retained_indices`, `residual_timeseries`, `edges`, `labels` (sorted atlas IDs). |
+| `connectivity.json` | `identity` (input paths + SHA-256, `config`, `tr`, `label_networks`, `implementation_sha256`, `data_reader_sha256`), `temporal` (the audit above), `parcel_coverage` `{id: fraction}`, `minimum_coverage`, `low_coverage_parcels`, `numerical_qc_pass`, `visual_qc_required: true`, `exclusion_reasons`, `outputs`, and on pass `network_features` `{"A__B": z or null}`. |
+| `connectivity.npz` | Only on pass: `parcel_timeseries` (T×P, all frames; NaN columns for uncovered parcels), `retained_indices`, `residual_timeseries`, `edges`, `labels` (sorted atlas IDs). |
 
 Rerunning with an identical identity verifies the `.npz` hash and returns the saved record.
 The identity includes the hashes of `fmri_connectivity.py` and `fmri_data.py`, so **editing
@@ -563,35 +578,181 @@ from pie.imaging import fmri_connectivity as fc
 roi_img, names = fc.striatal_rois(target_img=bold_img)     # resampled onto the BOLD grid
 names  # {1: 'caudate_l', 2: 'caudate_r', 3: 'putamen_l', 4: 'putamen_r', 5: 'accumbens_l', 6: 'accumbens_r'}
 
+design, keep, audit = fc.nuisance_design(confounds_df, confounds_json_dict, tr=2.5)
 series, labels, counts = fc.roi_timeseries(bold_img, roi_img, mask_img=brain_mask)
 z = fc.seed_network_connectivity(series, [names[k] for k in labels],
-                                 parcel_series, parcel_networks, design=nuisance)
-z["putamen_l__sensorimotor"]       # Fisher-z, averaged over that network's parcels
+                                 parcel_series, parcel_networks, design=design, keep=keep)
+z["putamen_l__SomMot"]             # Fisher-z, averaged over that network's parcels
 ```
 
-`design` is the nuisance matrix, applied identically to seeds and parcels — `nuisance_design` above
-builds one. Regions with fewer than `min_voxels` usable voxels give `NaN` rather than a mean over
-nothing. CIT168 at its 0.25 threshold is generous (each caudate borders the lateral ventricle), so
-erode the regions or intersect them with a grey-matter mask when partial volume with CSF matters.
+`design, keep` are `nuisance_design`'s: seeds and parcels are residualised together on the retained
+frames, as `extract_connectivity` does. `group_ica(..., designs=, keeps=)` and
+`dual_regression(..., design=, keep=)` take the same. Omit them only for input that is already denoised
+and censored (XCP-D's `desc-denoised_bold`). Regions with fewer than `min_voxels` usable voxels, and NaN
+parcels, give `NaN` and are left out of network means. `striatal_rois(putamen_split_y=0.0)` cuts each
+putamen at the coronal plane y = 0 (close to the anterior commissure) into `putamen_anterior_*` and
+`putamen_posterior_*`; the posterior, sensorimotor putamen is where PD dopamine loss starts. CIT168 at its
+0.25 threshold is generous (each caudate borders the lateral ventricle), so erode the regions or intersect
+them with a grey-matter mask when partial volume with CSF matters.
 
 **Network-based**, as in Szewczyk-Krolikowski 2014, Rolinski 2016 and Droby 2025: spatial group ICA on
 temporally concatenated data, the basal ganglia network identified by overlap with an independent
 template, then back-projected to each subject by dual regression.
 
 ```python
-maps, info = fc.group_ica(datasets, n_components=20, seed=0)   # datasets: list of (time x voxels)
-ranked = fc.select_component(maps, striatum_mask_1d)           # best Dice first
-bgn = ranked[0]["component"]
+reference = fc.load_reference_maps("bgn_reference_maps.nii.gz", mask_img,
+                                   expected_sha256="<sha256 registered with the analysis plan>")
+weights, provenance = fc.bgn_weights(datasets, striatum_mask_1d, roi_labels_1d, names,
+                                     reference=reference, designs=designs, keeps=keeps)
+weights[0]   # {'caudate_l': ..., 'putamen_l': ...};  provenance: path, sha256, component, template_dice
 
-timecourses, subject_maps = fc.dual_regression(one_subject, maps)
-fc.roi_means(subject_maps[bgn], roi_labels_1d, names)          # {'caudate_l': ..., 'putamen_l': ...}
+# the steps, for one subject at a time (memory):
+ranked = fc.select_component(reference[0], striatum_mask_1d)   # best Dice first
+timecourses, subject_maps = fc.dual_regression(one_subject, reference[0], design=design, keep=keep)
+fc.roi_means(subject_maps[ranked[0]["component"]], roi_labels_1d, names)
 ```
 
-The template used to pick the BGN must be independent of the patients analysed (Griffanti et al.
-2016); the CIT168 striatum qualifies. On a synthetic set of eight subjects whose striatal-network
-strength rose from 0.3 to 1.5, the selected component matched the template (Dice 1.0) and the
-per-subject weights rose monotonically with it. Inspect the chosen map visually regardless, as the
-published analyses did.
+**Maps.** Group ICA of the analysed sample defines the network from the same subjects later compared on
+it, which is circular. `bgn_weights` uses a frozen external map set whenever `reference` is given and
+warns otherwise. `load_reference_maps(path, mask_img, expected_sha256=None)` reads a 4D NIfTI (one
+component per volume) already on the analysis grid and records its path and SHA-256; a different
+checksum raises. Candidates: a published group-ICA set (e.g. UK Biobank's rfMRI group maps, resampled once
+to MNI152NLin2009cAsym 2 mm with TemplateFlow's MNI152NLin6Asym→2009cAsym transform and then hashed), or
+maps from a PPMI subsample held out of every analysis. The template that picks the BGN must be
+independent of the patients too (Griffanti et al. 2016); the CIT168 striatum qualifies. Inspect the
+chosen map visually, as the published analyses did.
+
+**Dual regression** is FSL's `dual_regression` v0.6, checked against `fsl_glm` (stage 1 within 1e-9, stage
+2 within 4e-7 on synthetic float32 data; the values are pinned in `test_fmri_striatal.py`). Stage 1
+regresses every volume on the maps with maps and volume demeaned over voxels (`fsl_glm --demean`) and
+returns those time courses (`dr_stage1`). Stage 2 regresses every voxel on them, both demeaned over time,
+the time courses scaled to unit SD (n − 1) when `des_norm=True` (FSL `<des_norm> 1`), and returns the
+parameter estimates (`dr_stage2`). The data are not variance-normalised; earlier PIE versions z-scored
+every voxel, which FSL does not do. Deliberate differences: the caller supplies the common mask (FSL
+builds it from voxels with nonzero temporal SD in every subject), FSL's z-statistics and `randomise` stage
+are not reproduced, and `design, keep` residualise the retained frames first, which for stage 2 equals
+fitting the nuisance regressors simultaneously because the stage-1 time courses of residuals are already
+orthogonal to the design.
+
+## 5c. XCP-D denoising and parcellation (`pie.imaging.xcpd`)
+
+The primary path. XCP-D (PennLINC) is the community post-processor of fMRIPrep output; PIE pins one
+release, records its identity the way `run_fmriprep` does, and parses its outputs.
+
+```bash
+# once; the image is several GB, so put Apptainer's cache and build space on a disk with room
+export APPTAINER_CACHEDIR=/data/apptainer-cache APPTAINER_TMPDIR=/data/apptainer-tmp
+apptainer build /data/software/xcp_d-26.2.0.sif docker://pennlinc/xcp_d:26.2.0
+
+python -m pie.imaging.xcpd --config xcpd_ppmi2.json --dry-run   # validate, print argv
+python -m pie.imaging.xcpd --config xcpd_ppmi2.json             # run, print the run record
+```
+
+```json
+{"fmriprep_dir": "/data/ppmi/derivatives/fmriprep", "output_dir": "/data/ppmi/derivatives/xcp_d_tr1",
+ "work_dir": "/scratch/xcpd_tr1/work", "cache_dir": "/scratch/xcpd_tr1/cache",
+ "participants": ["P001", "P002"], "repetition_time": 1.0,
+ "backend": "apptainer", "executable": "apptainer", "container_image": "/data/software/xcp_d-26.2.0.sif",
+ "nprocs": 8, "omp_nthreads": 2, "memory_mb": 24000}
+```
+
+**One protocol per configuration.** `repetition_time` must match every participant's fMRIPrep
+`desc-preproc_bold.json` (validated), because the motion filter depends on it: run PPMI-1 (TR 2.4 and
+2.5 s) and PPMI 2.0 (TR 1 s) as separate configurations and output directories. Fields, paths, backends,
+`expected_version` (default `26.2.0`), `extra_args` and the work-directory identity follow `FMRIPrepConfig`
+(section 3). The identity also holds the SHA-256 of every file under each participant's fMRIPrep folder, so
+a rerun fMRIPrep needs a new XCP-D work directory. `extra_args` cannot repeat a flag PIE sets. In the
+container, TemplateFlow points at the templates baked into the image (`/home/xcp_d/.cache/templateflow`),
+so nothing is downloaded; the image's atlases stay at its hardcoded `/home/xcp_d/.cache/xcp_d`, which PIE's
+`--home` bind (at `/home/pie`) leaves visible.
+
+Settings (every result-changing flag is passed explicitly, so a mode default changing between releases
+cannot move results):
+
+| Setting | Value | Why |
+|---|---|---|
+| Release | 26.2.0 (17 Aug 2026) | Latest stable; first with `--censor-between`. 26.1.x changed only multi-run concatenation, which single-run PPMI sessions do not use. |
+| `--mode linc --file-format nifti` | | Single-run adult data, censored outputs, no run concatenation, LINC QC. NIfTI because PIE runs fMRIPrep with `--fs-no-reconall` (no surfaces, no CIFTI). `abcd` mode forces interpolated outputs and run concatenation. |
+| `--nuisance-regressors` | `36P` | 6 motion + WM + CSF + global signal, each with derivative and squares. With censoring, among the best on QC-FC and its distance dependence (Ciric et al. 2017); GSR removes the most residual motion (Wang et al. 2024). Sensitivity: `acompcor` (no GSR), closest to PIE's own 24P + aCompCor path. |
+| `--despike y` | | AFNI despiking before regression (linc default). |
+| Motion filter | TR ≤ 1.5 s: `notch`, 12–28 bpm, order 4; otherwise `none` | Breathing aliases into multiband realignment parameters and inflates FD (Fair et al. 2020). 12–28 bpm is XCP-D's band for ages 65–80, PPMI's range. At TR 2.4/2.5 s the band folds onto most of the 0–0.2 Hz spectrum, so no filter there. PIE's own path uses the same band and filter. |
+| `--fd-thresh` | `0.3` mm | Same threshold as PIE's own path, on filtered FD at TR 1 s and raw FD otherwise. FD per frame scales with TR: check QC-FC per protocol. |
+| `--censor-between` | `4` | Retained stretches of ≤ 4 frames are censored: Power et al. 2014's "fewer than 5 contiguous frames". |
+| `--min-time` | `300` s | 5 minutes retained, as PIE's own gate. Below it XCP-D writes no BOLD outputs for the run. |
+| `--output-type censored` | | High-motion frames are removed from every output; correlations use retained frames only. |
+| Band-pass | 0.01–0.08 Hz, order 2 | Conventional; needed for ALFF. |
+| `--smoothing` | `6` mm | Affects only the smoothed copies (`desc-denoisedSmoothed`, smoothed ALFF). PIE parses unsmoothed outputs, so the striatum is not blurred into the ventricles. |
+| `--atlases` | `4S456Parcels 4S156Parcels` | 4S456: Schaefer 400 (PIE's default cortex) + CIT168 subcortex, HCP thalamus, cerebellum, amygdala/hippocampus. 4S156: Schaefer 100, a coarser and more reliable network level. |
+| `--min-coverage` | `0.5` | XCP-D default: parcels below are NaN, never a scan exclusion. |
+| `--dummy-scans auto`, `--head-radius 50` | | fMRIPrep's non-steady-state frames; adult FD radius. |
+
+**Features.** `xcpd_features(xcpd_dir, subject, *, atlases=("4S456Parcels",))` returns one row:
+
+| Columns | Content |
+|---|---|
+| `fmri_xcpd_available` | `False` (and nothing else) when XCP-D wrote no BOLD for the run (`--min-time`, failure): a visible exclusion. |
+| `fmri_xcpd_qc_*` | XCP-D's LINC QC TSV: `mean_fd` (unfiltered), `mean_fd_post_censoring`, `mean_relative_rms`, `max_relative_rms`, `mean_dvars_initial/final`, `num_dummy_volumes`, `num_censored_volumes`, `num_retained_volumes`, `fd_dvars_correlation_initial/final`, plus `fmri_xcpd_qc_retained_seconds`. BIDS entity columns are dropped. |
+| `fmri_xcpd_fc_<atlas>_<A>__<B>` | Mean Fisher z per network pair of XCP-D's Pearson matrix. Groups are the atlas table's `network_label`, else `atlas_name` (CIT168Subcortical, ThalamusHCP, ...), as XCP-D's own plots. |
+| `fmri_xcpd_malff_<atlas>_<group>`, `fmri_xcpd_reho_<atlas>_<group>` | Parcel ALFF divided by its mean across parcels (XCP-D's ALFF is in scanner units), and ReHo, averaged per group. |
+| `fmri_xcpd_coverage_min_<atlas>`, `fmri_xcpd_parcels_nan_<atlas>` | Lowest parcel coverage; parcels XCP-D blanked for coverage (left out of every mean). |
+
+`xcpd_striatal_features(xcpd_dir, subject, *, atlas="4S456Parcels", putamen_split_y=0.0)` recomputes
+PIE's striatal seed connectivity on XCP-D's unsmoothed, censored `desc-denoised_bold`: CIT168 caudate,
+anterior and posterior putamen and accumbens per hemisphere against the atlas's cortical networks (XCP-D's
+parcel time series of the same BOLD), keyed `fmri_xcpd_striatal_<seed>__<network>`. Nothing is regressed again:
+XCP-D's denoising is the model. It needs the BOLD in MNI152NLin2009cAsym (fMRIPrep must not also output
+MNI152NLin6Asym, which XCP-D would prefer) and about 2.6 GB of memory for 600 frames. The basal-ganglia
+network on XCP-D output is `dual_regression(masked(denoised_img, mask_img), reference_maps)` per subject,
+without `design, keep`. `xcpd_edges(xcpd_dir, subject, atlas=...)` returns (parcel names, Fisher-z edges)
+for `qc_fc`.
+
+Limitations: output names and QC columns were checked against the 26.2.0 source, not a real run; an
+upgrade means rechecking them. XCP-D censors on FD only (PIE's own path also uses DVARS). Tian and the other
+built-in atlases are not parsed.
+
+## 5d. Motion benchmark (QC-FC)
+
+```python
+from pie.imaging.fmri_connectivity import parcel_centroids, qc_fc
+from pie.imaging.xcpd import xcpd_edges, xcpd_features
+
+edges = np.vstack([xcpd_edges(root, s)[1] for s in subjects])
+mean_fd = [xcpd_features(root, s)["fmri_xcpd_qc_mean_fd"] for s in subjects]
+report = qc_fc(edges, mean_fd, covariates=np.column_stack([age, sex]),
+               centroids=parcel_centroids(atlas_img, atlas_index_in_matrix_order))
+report["percent_significant_fdr"], report["median_abs_qcfc"], report["distance_dependence_rho"]
+```
+
+`qc_fc(edges, mean_fd, *, covariates=None, centroids=None, alpha=0.05)`: across scans, the (partial)
+correlation of mean FD with every edge (Ciric et al. 2017; Parkes et al. 2018). Returns `n_scans`,
+`n_edges`, `n_edges_excluded` (edges with a NaN in any scan), `median_abs_qcfc`, `percent_significant`
+(uncorrected), `percent_significant_fdr` (Benjamini–Hochberg), `distance_dependence_rho` (Spearman rho of
+QC-FC with inter-parcel distance; negative when motion inflates short-range coupling, Power et al. 2012)
+and the per-edge `qcfc`. Run it per protocol. The atlas image for the centroids is XCP-D's
+`atlases/.../*atlas-4S456Parcels*_dseg.nii.gz`, labels in `index` order.
+
+## 5e. Validation plan
+
+None of this is a PD-vs-HC gate: resting-state group differences in PPMI did not reproduce (Badea et al.
+2017), so a null group effect neither validates nor fails the pipeline.
+
+1. **End to end, 100 scans per protocol** (PPMI-1 TR 2.4 s and 2.5 s, PPMI 2.0 TR 1 s), spread over sites
+   and scanners, from IDA ZIP to feature row. Count every exclusion by reason (no verified reverse-PE pair,
+   fMRIPrep failure, XCP-D `--min-time`, coverage) and review every fMRIPrep and XCP-D report (distortion
+   correction, registration, coverage, carpet plots). Report pass rates and retained time per protocol.
+2. **QC-FC per protocol** on the 4S456 matrices, partial on age and sex, with distance dependence. Target:
+   no worse than the 36P-with-censoring results of Ciric et al. 2017 (few significant edges, distance
+   dependence near zero), reported with the retained time it cost. On PPMI 2.0, compare with and without
+   the notch filter: filtering should restore retained time without raising QC-FC.
+3. **Split-half reliability on PPMI 2.0**: split each scan's retained frames into first and second halves,
+   compute matrices and features per half, and report edge-wise and feature-wise ICC(3,1) and subject
+   identification accuracy. Adjacent halves overstate between-session reliability; use short-interval
+   repeat visits where they exist. Features with ICC < 0.4 are not used as predictors.
+4. **Known biology, not a gate**: posterior putamen–sensorimotor coupling
+   (`fmri_xcpd_striatal_putamen_posterior_{l,r}__SomMot`) against the same hemisphere's posterior-putamen DaT SBR
+   (PIE's posterior half or PPMI's Xing post-commissural putamen), partial on age, sex, protocol and mean FD,
+   within PD and across all participants. Lower coupling with lower SBR is expected; report the effect and
+   its interval either way.
 
 ## 6. Table keyed on PATNO / EVENT_ID
 
@@ -620,6 +781,14 @@ for (subject, event_id), path in records.items():
     rows.append(row)
 fmri = pd.DataFrame(rows)
 # PATNO, EVENT_ID, fmri_numerical_qc_pass, ..., fmri_DMN__DMN, fmri_DMN__SMN, fmri_SMN__SMN
+```
+
+From XCP-D the row is already a dict; add the keys the same way:
+
+```python
+from pie.imaging.xcpd import xcpd_features, xcpd_striatal_features
+row = {"PATNO": patno_of[subject], "EVENT_ID": event_id}
+row |= xcpd_features(root, "P001") | xcpd_striatal_features(root, "P001")
 ```
 
 To obtain `EVENT_ID` from a scan date, use
@@ -663,8 +832,8 @@ selection is capped at 3 GB (`max_bytes`, not a CLI flag).
 ```bash
 venv_imaging/bin/python -m pytest tests/test_fmri.py tests/test_fmri_assembly.py \
     tests/test_fmri_bids.py tests/test_fmri_connectivity.py tests/test_fmriprep.py \
-    tests/test_fmriprep_reuse.py tests/test_fmri_qc.py -q
+    tests/test_fmriprep_reuse.py tests/test_fmri_qc.py tests/test_fmri_striatal.py tests/test_xcpd.py -q
 ```
 
-All synthetic. No fMRIPrep, FSL, dcm2niix run or participant data is needed; external
-commands are mocked.
+All synthetic. No fMRIPrep, XCP-D, FSL, dcm2niix run or participant data is needed; external
+commands are mocked, and XCP-D outputs are a synthetic tree in the 26.2.0 layout.
