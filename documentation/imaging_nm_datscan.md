@@ -507,9 +507,13 @@ segmentation as the ROI atlas.
    established against PPMI's SBRs and the striatum position across 19 scanner configurations:
    DICOM angles run opposite to scikit-image's (`angle = -start + direction * step * (view - 1)`); dual-head systems
    without per-detector start angles are H-mode (heads 180° apart); no vendor needs a left/right mirror. Broken
-   headers (no angular step) are inferred from the frame count. Raises `ValueError` for non-TOMO series;
-   `read_volume(dcm)` handles series stored as a reconstructed stack. Returns `proj`, `angles_deg`, `spacing_mm`,
-   `meta` (the `hdr_*` columns).
+   headers (no angular step) are inferred from the frame count. Raises `ValueError` for non-TOMO series. Returns
+   `proj`, `angles_deg`, `spacing_mm`, `meta` (the `hdr_*` columns). No PPMI scan is stored reconstructed, but
+   consortium sites send such stacks: `read_volume(dcm)` places them by their DICOM geometry
+   (`ImageOrientationPatient` / `ImagePositionPatient` at top level or in the first `DetectorInformationSequence`
+   item, `PixelSpacing`, signed `SpacingBetweenSlices`), resamples them onto an axis-aligned RAS grid and returns
+   `(NIfTI, spacing_mm)`. A stack without that geometry is refused (`ValueError`); until October 2026 this path
+   guessed the orientation with the projection flips, which can mirror left and right.
 2. **`reconstruct(proj, angles_deg, spacing_mm, fwhm_mm=6.0, filter_name="hann", attenuation=False,
    point_sources=True)`** — filtered back-projection per transaxial slice (scikit-image `iradon`);
    `subtract_point_sources(vol, angles_deg, spacing_mm, filter_name="hann", factor=6.0, max_voxels=200)` removes
@@ -519,17 +523,38 @@ segmentation as the ROI atlas.
    the CLI (until September 2026 this function alone defaulted to on), so a direct call reproduces the pipeline.
    `to_nifti(vol, spacing_mm)` writes patient axes (+y anterior, +z superior), centred at the origin.
 3. **`register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc_img=None,
-   scale_fit=False)`** — normalised correlation against `synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0)` (striatum
-   1.0, brain 0.25, head 0.12, smoothed), with the SPECT cleaned by `_clean_spect` (largest component of the
-   brightest 4 L of a 20 mm-smoothed copy, winsorised). Centre-of-moments initialisation, 3-level refinement,
-   `ScaleVersor3DTransform`: rigid for parallel-hole cameras, rigid + per-axis scale when `scale_fit` (fan-beam
-   collimators, or no collimator/zoom recorded: Marconi and Picker Prism data reconstructed as parallel-beam come
-   out ~1.5 x magnified transaxially). A striatum-masked second stage was tried and removed: it drifted on faint striata
-   (side-wise putamen agreement with PPMI fell from 0.84 to 0.78 pooled, 0.64 to 0.27 on ADAC).
+   scale_fit=False)`** — normalised correlation against the brain-only `synthetic_spect(t1_img, aparc_img,
+   fwhm_mm=10.0)` (striatum 1.0, rest of brain 0.25, nothing outside the brain, smoothed), sampled only inside the
+   brain and a ~7 mm rim, with the SPECT cleaned by `_clean_spect` (largest component of the brightest 4 L of a
+   20 mm-smoothed copy, winsorised). Centre-of-moments initialisation, 3-level refinement, `ScaleVersor3DTransform`:
+   rigid for parallel-hole cameras, rigid + per-axis scale when `scale_fit` (fan-beam collimators, or no
+   collimator/zoom recorded: Marconi and Picker Prism data reconstructed as parallel-beam come out magnified
+   transaxially). Scales are bounded by `SCALE_BOUNDS`: 0.85–1.8 transaxially (a fan-beam collimator magnifies by
+   F / (F − R), focal length F, radius of rotation R) and 0.85–1.15 axially (the fan converges in the transaxial
+   plane only). A fit that leaves them is clamped, refitted rigidly at the bound and flagged (`reg_scale_at_bound`).
+   Returns `(transform, metric, moving, {"t0", "scale_at_bound"})`. A striatum-masked second stage was tried and
+   removed: it drifted on faint striata (side-wise putamen agreement with PPMI fell from 0.84 to 0.78 pooled, 0.64 to
+   0.27 on ADAC).
+
+   **Why it changed (October 2026).** On the 8 September 2026 run the placement search below hit its ±2-voxel edge
+   in 81 % of scans, and in 91 % of the lowest putamen-SBR tertile. Putamen agreement with Invicro was r 0.925 inside
+   the window and 0.77 on its edge, so the search was correcting real misregistration. The template also held scalp
+   and neck (0.12 from the T1 intensity). Its smoothing came out near 30 mm FWHM, not 10, because the voxel size was
+   read off the diagonal of FastSurfer's LIA affine, which gives 1/3 mm. The unbounded fan-beam scales had an axial
+   median of 0.72, and within each collimator group agreement with Xing fell as the axial scale moved away from 1.
+   Putamen r went from 0.96/0.95 to 0.93/0.90 for FANB, and from 0.87/0.81 to 0.74/0.62 where no collimator was
+   recorded, comparing the half of scans nearest 1 with the other half. Fits rotated by more than 30° (19 % of scans)
+   agreed at r 0.49–0.72, against 0.83–0.85 for the rest.
+
+   On a synthetic head with scalp uptake beyond the skull and a hot neck, the old template reproduced the axial
+   shrinkage (0.73). The brain-only fit gave 0.91, and 1.00–1.02 without the hot neck, and it recovered a 1.2 or
+   1.4 transaxial magnification to within 1 %. None of this has been re-run on PPMI yet: see "Validation" below.
 4. **`quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0,
-   search_vox=2, scale_fit=False)`** → `sbr_with_transform` → **`sbr_from_arrays(S, L, dilate=0,
-   ref_dilate=0, search_vox=2, ap=None, spacing_mm=None)`**: DKT labels resampled onto the SPECT grid, a ±2-voxel
-   translation search maximising striatal counts (mimics hottest-region ROI placement), SBR = target / occipital
+   search_vox=None, scale_fit=False)`** → `sbr_with_transform` → **`sbr_from_arrays(S, L, dilate=0,
+   ref_dilate=0, search_vox=None, ap=None, spacing_mm=None)`**: DKT labels resampled onto the SPECT grid (through
+   the stored, rounded transform, so `--requantify` reproduces a run exactly), a ±`SEARCH_MM` (12 mm; `search_vox`
+   overrides it in voxels) translation search maximising striatal counts (mimics hottest-region ROI placement;
+   `shift_edge` flags placements that reach the window's edge), SBR = target / occipital
    − 1 with occipital = cuneus, lateral occipital, lingual, pericalcarine (`OCCIPITAL`). Each striatal ROI is also
    split into anterior/posterior halves along the T1 anterior axis (the posterior putamen loses dopamine
    transporter first), and `sbrwm_*` uses cerebral WM >= `WM_MARGIN_MM` (15 mm) from the striatum as reference
@@ -558,20 +583,25 @@ scans, and 0.946 against 0.992 for Invicro (654 / 176). The caudate is PIE's wea
 and reference standard wherever they exist; PIE's reconstruction is for scans PPMI has not quantified and for
 analyses that need the subject's own anatomy. Never apply PPMI's percentage cut-offs to PIE SBRs.
 
-The ±2-voxel placement search earns its place: re-quantifying 300 of those scans from the saved reconstructions and
+The placement search earns its place: re-quantifying 300 of those scans from the saved reconstructions and
 transforms with fixed placement (`search_vox=0`) lowered agreement with Xing from r 0.80 to 0.70–0.72 on the putamen
 and from 0.60–0.64 to 0.51–0.55 on the caudate, because the search absorbs residual registration error. It also raises
 every SBR (putamen by ~0.15 on the WM scale), part of which is the upward bias of taking a maximum over noisy positions,
-largest on low-count scans.
+largest on low-count scans. With perfect registration a noisy synthetic phantom moves it by under half a voxel on
+average. Since October 2026 the window is ±12 mm (it was ±2 voxels, 6–10 mm by camera, and 81 % of scans hit its
+edge), and a placement on the edge fails QC.
 
 No attenuation correction by default: a Chang implementation exists (`--attenuation`) but lowered agreement with
-PPMI's values. Absolute SBRs therefore sit below PPMI's. `datscan.calibrate(d, {pie_column: published_column}, min_ref=15)` maps them onto a published scale.
-- It fits a linear map per camera vendor on the scans that have both values. A vendor with fewer than 15 such scans uses all vendors pooled.
+PPMI's values. Absolute SBRs therefore sit below PPMI's. `datscan.calibrate(d, {pie_column: published_column},
+min_ref=15, by="hdr_model", method="deming", delta=1.0)` maps them onto a published scale.
+- It fits per camera model on the scans that have both values. A model with fewer than 15 such scans uses all models pooled.
+- `method="deming"` is a linear map with errors in both variables (`datscan.deming(x, y, delta)`; `delta` is the y/x error-variance ratio). `method="equipercentile"` sends each value to the published value at the same percentile, so the mapped reference scans reproduce the published distribution exactly; values outside the reference range go to its ends.
+- Both keep the published spread. The OLS fit used until October 2026, which the pipeline never called, regressed towards the mean: the mapped putamen SD was 0.82 of the published SD.
 - The map is applied to every scan, so prodromal scans without published SBRs are calibrated too.
 - Match the reference regions: `sbrwm_*` to Xing's `*_REF_CWM`, and `sbr_*` to Invicro's occipital-referenced SBRs.
-- It is ported from `study1_virtual_biomarkers/calibrate_datscan.py`, where calibrated putamen SBRs correlated with PPMI's at r 0.85 on 880 reference scans. `reg_params` / `reg_center` store the fitted fixed → moving transform so ROI
-variants can be recomputed without re-registering: `transform_from_row(row)`, `requantify_row(row,
-fastsurfer_subject_dir)`.
+
+`reg_params` / `reg_center` store the fitted fixed → moving transform so ROI variants can be recomputed without
+re-registering: `transform_from_row(row)`, `requantify_row(row, fastsurfer_subject_dir)`.
 
 ```python
 import numpy as np
@@ -627,7 +657,7 @@ venv_imaging/bin/python -m pie.imaging.datscan --index <derived>/spect_index.csv
 | `--patnos` | none | Text file of PATNOs |
 | `--flip-lr` | `false` | `true` mirrors the reconstruction left/right (no vendor needed it) |
 | `--attenuation` | off | Chang attenuation correction (experimental; file suffix `_ac`) |
-| `--requantify` | off | Recompute SBR columns of finished rows from the saved NIfTI and stored transform (`requantify_row`, ~2 s/scan) against the row's `fs_image_id` (older rows: the earliest finished FastSurfer session); the previous table is kept once as `datscan_sbr.pre_requant.csv` |
+| `--requantify` | off | Recompute SBR columns of finished rows from the saved NIfTI and stored transform (`requantify_row`, ~2 s/scan) against the row's `fs_image_id` (older rows: the earliest finished FastSurfer session), with the current placement window; the previous table is kept once as `datscan_sbr.pre_requant.csv`. It does not re-register: rows from before October 2026 keep their old transforms, so re-run them instead |
 
 Resumable: image IDs already in `datscan_sbr.csv` are skipped. Subjects without a FastSurfer T1 are reconstructed
 but not quantified. Rows are appended through `batch.run_batch`, so the header widens to every column seen even when
@@ -643,13 +673,37 @@ the first series to finish fails.
 | `mean_<roi>`, `mean_occipital`, `mean_wm` | ROI mean counts |
 | `reg_metric` | Negative normalised correlation (more negative is better) |
 | `reg_scale_{x,y,z}`, `reg_params`, `reg_center`, `flip_lr` | Transform (ScaleVersor3D: versor xyz, translation xyz, scale xyz) |
-| `shift_vox`, `n_label_voxels`, `n_ref_voxels`, `n_wm_voxels`, `point_source_voxels` | QC |
+| `reg_rot_deg`, `reg_rot_{x,y,z}_deg`, `reg_t{x,y,z}_mm`, `reg_scale_at_bound` | Total rotation and xyz Euler angles about the T1's LPS axes, translation beyond the centre-of-mass start (LPS mm), scale clamped at `SCALE_BOUNDS` |
+| `shift_vox`, `shift_{x,y,z}_mm`, `shift_edge` | Hottest-placement shift (norm in voxels; per axis in mm, right / anterior / superior) and whether it reached the window's edge |
+| `n_label_voxels`, `n_ref_voxels`, `n_wm_voxels`, `point_source_voxels` | QC |
 | `hdr_manufacturer`, `hdr_model`, `hdr_collimator`, `hdr_zoom`, `hdr_scale_fit`, `hdr_n_frames`, `hdr_n_detectors`, `hdr_n_angles`, `hdr_angular_step`, `hdr_scan_arc`, `hdr_rotation_direction`, `hdr_start_angle`, `hdr_energy_window`, `hdr_rows`, `hdr_cols`, `hdr_spacing_mm`, `hdr_counts_total` | Acquisition header |
 | `image_id`, `patno`, `series_desc`, `kind` (`projections` / `stored_volume`), `nifti`, `fs_image_id`, `error` | Lineage |
 
-`manifest.QC["dat"]`: `|reg_metric| >= 0.4` and `n_label_voxels >= 100`. The manifest's `dat_batch` is vendor +
-first 12 characters of `hdr_model`; assembled features keep `dat_sbr_{caudate,putamen}_{l,r}`.
+`manifest.QC["dat"]`: `|reg_metric| >= 0.4`, `n_label_voxels >= 100`, `reg_rot_deg <= 30`, translation beyond the
+centre-of-mass start <= 50 mm, no clamped scale and no placement on the window's edge. Tables written before October
+2026 lack the last four columns and pass those gates, so re-run them. The correlation is now computed inside the brain
+only, so its values are not comparable with older tables: check the 0.4 bar on the re-run. The manifest's
+`dat_batch` is vendor + first 12 characters of `hdr_model`; assembled features keep `dat_sbr_{caudate,putamen}_{l,r}`.
+
+### Validation
+
+`scripts/validate_datscan.py --sbr <derived>/datscan_full/datscan_sbr.csv --index <derived>/spect_index.csv
+--ppmi-dir PPMI [--source xing|invicro] [--method deming|equipercentile] [--folds 5] [--threshold 0.65]` matches
+QC-passing scans to the core lab on PATNO and month and calibrates per camera model on the other folds (split by
+PATNO). Per region it prints r of the raw values (overall, and inside versus at or past the old ±2-voxel edge), and
+CCC, ICC(2,1) and Bland–Altman bias and limits of the calibrated values. It then prints Cohen's kappa of the deficit
+call in prodromals and overall, and the run's edge, rotation and scale diagnostics. The agreement table above comes
+from the 8 September 2026 run, before the October 2026 registration changes; re-measure it with this script.
+
+Baseline from the script on that run against Xing (1,160 QC-passing scans, Deming, 5 folds):
+- Putamen: CCC 0.81 / 0.82 (L / R), with ICC(2,1) the same. Bland–Altman limits are ±0.50 on Xing's scale.
+- Putamen r of the raw values was 0.91 / 0.88 inside the old window (225 scans) and 0.76 / 0.77 on its edge.
+- Caudate: CCC 0.69 / 0.67.
+- Deficit call at 0.65: κ 0.54 in 560 prodromal scans and 0.75 overall.
+- Equipercentile calibration gives the same figures. Against Invicro (880 scans) putamen CCC is 0.83, and r is 0.925 inside the window and 0.77 on its edge.
 
 Tests: `tests/test_datscan.py` (photopeak units, FBP hot spots, NIfTI geometry, SBR arithmetic, left/right
-ordering through registration, anterior/posterior split and WM reference); table header, T1 choice, attenuation
-default and signature in `tests/test_imaging_regressions.py`.
+ordering through registration, anterior/posterior split and WM reference, fan-beam scale recovery and bounds with
+scalp and neck uptake, the mm placement window and its edge flag, the QC gates, reconstructed-stack geometry and
+refusal, calibration spread); table header, T1 choice, attenuation default, signature, per-model calibration and the
+validation script end to end in `tests/test_imaging_regressions.py`.

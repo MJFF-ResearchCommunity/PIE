@@ -1113,17 +1113,18 @@ def test_dwi_qc_is_the_study_rule(tmp_path):
     assert manifest.QC["dwi"](d).tolist() == [True, False, False, False, False, False]
 
 
-def test_dat_calibration_is_per_vendor_with_a_pooled_fallback():
+def test_dat_calibration_is_per_model_with_a_pooled_fallback():
     from pie.imaging import datscan
     rng = np.random.default_rng(0)
     true = rng.uniform(0.5, 3.0, 40)
     d = pd.DataFrame({"vendor": ["GE"] * 30 + ["PHILIPS"] * 10, "published": true})
     d["sbrwm_putamen_l"] = np.where(d.vendor == "GE", 0.5 * true + 0.2, 0.8 * true)
     d.loc[[5, 35], "published"] = np.nan                                       # e.g. prodromal: PPMI withholds the value
-    out = datscan.calibrate(d, {"sbrwm_putamen_l": "published"}, min_ref=15)
-    ge = out.vendor == "GE"
-    assert np.allclose(out.loc[ge, "sbrwm_putamen_l_cal"], true[ge.to_numpy()])  # includes the row without a published value
-    assert (out.loc[ge, "calibration"] == "GE").all() and (out.loc[~ge, "calibration"] == "POOLED").all()   # 9 < 15 reference scans
+    for method in ("deming", "equipercentile"):
+        out = datscan.calibrate(d, {"sbrwm_putamen_l": "published"}, min_ref=15, by="vendor", method=method)
+        ge = out.vendor == "GE"
+        assert np.allclose(out.loc[ge, "sbrwm_putamen_l_cal"], true[ge.to_numpy()])  # includes the row without a published value
+        assert (out.loc[ge, "calibration"] == "GE").all() and (out.loc[~ge, "calibration"] == "POOLED").all()   # 9 < 15 reference scans
 
 
 def test_dat_labels_fall_back_to_invicro_for_scans_xing_never_analysed(tmp_path):
@@ -1134,6 +1135,39 @@ def test_dat_labels_fall_back_to_invicro_for_scans_xing_never_analysed(tmp_path)
     d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
     assert d.loc[21, "sbr_source"] == "invicro_occipital" and d.loc[21, "dat_deficit_sbr"] == 1 and d.loc[21, "dat_visual"] == 1
     assert d.loc[1, "sbr_source"] == "xing_cwm" and d.index.is_unique  # Xing stays primary; one row per session
+
+
+def test_xing_deficit_threshold_matches_the_invicro_rate_and_defaults_do_not_change(tmp_path):
+    ppmi, sessions = _ppmi(tmp_path)
+    r = labels.xing_deficit_threshold(ppmi)
+    # overlap: 20 controls at 100 % of expected on both scales and PD 21 (Xing 0.9 / 2.8, Invicro 1.9 / 3.8); TRODAT out
+    assert r["n_overlap"] == 21 and r["n_deficit"] == 1 and 0.9 / 2.8 < r["threshold"] < 1.0 and r["kappa"] == 1.0
+    d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
+    assert d.loc[21, "dat_deficit_threshold"] == 0.65 and d.loc[21, "dat_deficit_sbr"] == 1     # exported default unchanged
+    d = labels.dat_labels(ppmi, sessions, xing_threshold=0.2).set_index("PATNO")
+    assert d.loc[21, "dat_deficit_threshold"] == 0.2 and d.loc[21, "dat_deficit_sbr"] == 0
+
+
+def test_validate_datscan_script_cross_fits_and_reports_agreement(tmp_path):
+    """End to end on synthetic tables: PIE = an affine map of Xing's SBRs, so calibrated agreement is near perfect."""
+    from scripts import validate_datscan
+
+    ppmi, _ = _ppmi(tmp_path)
+    x = pd.read_csv(ppmi / "Imaging" / "Xing_Core_Lab_-_Quant_SBR_01Jan2020.csv").iloc[:21]          # 22 is a TRODAT scan
+    rng = np.random.default_rng(0)
+    pie = pd.DataFrame({"patno": x.PATNO, "image_id": [f"I{p:06d}" for p in x.PATNO], "error": "", "hdr_model": "CAM",
+                        "reg_metric": -0.7, "n_label_voxels": 500, "shift_vox": np.where(x.PATNO % 2, 1.0, 2.24)})
+    for r in ("PUTAMEN", "CAUDATE"):
+        for s in "LR":
+            pie[f"sbrwm_{r.lower()}_{s.lower()}"] = 0.1 + 0.7 * x[f"{r}_{s}_REF_CWM"] + rng.normal(0, 1e-3, len(x))
+    pie.to_csv(tmp_path / "sbr.csv", index=False)
+    pd.DataFrame({"image_id": pie.image_id, "member": [f"PPMI/{p}/DaTSCAN/2011-01-20_10_00_00.0/I{p:06d}/x.dcm" for p in x.PATNO]})\
+        .to_csv(tmp_path / "idx.csv", index=False)
+    out = validate_datscan.main(["--sbr", str(tmp_path / "sbr.csv"), "--index", str(tmp_path / "idx.csv"), "--ppmi-dir", str(ppmi),
+                                 "--folds", "2"]).set_index("region")
+    assert out.loc["putamen_l", "n"] == 21 and out.loc["putamen_l", "ccc"] > 0.99 and out.loc["putamen_min", "icc21"] > 0.99
+    assert abs(out.loc["putamen_l", "bias"]) < 0.01 and out.loc["putamen_l", "n_inside"] == 11
+    assert out.attrs["kappa_all"] == 1.0                                                   # PD 21 is a deficit on both
 
 
 def test_dat_labels_keep_every_participant_even_when_image_ids_repeat(tmp_path):
