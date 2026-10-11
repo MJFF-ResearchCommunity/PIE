@@ -193,3 +193,12 @@ def test_per_visit_assembly_attaches_each_modality_row_to_the_t1_it_was_measured
     t.iloc[[1, 0, 2]].to_csv(d / "dwi" / "dwi_features.csv", index=False)   # the follow-up row first in the file
     x = assemble_features(d).set_index("PATNO")                        # cross-sectional: the row measured on the baseline T1
     assert len(x) == 2 and x.loc[1, "t1_image_id"] == "A" and x.loc[1, "dwi_sn_mean_md"] == 8e-4 and x.loc[1, "dwi_qc_pass"]
+
+
+def test_modality_scanner_id_reaches_the_manifest(tmp_path):
+    d = tmp_path
+    pd.DataFrame({"PATNO": [1], "IMAGEID": ["A"], "SCAN_DATE": ["2020-01-01"], "vol_Left_Putamen": [5000.0]}).to_csv(d / "fastsurfer_idps.csv", index=False)
+    (d / "flair").mkdir()
+    pd.DataFrame({"patno": [1], "reg_flair_t1_mi": [-0.5], "wm_mm3": [4e5], "flair_wm_mad": [1.0], "manufacturer": ["GE"], "flair_3d": [True],
+                  "DeviceSerialNumber": [12345], "StationName": ["ST1"], "acquisition_date": ["2020-01-02"]}).to_csv(d / "flair" / "flair_features.csv", index=False)
+    assert build_manifest(d).loc[0, "flair_scanner_id"] == "12345"

@@ -245,7 +245,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     meta = json.load(open(niis[0][:-7] + ".json")) if Path(niis[0][:-7] + ".json").exists() else {}
     row = {"patno": patno, "n_series": len(series_rows), "series_desc": chosen["desc"], "flair_3d": bool(chosen["flair_3d"]),
            "shape": "x".join(map(str, img.shape)), "voxel_mm": "x".join(str(round(float(z), 2)) for z in img.header.get_zooms()[:3]),
-           "slice_mm": float(max(img.header.get_zooms()[:3])), "manufacturer": str(meta.get("Manufacturer", "")),
+           "slice_mm": float(max(img.header.get_zooms()[:3])), "manufacturer": str(meta.get("Manufacturer", "")), **{k: str(meta.get(k, "")) for k in ("DeviceSerialNumber", "StationName", "SoftwareVersions")},
            "model": str(meta.get("ManufacturersModelName", meta.get("ManufacturerModelName", ""))), "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "ti_s": meta.get("InversionTime", np.nan),
            "acquisition_date": chosen["date"], "fs_image_id": Path(fastsurfer_dir).name,
            "flair_si_mm": si_coverage_mm(img), "wmh_method": method}

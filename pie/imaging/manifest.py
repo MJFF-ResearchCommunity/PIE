@@ -198,6 +198,10 @@ def _modality_metadata(d, mod, index_file, subjects, flag):
     d[f"{mod}_date"] = _masked_dates(recorded.fillna(inferred))
     d[f"{mod}_date_source"] = np.where(recorded.notna(), "recorded", "index_inferred")
     cols = [f"{mod}_date_source"]
+    if "DeviceSerialNumber" in d or "StationName" in d:   # the scanner itself, for same-scanner rules and long_combat batches
+        pick = lambda c: d.get(c, pd.Series(np.nan, index=d.index)).replace("", np.nan).astype(object)
+        d[f"{mod}_scanner_id"] = pick("DeviceSerialNumber").fillna(pick("StationName")).astype(str).str.removesuffix(".0")
+        cols.append(f"{mod}_scanner_id")
     for c in ("fs_image_id", "processing_version", "source_image_ids", "fw_method", "topup", "denoised", "bvecs_rotated", "eddy"):
         if c in d:
             name = c if c == "fw_method" else f"{mod}_{c}"

@@ -530,7 +530,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     (work / 'repeat_selection.json').write_text(json.dumps(meta['PIERepeatSelection'], indent=2))
     row = {"patno": patno, "n_series": len(series_rows), "n_repeats": n_rep, "repeat_motion_mm_max": motion, "denoise": meta["PIEDenoise"], "nm_clipped_fraction": meta["PIEClippedFraction"],
            "shape": "x".join(map(str, nm_img.shape)), "voxel_mm": "x".join(str(round(float(z), 2)) for z in nm_img.header.get_zooms()[:3]),
-           "manufacturer": str(meta.get("Manufacturer", "")), "model": str(meta.get("ManufacturersModelName", meta.get("ManufacturerModelName", ""))),
+           "manufacturer": str(meta.get("Manufacturer", "")), **{k: str(meta.get(k, "")) for k in ("DeviceSerialNumber", "StationName", "SoftwareVersions")}, "model": str(meta.get("ManufacturersModelName", meta.get("ManufacturerModelName", ""))),
            "tr_s": meta.get("RepetitionTime", np.nan), "te_s": meta.get("EchoTime", np.nan), "flip_angle": meta.get("FlipAngle", np.nan),
            "mt_flag": str(meta.get("MTState", "")), "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
     tx_t1_nm, m_rigid, init_used, cov = register_slab(nm_img, fastsurfer_dir, sampling_seed=sampling_seed)
