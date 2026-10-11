@@ -7,6 +7,7 @@ dat_labels : DaTscan closest in time to the MRI. ``dat_visual`` = PPMI visual re
              (PPMI's prodromal-cohort convention, 65 %). SBRs come from PPMI's primary table, the
              XingImaging core lab (cerebral white-matter reference, all scans since 2024 re-analysed),
              else the archived Invicro table (occipital reference); ``sbr_source`` says which.
+pet_labels : PPMI's PET striatal binding ratios per scan, tracer and analysis pipeline kept apart.
 saa_labels : CSF alpha-synuclein SAA status at the MRI visit (SC/BL pairs allowed).
              Unmatched visits require an explicit sensitivity-analysis opt-in; provenance is retained.
 covariates : sex, birth month, cohort, enrolment, LRRK2/GBA/SNCA/APOE genotype and (when the Polygenic_Risk_Scores table
@@ -182,6 +183,45 @@ def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")
         row.update({k: cand.loc[i, k] for k in keep})
         out.append(row)
     return pd.DataFrame(out).rename(columns={"EVENT_ID": "DATSCAN_EVENT_ID"})
+
+
+def pet_labels(ppmi_dir):
+    """PPMI's PET striatal binding ratios (``PET_SBR_Analysis``), one row per scan, the tracer and the analysis pipeline
+    as columns: never pool across either.
+
+    ``tracer`` (AV-133, DPA-714, C05-05): ``PET_LIGAND``; the legacy rows that leave it blank take the ligand that
+    ``PET_Acquisition_Metadata`` records for the same PATNO, scan month and visit (all AV-133 in September 2026), else
+    stay unknown. ``pipeline``: ``subregional`` for the protocols analysed with ten striatal sub-regions plus
+    cerebellum and occipital columns (015 for AV-133; also the DPA-714 and C05-05 rows), ``ind_2014`` for the legacy
+    IND export (blank ``PET_LIGAND``; protocols 001 and T011; the 2014 method's six small VOIs), ``core_lab_6voi`` for
+    the six VOIs with the ligand recorded (protocol 004). On the same people a year apart, 004 values ran 12-23 % below
+    T011's: progression and method are not separable, so the two stay apart. Every value is SBR = target / occipital - 1
+    (``PET_OCCIP`` is 0 by construction). Adds ``PET_SCAN_DATE`` (month start), ``analysed``, ``sbr_<region>`` for
+    ``caudate_{l,r}``, ``putamen_{l,r}_{ant,post}``, ``cb_occ`` (``PET_CBM``: cerebellum against occipital) and
+    ``sbrcb_<region>`` = (1 + sbr) / (1 + cb_occ) - 1, the sub-regional rows re-referenced to the cerebellum; the
+    original columns are kept."""
+    from .pet import PPMI_COLUMNS, TRACERS
+
+    t = _latest(ppmi_dir, "Imaging", "PET_SBR_Analysis")
+    keys = ["PATNO", "PET_SCAN_DATE", "EVENT_ID"]
+    ligand = t["PET_LIGAND"]
+    try:
+        acq = _latest(ppmi_dir, "Imaging", "PET_Acquisition_Metadata")[keys + ["PET_LIGAND"]].drop_duplicates(keys)
+        ligand = ligand.fillna(pd.Series(t[keys].merge(acq, on=keys, how="left")["PET_LIGAND"].to_numpy(), index=t.index))
+    except FileNotFoundError:
+        pass
+    t["tracer"] = None
+    for name, pattern in TRACERS.items():
+        t.loc[ligand.astype(str).str.contains(pattern, case=False, regex=True), "tracer"] = name
+    subregional = t["PROTOCOL"].isin(t.loc[t["PET_OCCIP"].notna(), "PROTOCOL"])
+    t["pipeline"] = np.where(subregional, "subregional", np.where(t["PET_LIGAND"].isna(), "ind_2014", "core_lab_6voi"))
+    t["analysed"] = t["PET_ANALYZED"].astype(str).str.lower().eq("yes")
+    t["PET_SCAN_DATE"] = _month(t["PET_SCAN_DATE"])
+    t["cb_occ"] = pd.to_numeric(t["PET_CBM"], errors="coerce")
+    for region, col in PPMI_COLUMNS.items():
+        t[f"sbr_{region}"] = pd.to_numeric(t[col], errors="coerce")
+        t[f"sbrcb_{region}"] = (1 + t[f"sbr_{region}"]) / (1 + t["cb_occ"]) - 1
+    return t
 
 
 def ppmi_dti_roi_table(ppmi_dir):
