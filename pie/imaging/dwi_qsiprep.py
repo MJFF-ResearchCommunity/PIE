@@ -277,31 +277,6 @@ def recon_maps(recon_dir, label):
     return maps
 
 
-def _nigral_rois(codes, affine):
-    # ponytail: mirrors dwi.study_features' ROI split (test_roi_mirror_matches_study_features guards it); a shared
-    # dwi.study_rois would remove the copy
-    xyz = np.argwhere(np.isin(codes // 10, (7, 9)))
-    lab, left = codes[tuple(xyz.T)] // 10, codes[tuple(xyz.T)] % 10 == 1
-    lps_y = -(xyz @ affine[1, :3] + affine[1, 3])
-    rois = {}
-    for s, hemi in (("l", left), ("r", ~left)):
-        cut = np.median(lps_y[hemi]) if hemi.any() else np.nan
-        rois.update({f"sn_{s}": hemi, f"sn_posterior_{s}": hemi & (lps_y > cut), f"sn_anterior_{s}": hemi & (lps_y <= cut),
-                     f"snc_{s}": hemi & (lab == 7), f"snr_{s}": hemi & (lab == 9)})
-    return xyz, rois
-
-
-def _roi_means(values, rois, prefix):
-    """The study's region rule: the mean of a region's finite values when >= 3 and >= 80 % of the region; sides averaged."""
-    row = {}
-    for name, m in rois.items():
-        ok = m & np.isfinite(values)
-        row[f"{prefix}_{name}"] = float(values[ok].mean()) if ok.sum() >= 3 and ok.sum() >= 0.8 * m.sum() else np.nan
-    for base in ("sn", "sn_posterior", "sn_anterior", "snc", "snr"):
-        row[f"{prefix}_{base}_mean"] = float(np.mean([row[f"{prefix}_{base}_l"], row[f"{prefix}_{base}_r"]]))
-    return row
-
-
 def compare_subject(patno, qsiprep_dir, fastsurfer_dir, recon_dir=None):
     """``dwiq_*`` for one participant: PIE's study nigral labels (CIT168 SNc/SNr through the cached T1 -> MNI SyN) pulled
     in one nearest-neighbour resampling onto QSIPrep's preprocessed-DWI grid, via a rigid QSIPrep T1w -> FastSurfer T1
@@ -331,14 +306,14 @@ def compare_subject(patno, qsiprep_dir, fastsurfer_dir, recon_dir=None):
     study = dwi.study_features(data, b, v, img.affine, run_bounds(conf["original_file"]), codes,
                                dwi._b0_brain(data[..., b <= 50].mean(axis=3)), motion)
     row.update({"dwiq_" + k[len("dwis_"):]: val for k, val in study.items()})
-    xyz, rois = _nigral_rois(codes, img.affine)
+    xyz, rois = dwi.study_rois(codes, img.affine)
     fw = fit_multishell_checked(data[tuple(xyz.T)], b, v)
-    row.update(_roi_means(np.where(fw["physical"], fw["f"], np.nan), rois, "dwiq_fw"))
+    row.update(dwi.roi_means(np.where(fw["physical"], fw["f"], np.nan), rois, "dwiq_fw"))
     for (model, param), path in (sorted(recon_maps(recon_dir, label).items()) if recon_dir else []):
         m = nib.load(path)
         if m.shape[:3] != img.shape[:3] or not np.allclose(m.affine, img.affine, atol=1e-3):
             raise ValueError(f"{path.name} is not on the preprocessed-DWI grid")
-        row.update(_roi_means(np.asarray(m.dataobj, float)[tuple(xyz.T)], rois, f"dwiq_{model}_{param}"))
+        row.update(dwi.roi_means(np.asarray(m.dataobj, float)[tuple(xyz.T)], rois, f"dwiq_{model}_{param}"))
     return row
 
 

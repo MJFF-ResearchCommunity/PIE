@@ -190,7 +190,7 @@ def _codes(shape):
     return codes
 
 
-def test_roi_mirror_matches_study_features():
+def test_shared_roi_rule_reproduces_study_features():
     shape, b = (16, 16, 16), np.r_[0.0, 0.0, np.full(15, 1000.0)]
     v = np.c_[np.zeros((3, 2)), _dirs(15, 3)]
     md = 0.5e-3 + 0.05e-3 * np.indices(shape)[1]          # MD rises along y, so the SN halves differ
@@ -198,8 +198,9 @@ def test_roi_mirror_matches_study_features():
     data[6, 6, 7, 3] = -1                                  # one non-physical voxel
     codes = _codes(shape)
     study = dwi.study_features(data, b, v, AFF, [(0, len(b))], codes, np.ones(shape, bool), 0.5)
-    xyz, rois = dq._nigral_rois(codes, AFF)
-    mine = dq._roi_means(tensor_measurements(data[tuple(xyz.T)], b, v)["md"], rois, "dwis_md")
+    xyz, rois = dwi.study_rois(codes, AFF)                # the shared ROI split and region rule the comparator uses
+    t = tensor_measurements(data[tuple(xyz.T)], b, v)
+    mine = dwi.roi_means(np.where(t["accepted"], t["md"], np.nan), rois, "dwis_md")
     assert all(np.isclose(study[k], mine[k], equal_nan=True) for k in mine) and len(mine) == 15
     assert study["dwis_md_sn_posterior_l"] != study["dwis_md_sn_anterior_l"]
 

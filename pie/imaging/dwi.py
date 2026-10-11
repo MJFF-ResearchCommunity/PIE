@@ -948,6 +948,35 @@ def study_nigra_labels(b0_img, fastsurfer_dir, tx_t1_dwi, atlas=None, posterior=
     return pull_labels(nib.Nifti1Image(codes, atlas.affine), b0_img, tx_t1_dwi, warp, affine, interpolator="nearestNeighbor")[0]
 
 
+def study_rois(codes, affine):
+    """The study's nigral regions from ``study_nigra_labels`` codes: (voxel indices, {region: mask over them}) for SN,
+    SNc, SNr and the posterior/anterior halves per side, split at the side's median scanner-frame LPS y of ``affine``
+    (posterior: above it)."""
+    xyz = np.argwhere(np.isin(codes // 10 % 10, (7, 9)))
+    if not len(xyz):
+        raise ValueError("no native nigral voxels")
+    lab, left = codes[tuple(xyz.T)] // 10 % 10, codes[tuple(xyz.T)] % 10 == 1
+    lps_y = -(xyz @ affine[1, :3] + affine[1, 3])
+    rois = {}
+    for s, hemi in (("l", left), ("r", ~left)):
+        cut = np.median(lps_y[hemi]) if hemi.any() else np.nan
+        rois.update({f"sn_{s}": hemi, f"sn_posterior_{s}": hemi & (lps_y > cut), f"sn_anterior_{s}": hemi & (lps_y <= cut),
+                     f"snc_{s}": hemi & (lab == 7), f"snr_{s}": hemi & (lab == 9)})
+    return xyz, rois
+
+
+def roi_means(values, rois, prefix):
+    """The study's region rule: the mean of a region's finite values when there are >= 3 and >= 80 % of the region;
+    ``<base>_mean`` averages the sides (both needed)."""
+    row = {}
+    for name, m in rois.items():
+        ok = m & np.isfinite(values)
+        row[f"{prefix}_{name}"] = float(values[ok].mean()) if ok.sum() >= 3 and ok.sum() >= 0.8 * m.sum() else np.nan
+    for base in sorted({n.rsplit("_", 1)[0] for n in rois}):
+        row[f"{prefix}_{base}_mean"] = float(np.mean([row[f"{prefix}_{base}_l"], row[f"{prefix}_{base}_r"]]))
+    return row
+
+
 def study_features(data, bvals, bvecs, affine, run_bounds, codes, brain, motion_for_qc):
     """The study's nigral tensor measure (``measurement_recovery_20260915``: ``run_diffusion_controls.measure``,
     ``make_rois`` and ``roi_summary``, with the QC of ``nonlinear_dwi_measurements_v2``). The WLS tensor with the
@@ -961,24 +990,11 @@ def study_features(data, bvals, bvecs, affine, run_bounds, codes, brain, motion_
 
     b = np.asarray(bvals, float)
     keep = study_acquisition(b, run_bounds)
-    xyz = np.argwhere(np.isin(codes // 10 % 10, (7, 9)))
-    if not len(xyz):
-        raise ValueError("no native nigral voxels")
-    lab, left = codes[tuple(xyz.T)] // 10 % 10, codes[tuple(xyz.T)] % 10 == 1
+    xyz, rois = study_rois(codes, affine)
     t = tensor_measurements(data[tuple(xyz.T)][:, keep].astype(float), b[keep], np.asarray(bvecs)[:, keep])
-    lps_y = -(xyz @ affine[1, :3] + affine[1, 3])
-    rois = {}
-    for s, hemi in (("l", left), ("r", ~left)):
-        cut = np.median(lps_y[hemi]) if hemi.any() else np.nan
-        rois.update({f"sn_{s}": hemi, f"sn_posterior_{s}": hemi & (lps_y > cut), f"sn_anterior_{s}": hemi & (lps_y <= cut),
-                     f"snc_{s}": hemi & (lab == 7), f"snr_{s}": hemi & (lab == 9)})
     row = {"dwis_n_sn": len(xyz), "dwis_shell": int(np.rint(b[keep & (b > 50)].mean() / 100) * 100)}
     for k in ("fa", "md", "ad", "rd"):
-        for name, m in rois.items():
-            ok = m & t["accepted"] & np.isfinite(t[k])
-            row[f"dwis_{k}_{name}"] = float(t[k][ok].mean()) if ok.sum() >= 3 and ok.sum() >= 0.8 * m.sum() else np.nan
-        for base in ("sn", "sn_posterior", "sn_anterior", "snc", "snr"):
-            row[f"dwis_{k}_{base}_mean"] = float(np.mean([row[f"dwis_{k}_{base}_l"], row[f"dwis_{k}_{base}_r"]]))
+        row.update(roi_means(np.where(t["accepted"], t[k], np.nan), rois, f"dwis_{k}"))
     coverage, physical = float(brain[tuple(xyz.T)].mean()), float(t["accepted"].mean())
     checks = {"sn_size": len(xyz) >= 20, "brain_coverage": coverage >= 0.95, "physical_fraction": physical >= 0.8,
               "motion": bool(np.isfinite(motion_for_qc) and motion_for_qc <= 2),
@@ -1007,13 +1023,8 @@ def study_fw_features(maps, codes, brain, motion_for_qc, fw_method):
     multi = fw_method == "multishell_nls"
     row = {"dwisf_n_sn": int(nig.sum())}
     for k in ("fw", "fat", "mdt"):
-        m = maps.get(k)
-        for name, r in rois.items():
-            v = m[r] if (m is not None and multi) else np.array([])
-            ok = np.isfinite(v)
-            row[f"dwisf_{k}_{name}"] = float(v[ok].mean()) if ok.sum() >= 3 and ok.sum() >= 0.8 * r.sum() else np.nan
-        for base in ("sn", "sn_posterior", "sn_anterior"):
-            row[f"dwisf_{k}_{base}_mean"] = float(np.mean([row[f"dwisf_{k}_{base}_l"], row[f"dwisf_{k}_{base}_r"]]))
+        m = maps.get(k) if multi else None
+        row.update(roi_means(m if m is not None else np.full(codes.shape, np.nan), rois, f"dwisf_{k}"))
     valid = float(np.isfinite(maps["fw"][nig]).mean()) if multi and nig.any() else np.nan
     coverage = float(brain[nig].mean()) if nig.any() else np.nan
     checks = {"multishell": multi, "sn_size": nig.sum() >= 20, "brain_coverage": coverage >= 0.95, "fw_physical_fraction": valid >= 0.8,
