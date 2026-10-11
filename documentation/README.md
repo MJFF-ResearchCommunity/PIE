@@ -48,7 +48,8 @@ Python ≥ 3.10 is the floor because `endgame-ml` requires it. `setup.py` still 
 that isn't enough to run the classifier.
 
 `pie.stats` pulls in `pingouin`, `scikit-posthocs` and `lifelines` only in the functions that
-use them. They are in `requirements.txt`, but if you install PIE any other way, the posthoc,
+use them. lifelines 0.30 requires pandas < 3, so installing it into an environment with
+pandas 3 downgrades pandas. They are in `requirements.txt`, but if you install PIE any other way, the posthoc,
 partial-correlation and survival functions raise `ModuleNotFoundError` until you install them.
 
 ## Tests
