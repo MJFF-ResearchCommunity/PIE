@@ -4,6 +4,8 @@ so registration and segmentation can be reviewed systematically instead of by ad
 
     venv_imaging/bin/python -m pie.imaging.qc --work-dir Imaging/derived/dwi --modality dwi --out Imaging/derived/qc/dwi [--n 40] [--worst reg_b0_t1_mi]
 
+``--modality report`` writes one HTML page per participant across modalities (``subject_report``).
+
 Modalities and what is drawn (one PNG per subject, three orthogonal views):
   t1     FastSurfer's conformed T1 with putamen/caudate (cyan), thalamus (magenta), hippocampus (lime), lateral
          ventricles (yellow) and cortex (red); --work-dir is the run's work dir; --worst t1_robust_z_max puts the
@@ -132,10 +134,56 @@ def gallery(pngs, out_png, cols=4):
     plt.close(fig)
 
 
+def subject_report(derived, patno, out_dir, manifest_row=None, modality_dirs=None):
+    """One self-contained HTML page per participant (``<out_dir>/<patno>.html``): a montage per modality whose images
+    were kept (T1 always; DWI, NM and FLAIR with ``--keep-nifti``; DaT from its reconstruction) beside that modality's
+    manifest columns (QC flag, batch, dates, QC metrics), like fMRIPrep's subject reports. Images are embedded (base64)."""
+    import base64
+    import html
+    import tempfile
+
+    from .manifest import DEFAULT_DIRS
+
+    derived, out_dir = Path(derived), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mdir = lambda m: Path((modality_dirs or {}).get(m, derived / DEFAULT_DIRS.get(m, m)))
+    row = {} if manifest_row is None else dict(manifest_row)
+    sections = []
+    with tempfile.TemporaryDirectory() as tmp:
+        def add(title, render, prefix):
+            png = Path(tmp) / f"{prefix}.png"
+            try:
+                render(png)
+                img = f'<img src="data:image/png;base64,{base64.b64encode(png.read_bytes()).decode()}" style="max-width:100%">'
+            except Exception as e:      # an image that was not kept: the table still shows the QC
+                img = f"<p><i>no image ({html.escape(type(e).__name__)})</i></p>"
+            cells = "".join(f"<tr><td>{html.escape(k)}</td><td>{html.escape(str(v))}</td></tr>" for k, v in row.items() if k.startswith(prefix))
+            sections.append(f"<h2>{title}</h2>{img}<table>{cells}</table>")
+
+        t1 = row.get("t1_image_id")
+        add("T1 (FastSurfer)", lambda png: render_subject("t1", derived / "fastsurfer" / str(t1), png), "t1_")
+        for m, title in (("dwi", "Diffusion"), ("nm", "Neuromelanin"), ("flair", "FLAIR WMH")):
+            add(title, lambda png, m=m: render_subject(m, mdir(m) / str(patno), png), f"{m}_")
+        dat = mdir("dat") / "datscan_sbr.csv"
+        if dat.exists():
+            d = pd.read_csv(dat, dtype={"image_id": str, "fs_image_id": str}, low_memory=False)
+            d = d[(d["patno"] == int(patno)) & (d["error"].fillna("") == "")]
+            if len(d):
+                r = d.iloc[0].to_dict()
+                add("DaT-SPECT", lambda png: render_subject("datscan", r["nifti"], png, derived / "fastsurfer" / str(r.get("fs_image_id")), r), "dat_")
+    page = (f"<!doctype html><html><head><meta charset='utf-8'><title>PIE QC {patno}</title><style>body{{font-family:sans-serif;"
+            f"max-width:1100px;margin:auto}}td{{padding:2px 8px;border-bottom:1px solid #ddd}}</style></head><body>"
+            f"<h1>PIE imaging QC: participant {patno}</h1>{''.join(sections)}</body></html>")
+    out = out_dir / f"{patno}.html"
+    out.write_text(page)
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--work-dir", required=True)
-    ap.add_argument("--modality", required=True, choices=["t1", "dwi", "nm", "flair", "datscan"])
+    ap.add_argument("--modality", required=True, choices=["t1", "dwi", "nm", "flair", "datscan", "report"],
+                    help="one modality's gallery, or 'report': an HTML page per participant across modalities (--work-dir = derived root)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--n", type=int, default=40)
     ap.add_argument("--worst", help="QC column to order worst-first (worst_first: MI, motion and rotation columns largest "
@@ -146,6 +194,14 @@ def main(argv=None):
     a = ap.parse_args(argv)
     work, out = Path(a.work_dir), Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    if a.modality == "report":
+        from .manifest import build_manifest
+        man = build_manifest(work)
+        if a.patnos:
+            man = man[man["PATNO"].isin({int(x) for x in Path(a.patnos).read_text().split()})]
+        for r in man.head(a.n).to_dict("records"):
+            print(subject_report(work, r["PATNO"], out, r))
+        return
     if a.modality == "t1":           # the manifest's IDP rows with their robust-z outlier score
         from .manifest import t1_outliers
         feats = pd.read_csv(work / "fastsurfer_idps.csv", low_memory=False)

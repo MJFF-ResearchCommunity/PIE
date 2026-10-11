@@ -555,9 +555,13 @@ Harmonising diffusion or neuromelanin features by the *T1* scanner is the mistak
 QC galleries (`qc.py`) render three orthogonal views per subject from `--keep-nifti` outputs: DWI FA with SN
 (red), striatum (cyan), thalamus (magenta); NM mean slab with refined SN (red), atlas SN (cyan), reference (lime);
 FLAIR on the T1 grid with the WMH mask; DaTscan with the labels of the row's `fs_image_id` (older rows: the earliest
-finished T1, as `datscan` picks it) through the stored transform.
+finished T1, as `datscan` picks it) through the stored transform. `--modality t1` draws FastSurfer's segmentation
+on the conformed T1. `--modality report` (`--work-dir` = the derived root) writes one self-contained HTML page per
+participant (`qc.subject_report`): each modality's montage beside its manifest columns (QC flag, batch, dates, QC
+metrics), like fMRIPrep's subject reports.
 
 ```bash
+venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived> --modality report --out <derived>/qc/reports --patnos ids.txt
 venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived>/dwi --modality dwi --out <derived>/qc/dwi --n 40 --worst reg_b0_t1_mi
 venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived>/datscan_full --modality datscan --out <derived>/qc/datscan \
     --sessions <derived>/sessions.csv --fastsurfer-dir <derived>/fastsurfer --worst reg_metric
@@ -566,7 +570,7 @@ venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived>/datscan_full --mo
 | Flag | Default | Meaning |
 |---|---|---|
 | `--work-dir` | required | Modality work dir (reads its features CSV) |
-| `--modality` | required | `dwi`, `nm`, `flair` or `datscan` |
+| `--modality` | required | `t1`, `dwi`, `nm`, `flair`, `datscan`, or `report` (HTML per participant) |
 | `--out` | required | Output dir: `<patno>.png` per subject and `gallery.png` (first 16) |
 | `--n` | 40 | Subjects to render |
 | `--worst` | random sample | QC column to order worst-first (`qc.worst_first`): negative-MI, motion and rotation columns largest first; `reg_metric` weakest \|correlation\| first; other columns smallest first |

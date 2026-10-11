@@ -45,3 +45,18 @@ def test_t1_gallery_puts_the_robust_outliers_first(tmp_path):
     nib.save(nib.MGHImage(seg, np.eye(4)), mri / "aparc.DKTatlas+aseg.deep.mgz")
     main(["--work-dir", str(tmp_path), "--modality", "t1", "--out", str(tmp_path / "qc"), "--n", "1", "--worst", "t1_robust_z_max"])
     assert (tmp_path / "qc" / "I7.png").exists()
+
+
+def test_subject_report_embeds_the_t1_montage_and_the_qc_table(tmp_path):
+    import nibabel as nib
+
+    from pie.imaging.qc import subject_report
+    mri = tmp_path / "fastsurfer" / "I7" / "mri"
+    mri.mkdir(parents=True)
+    seg = np.zeros((20, 20, 20), np.int16)
+    seg[5:9, 5:9, 5:9] = 12
+    nib.save(nib.MGHImage(np.ones((20, 20, 20), np.float32), np.eye(4)), mri / "orig.mgz")
+    nib.save(nib.MGHImage(seg, np.eye(4)), mri / "aparc.DKTatlas+aseg.deep.mgz")
+    page = subject_report(tmp_path, 7, tmp_path / "reports", {"PATNO": 7, "t1_image_id": "I7", "t1_date": "2000-01-01", "dwi_qc_pass": False})
+    text = page.read_text()
+    assert text.count("data:image/png;base64") == 1 and "dwi_qc_pass" in text and "no image" in text   # DWI not kept: table only
