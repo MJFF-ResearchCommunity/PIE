@@ -6,7 +6,9 @@ dat_labels : DaTscan closest in time to the MRI. ``dat_visual`` = PPMI visual re
              value, the expectation being a linear fit on visually-negative healthy controls
              (PPMI's prodromal-cohort convention, 65 %). SBRs come from PPMI's primary table, the
              XingImaging core lab (cerebral white-matter reference, all scans since 2024 re-analysed),
-             else the archived Invicro table (occipital reference); ``sbr_source`` says which.
+             else the archived Invicro table (occipital reference); ``sbr_source`` says which. The 65 %
+             rule was derived on Invicro's scale and is applied unchanged to Xing rows unless
+             ``xing_threshold`` is given; ``xing_deficit_threshold`` derives the matching Xing cut-off.
 pet_labels : PPMI's PET striatal binding ratios per scan, tracer and analysis pipeline kept apart.
 saa_labels : CSF alpha-synuclein SAA status at the MRI visit (SC/BL pairs allowed).
              Unmatched visits require an explicit sensitivity-analysis opt-in; provenance is retained.
@@ -117,24 +119,23 @@ def sbr_indices(caudate_l, caudate_r, putamen_l, putamen_r):
     return pd.DataFrame({"pc_ratio_l": p_l / c_l, "pc_ratio_r": p_r / c_r, "ai_putamen": ai(p_l, p_r), "ai_caudate": ai(c_l, c_r)})
 
 
-def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto"):
-    """Return PATNO, IMAGEID, DATSCAN_DATE, months_to_datscan, sbr_* columns, dat_visual, dat_deficit_sbr, sbr_source.
-    ``source``: see ``dat_sbr_table``; the age/sex expectation is fitted within the chosen table, so the 65 % rule
-    is on the scale of whichever reference region that table uses. ``auto``: Xing for every session it has a scan for,
-    else the Invicro match (the September 2026 Xing release lacks ~716 PPMI-1 participants Invicro analysed); each
-    row's ``sbr_source`` says which, and raw SBRs of the two sources must not be pooled (percent-of-expected, deficit
-    and visual labels are each on their own table's norm)."""
-    if source == "auto":
-        parts = []
-        for s in ("xing", "invicro"):
-            try:
-                parts.append(dat_labels(ppmi_dir, sessions, threshold, max_months, source=s))
-            except FileNotFoundError:
-                pass
-        if not parts:
-            raise FileNotFoundError("no PPMI DaTscan SBR table")
-        parts = [x for x in parts if len(x)] or parts[:1]          # a table with no match has no columns
-        return pd.concat(parts, ignore_index=True).drop_duplicates(["PATNO", "IMAGEID"], keep="first").reset_index(drop=True) if len(parts[0]) else parts[0]
+def percent_expected(sbr, value="sbr_putamen_min"):
+    """``value`` as a fraction of its age + sex expectation and as a z-score against the residual SD, the expectation
+    being a linear fit on visually-negative healthy controls (one scan each, the earliest: repeat visits are not new
+    people). ``sbr`` needs PATNO, DATSCAN_DATE, COHORT, dat_visual, age_at_datscan, SEX and ``value``."""
+    hc = sbr[(sbr["COHORT"] == "Healthy Control") & (sbr["dat_visual"] == 0)].dropna(subset=["age_at_datscan", "SEX", value])
+    hc = hc.sort_values("DATSCAN_DATE").drop_duplicates("PATNO")
+    X = np.column_stack([np.ones(len(hc)), hc["age_at_datscan"], hc["SEX"]])
+    beta, *_ = np.linalg.lstsq(X, hc[value].to_numpy(), rcond=None)
+    ok = sbr[["age_at_datscan", "SEX"]].notna().all(axis=1)
+    expected = beta[0] + beta[1] * sbr["age_at_datscan"] + beta[2] * sbr["SEX"]
+    resid_sd = float(np.std(hc[value].to_numpy() - X @ beta, ddof=X.shape[1]))
+    return np.where(ok, sbr[value] / expected, np.nan), np.where(ok, (sbr[value] - expected) / resid_sd, np.nan)
+
+
+def dat_sbr_scored(ppmi_dir, source):
+    """``dat_sbr_table(ppmi_dir, source)`` (``xing`` or ``invicro``) with visual reads, covariates, the summary SBRs and
+    indices, and ``sbr_pct_expected`` / ``sbr_putamen_min_z`` against that table's own controls: one row per scan."""
     cov = covariates(ppmi_dir)
     sbr, vis = dat_sbr_table(ppmi_dir, source)
     vis["dat_visual"] = vis["DATSCAN_VISINTRP"].str.lower().map({"positive": 1.0, "negative": 0.0})
@@ -147,27 +148,70 @@ def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")
     sbr[[f"sbr_{c}" for c in idx]] = idx.to_numpy()
     sbr["age_at_datscan"] = _age_at(cov, sbr["PATNO"], sbr["DATSCAN_DATE"])
     sbr = sbr.merge(cov[["PATNO", "SEX", "COHORT"]], on="PATNO", how="left")
+    sbr["sbr_pct_expected"], sbr["sbr_putamen_min_z"] = percent_expected(sbr)     # DaTQUANT-style z vs controls
+    return sbr
 
-    # expected lowest-putamen SBR from visually-negative healthy controls: linear in age + sex
-    hc = sbr[(sbr["COHORT"] == "Healthy Control") & (sbr["dat_visual"] == 0)].dropna(subset=["age_at_datscan", "SEX", "sbr_putamen_min"])
-    hc = hc.sort_values("DATSCAN_DATE").drop_duplicates("PATNO")      # one scan per control: repeat visits are not new people
-    X = np.column_stack([np.ones(len(hc)), hc["age_at_datscan"], hc["SEX"]])
-    beta, *_ = np.linalg.lstsq(X, hc["sbr_putamen_min"].to_numpy(), rcond=None)
-    ok = sbr[["age_at_datscan", "SEX"]].notna().all(axis=1)
-    expected = beta[0] + beta[1] * sbr["age_at_datscan"] + beta[2] * sbr["SEX"]
-    sbr["sbr_pct_expected"] = np.where(ok, sbr["sbr_putamen_min"] / expected, np.nan)
-    resid_sd = float(np.std(hc["sbr_putamen_min"].to_numpy() - X @ beta, ddof=X.shape[1]))
-    sbr["sbr_putamen_min_z"] = np.where(ok, (sbr["sbr_putamen_min"] - expected) / resid_sd, np.nan)   # DaTQUANT-style z vs controls
+
+def xing_deficit_threshold(ppmi_dir, invicro_threshold=0.65):
+    """The percent-of-expected cut-off on Xing's cerebral-WM scale that calls as many deficits as ``invicro_threshold``
+    does on Invicro's occipital scale (where the 65 % rule was derived: Jennings et al. 2017), on the scans both core
+    labs analysed (same PATNO and scan month): midway between the k-th and (k+1)-th lowest Xing values, k = Invicro's
+    deficit count. Percent-of-expected is not scale-free: SBR = target / reference - 1, and the white-matter reference
+    is hotter than the occipital cortex, so the same fraction marks a different loss. Returns a dict: threshold,
+    n_overlap, n_deficit, invicro_rate, kappa (agreement of the two calls)."""
+    on = ["PATNO", "DATSCAN_DATE"]
+    x, i = (dat_sbr_scored(ppmi_dir, s).drop_duplicates(on) for s in ("xing", "invicro"))
+    m = x[on + ["sbr_pct_expected"]].merge(i[on + ["sbr_pct_expected"]], on=on, suffixes=("_x", "_i")).dropna()
+    xs = np.sort(m["sbr_pct_expected_x"].to_numpy())
+    k = int((m["sbr_pct_expected_i"] <= invicro_threshold).sum())
+    t = xs[0] if k == 0 else xs[-1] if k == len(xs) else (xs[k - 1] + xs[k]) / 2
+    return {"threshold": float(t), "n_overlap": len(m), "n_deficit": k, "invicro_rate": k / max(len(m), 1),
+            "kappa": kappa(m["sbr_pct_expected_i"] <= invicro_threshold, m["sbr_pct_expected_x"] <= t)}
+
+
+def kappa(a, b):
+    """Cohen's kappa of two boolean calls on the same scans (NaN when chance agreement is 1)."""
+    a, b = np.asarray(a, bool), np.asarray(b, bool)
+    pe = a.mean() * b.mean() + (1 - a.mean()) * (1 - b.mean())
+    return float(((a == b).mean() - pe) / (1 - pe)) if pe < 1 else np.nan
+
+
+def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto", xing_threshold=None):
+    """Return PATNO, IMAGEID, DATSCAN_DATE, months_to_datscan, sbr_* columns, dat_visual, dat_deficit_sbr, sbr_source.
+    ``source``: see ``dat_sbr_table``; the age/sex expectation is fitted within the chosen table. ``threshold`` (0.65)
+    was derived on Invicro's occipital scale; ``xing_threshold`` is the cut-off for Xing rows, None = ``threshold``
+    (what PIE has applied to Xing rows since adopting that table, kept so exported labels do not change silently;
+    ``xing_deficit_threshold`` derives the Xing equivalent). ``dat_deficit_threshold`` records the cut-off each row
+    used. ``auto``: Xing for every session it
+    has a scan for, else the Invicro match (the September 2026 Xing release lacks ~716 PPMI-1 participants Invicro
+    analysed); each row's ``sbr_source`` says which, and raw SBRs of the two sources must not be pooled
+    (percent-of-expected, deficit and visual labels are each on their own table's norm)."""
+    if source == "auto":
+        parts = []
+        for s in ("xing", "invicro"):
+            try:
+                parts.append(dat_labels(ppmi_dir, sessions, threshold, max_months, source=s, xing_threshold=xing_threshold))
+            except FileNotFoundError:
+                pass
+        if not parts:
+            raise FileNotFoundError("no PPMI DaTscan SBR table")
+        parts = [x for x in parts if len(x)] or parts[:1]          # a table with no match has no columns
+        return pd.concat(parts, ignore_index=True).drop_duplicates(["PATNO", "IMAGEID"], keep="first").reset_index(drop=True) if len(parts[0]) else parts[0]
+    sbr = dat_sbr_scored(ppmi_dir, source)
     # deficit rules, each named after its source (all "at or below" the fraction of the expected value):
-    #   dat_deficit_sbr  <= threshold (0.65: PPMI prodromal / PARS, Jennings et al. 2017; 0.65-0.80 is their indeterminate band)
+    #   dat_deficit_sbr  <= threshold (0.65: PPMI prodromal / PARS, Jennings et al. 2017, on Invicro's occipital scale;
+    #                    0.65-0.80 is their indeterminate band)
     #   dat_d_nsdiss     <= 0.75: the D+ rule of the Neuronal alpha-Synuclein Disease Integrated Staging System (Dam et al. 2024)
+    cut = xing_threshold if (source == "xing" and xing_threshold is not None) else threshold
     pct = sbr["sbr_pct_expected"]
-    sbr["dat_deficit_sbr"] = np.where(pct.notna(), (pct <= threshold).astype(float), np.nan)
+    sbr["dat_deficit_sbr"] = np.where(pct.notna(), (pct <= cut).astype(float), np.nan)
+    sbr["dat_deficit_threshold"] = cut
     sbr["dat_d_nsdiss"] = np.where(pct.notna(), (pct <= 0.75).astype(float), np.nan)
 
     keep = ["DATSCAN_DATE", "EVENT_ID", "DATSCAN_CAUDATE_R", "DATSCAN_CAUDATE_L", "DATSCAN_PUTAMEN_R", "DATSCAN_PUTAMEN_L",
             "sbr_putamen_min", "sbr_caudate_min", "sbr_putamen_mean", "sbr_pc_ratio_l", "sbr_pc_ratio_r", "sbr_ai_putamen",
-            "sbr_ai_caudate", "sbr_pct_expected", "sbr_putamen_min_z", "dat_visual", "dat_deficit_sbr", "dat_d_nsdiss", "sbr_source"]
+            "sbr_ai_caudate", "sbr_pct_expected", "sbr_putamen_min_z", "dat_visual", "dat_deficit_sbr", "dat_deficit_threshold",
+            "dat_d_nsdiss", "sbr_source"]
     out = []
     for s in sessions[["patno", "image_id", "session_date"]].itertuples(index=False):
         cand = sbr[sbr["PATNO"] == s.patno].dropna(subset=["DATSCAN_DATE"])

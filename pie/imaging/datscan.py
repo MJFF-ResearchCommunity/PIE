@@ -9,13 +9,15 @@ occipital reference; SBR = target/reference - 1) with open components:
 
     read_projections : photopeak window, all detectors, angle per frame (DICOM NM vectors)
     reconstruct      : filtered back-projection per transaxial slice (scikit-image), Gaussian post-filter
-    register_to_t1   : registration of the SPECT volume to the subject's conformed T1 via a synthetic DaT template
-                       (SimpleITK, normalised correlation; rigid, plus per-axis scale for fan-beam cameras)
+    read_volume      : already-reconstructed stacks (consortium sites), placed by their DICOM patient geometry
+    register_to_t1   : registration of the SPECT volume to the subject's conformed T1 via a brain-only synthetic DaT
+                       template (SimpleITK, normalised correlation in the brain; rigid, plus bounded per-axis scale for
+                       fan-beam cameras)
     quantify         : mean counts in FastSurfer caudate/putamen (L/R) and occipital cortex -> SBRs
 
 Attenuation correction (first-order Chang, ``chang_correction``) is implemented but off by default everywhere
 (``reconstruct``, ``process_series`` and the CLI's ``--attenuation``): it lowered agreement with PPMI's SBRs.
-Without it absolute SBRs sit below PPMI's; ``calibrate`` maps them onto a published scale per camera vendor.
+Without it absolute SBRs sit below PPMI's; ``calibrate`` maps them onto a published scale per camera model.
 """
 
 import io
@@ -132,12 +134,37 @@ def read_projections(dcm):
 
 
 def read_volume(dcm):
-    """Series stored as an already-reconstructed transaxial stack (no rotation info). Returns (vol xyz, spacing)."""
+    """Series stored as an already-reconstructed stack (NM RECON TOMO, as consortium sites send them). The geometry comes
+    from ImageOrientationPatient / ImagePositionPatient (top level, or the first DetectorInformationSequence item where NM
+    files keep them), PixelSpacing and SpacingBetweenSlices (signed; frames step along row x column; SliceThickness when
+    absent), and the stack is resampled (linear) onto an axis-aligned RAS grid at the finer in-plane spacing, so the
+    registration starts from true patient axes. Raises ValueError when any of them is missing: until October 2026 this
+    path guessed the orientation with the projection flips, which can mirror left and right. Returns (NIfTI, spacing_mm)."""
     ds = dcm if isinstance(dcm, pydicom.Dataset) else pydicom.dcmread(io.BytesIO(dcm) if isinstance(dcm, bytes) else str(dcm), force=True)
+    det = (list(getattr(ds, "DetectorInformationSequence", None) or []) or [pydicom.Dataset()])[0]
+    get = lambda k: ds.get(k) if ds.get(k) is not None else det.get(k)
     data = ds.pixel_array.astype(np.float32)
-    px = getattr(ds, "PixelSpacing", None)
-    spacing = float(px[0]) if px is not None else np.nan
-    return np.transpose(data, (2, 1, 0)), spacing
+    data = data[None] if data.ndim == 2 else data                       # (frames, rows, columns)
+    iop, ipp, px = get("ImageOrientationPatient"), get("ImagePositionPatient"), get("PixelSpacing")
+    dz = get("SpacingBetweenSlices") or get("SliceThickness") or (1.0 if len(data) == 1 else None)
+    missing = [k for k, v in (("ImageOrientationPatient", iop), ("ImagePositionPatient", ipp), ("PixelSpacing", px),
+                              ("SpacingBetweenSlices", dz)) if v is None]
+    if missing:
+        raise ValueError(f"reconstructed stack without {', '.join(missing)}: patient geometry unknown, not guessing the orientation")
+    row, col = np.asarray(iop[:3], float), np.asarray(iop[3:], float)
+    aff = np.eye(4)
+    aff[:3, :3] = np.column_stack([row * float(px[1]), col * float(px[0]), np.cross(row, col) * float(dz)])   # (column, row, frame) index -> LPS
+    aff[:3, 3] = np.asarray(ipp, float)
+    aff = np.diag([-1.0, -1.0, 1.0, 1.0]) @ aff                          # LPS -> RAS
+    vol = np.transpose(data, (2, 1, 0))
+    sp = float(min(px))
+    corners = aff[:3, :3] @ (np.indices((2, 2, 2)).reshape(3, -1) * (np.array(vol.shape) - 1)[:, None]) + aff[:3, 3:]
+    lo = corners.min(axis=1)
+    out = np.diag([sp, sp, sp, 1.0])
+    out[:3, 3] = lo
+    m = np.linalg.inv(aff) @ out                                          # output voxel -> stored voxel
+    shape = tuple(int(n) for n in np.round((corners.max(axis=1) - lo) / sp) + 1)
+    return nib.Nifti1Image(ndimage.affine_transform(vol, m[:3, :3], m[:3, 3], output_shape=shape, order=1).astype(np.float32), out), sp
 
 
 # --------------------------------------------------------------------------------- reconstruction
@@ -264,7 +291,7 @@ def _clean_spect(img, cap=1.5, head_litres=4.0):
     scans have streak backgrounds that Otsu merges into a 10-20 L 'head'; markers dominate a max-relative
     threshold), and slightly under-sizing the mask only trims the scalp."""
     data = np.asanyarray(img.dataobj).astype(np.float32)
-    vox = float(np.abs(np.diag(img.affine)[:3]).mean()) or 1.0
+    vox = float(np.mean(nib.affines.voxel_sizes(img.affine)))
     sm = ndimage.gaussian_filter(data, sigma=20.0 / 2.3548 / vox)
     n_keep = int(min(head_litres * 1e6 / vox**3, sm.size * 0.5))
     thr = np.partition(sm.ravel(), -n_keep)[-n_keep]
@@ -279,31 +306,43 @@ def _clean_spect(img, cap=1.5, head_litres=4.0):
 
 
 def synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0, striatum=(CAUDATE_L, CAUDATE_R, PUTAMEN_L, PUTAMEN_R)):
-    """A subject-specific DaT-like template in T1 space: striatum 1.0, rest of brain 0.25, non-brain head
-    tissue 0.12 (from the T1 intensity), smoothed to SPECT resolution. Registering the real SPECT to this
-    image by correlation aligns the hot spots with the labels and the head outline with the blob at once,
-    which mutual information against the raw T1 does not do reliably."""
+    """A subject-specific, brain-only DaT-like template on the T1 grid: striatum 1.0, rest of brain 0.25, zero outside
+    the brain, smoothed to SPECT resolution. Correlation against it aligns the striatal hot spots and the brain's
+    non-specific uptake with the labels. Until October 2026 it also held scalp and neck (0.12 from the T1 intensity) and
+    was smoothed to ~30 mm instead of ``fwhm_mm`` (the voxel size was read off the diagonal of FastSurfer's LIA affine,
+    1/3 mm), so the head outline dominated the fit; with it the ±2-voxel placement search sat on its edge in 81 % of
+    scans and fan-beam axial scales shrank to a median 0.72."""
     lab = np.asanyarray(aparc_img.dataobj)
-    t1 = np.asanyarray(t1_img.dataobj).astype(np.float32)
-    head = t1 > 0.15 * np.percentile(t1[t1 > 0], 99) if (t1 > 0).any() else lab > 0
-    syn = np.where(head, 0.12, 0.0).astype(np.float32)
-    syn[lab > 0] = 0.25
+    syn = np.where(lab > 0, 0.25, 0.0).astype(np.float32)
     syn[np.isin(lab, striatum)] = 1.0
-    vox = float(np.abs(np.diag(t1_img.affine)[:3]).mean()) or 1.0
-    syn = ndimage.gaussian_filter(syn, sigma=fwhm_mm / 2.3548 / vox)
-    return nib.Nifti1Image(syn, t1_img.affine)
+    vox = float(np.mean(nib.affines.voxel_sizes(t1_img.affine)))
+    return nib.Nifti1Image(ndimage.gaussian_filter(syn, sigma=fwhm_mm / 2.3548 / vox), t1_img.affine)
+
+
+# Per-axis scale bounds of ``scale_fit`` registrations, in the T1 frame (x left-right, y anterior-posterior, z axial). A
+# converging (fan-beam) collimator reconstructed as parallel-beam magnifies the transaxial plane by F / (F - R) (focal
+# length F, radius of rotation R; non-circular orbits make x and y differ) and leaves the axial direction unmagnified,
+# because the fan converges in the transaxial plane only. Upper transaxial bound 1.8 = R up to 0.45 F (the 8 September
+# 2026 fits: FANB x 1.45-1.75, 5th-95th percentile; 3 of 148 above 1.8); axial 1 +- 0.15. The lower 0.85 also admits
+# headers without a recorded collimator that may be parallel-hole. In those fits z sat at a median 0.72 and agreement
+# with Xing fell as z left 1 (putamen r L/R, half of the scans nearer 1 vs the other half: FANB 0.96/0.95 vs 0.93/0.90,
+# no collimator recorded 0.87/0.81 vs 0.74/0.62).
+SCALE_BOUNDS = ((0.85, 1.8), (0.85, 1.8), (0.85, 1.15))
 
 
 def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc_img=None, scale_fit=False):
-    """Rigid registration of the SPECT volume to the subject's T1 space via a synthetic DaT template
-    (see ``synthetic_spect``), normalised correlation metric. The volume is already in patient axes up to
-    the vendor's transaxial conventions, so the initial pose is the centre-of-mass alignment rotated by
+    """Rigid registration of the SPECT volume to the subject's T1 space via a brain-only synthetic DaT template
+    (see ``synthetic_spect``), normalised correlation sampled inside the brain and a ~7 mm rim only (template >
+    0.01, 4 % of the brain level), so scalp, face and neck uptake cannot steer it. The volume is already in patient
+    axes up to the vendor's transaxial conventions, so the initial pose is the centre-of-mass alignment rotated by
     ``rz`` about the head axis (0 or pi), after an optional left/right mirror (``flip_lr``); ``search=True``
     tries both rz values and keeps the better metric (fallback for unknown acquisition configurations; the
     striatum is faint in patients, so a metric-based choice of pose is less reliable than the per-vendor
     rule). Multi-resolution refinement follows. A second, striatum-masked refinement stage was tried and
     removed: with the faint striata of patients it drifted (side-wise putamen agreement with PPMI fell from
-    0.84 to 0.78 pooled, 0.64 to 0.27 on ADAC). Returns (transform, metric, moving image)."""
+    0.84 to 0.78 pooled, 0.64 to 0.27 on ADAC). With ``scale_fit`` (fan-beam) the per-axis scales are bounded by
+    ``SCALE_BOUNDS``: a fit that leaves them is clamped and refitted rigidly at the bound, and flagged.
+    Returns (transform, metric, moving image, {"t0": centre-of-mass start translation, "scale_at_bound": bool})."""
     import SimpleITK as sitk
 
     if aparc_img is None:
@@ -312,10 +351,11 @@ def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc
         spect_img = nib.Nifti1Image(np.asanyarray(spect_img.dataobj)[::-1], spect_img.affine)
     moving = _sitk_from_nib(_clean_spect(spect_img))
     fixed = sitk.Shrink(_sitk_from_nib(synthetic_spect(t1_img, aparc_img)), [2, 2, 2])
+    mask = fixed > 0.01
     # rigid, or rigid + per-axis scale (no shear) when ``scale_fit``: fan-beam acquisitions (Marconi/Picker
-    # Prism, collimator FANB) reconstructed as parallel-beam come out magnified transaxially by ~1.5 x, which
-    # a rigid fit cannot absorb; the fitted scales are reported for QC. Parallel-hole vendors with a correct
-    # pixel size lose a little accuracy with free scales, so they stay rigid.
+    # Prism, collimator FANB) reconstructed as parallel-beam come out magnified transaxially, which a rigid fit
+    # cannot absorb. Parallel-hole vendors with a correct pixel size lose a little accuracy with free scales, so
+    # they stay rigid.
     init = sitk.CenteredTransformInitializer(fixed, moving, sitk.ScaleVersor3DTransform(), sitk.CenteredTransformInitializerFilter.MOMENTS)
     init = sitk.ScaleVersor3DTransform(init)
     scale_w = [1.0, 1.0, 1.0] if scale_fit else [0.0, 0.0, 0.0]
@@ -323,10 +363,24 @@ def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc
     def method(sampling):
         reg = sitk.ImageRegistrationMethod()
         reg.SetMetricAsCorrelation()
+        reg.SetMetricFixedMask(mask)
         reg.SetMetricSamplingStrategy(reg.RANDOM)
         reg.SetMetricSamplingPercentage(sampling, seed=ITK_SEED)
         reg.SetInterpolator(sitk.sitkLinear)
         return reg
+
+    def refine(start, weights):
+        reg = method(0.3)
+        reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-3, numberOfIterations=200, relaxationFactor=0.6)
+        reg.SetOptimizerScalesFromPhysicalShift()
+        reg.SetOptimizerWeights([1, 1, 1, 1, 1, 1] + weights)
+        reg.SetShrinkFactorsPerLevel([4, 2, 1])
+        reg.SetSmoothingSigmasPerLevel([3, 2, 0])
+        reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+        reg.SetInitialTransform(start, inPlace=False)
+        out = sitk.ScaleVersor3DTransform(start)
+        out.SetParameters(reg.Execute(fixed, moving).GetParameters())
+        return out, float(reg.GetMetricValue())
 
     fixed_lo = sitk.Shrink(fixed, [2, 2, 2])
     best, best_val = None, np.inf
@@ -342,20 +396,18 @@ def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc
         if val < best_val:
             best, best_val = cand, val
     coarse = best if best is not None else init
-    reg = method(0.3)
-    reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-3, numberOfIterations=200, relaxationFactor=0.6)
-    reg.SetOptimizerScalesFromPhysicalShift()
-    reg.SetOptimizerWeights([1, 1, 1, 1, 1, 1] + scale_w)
-    reg.SetShrinkFactorsPerLevel([4, 2, 1])
-    reg.SetSmoothingSigmasPerLevel([3, 2, 0])
-    reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-    reg.SetInitialTransform(coarse, inPlace=False)
+    at_bound = False
     try:
-        tx = reg.Execute(fixed, moving)
-        metric = float(reg.GetMetricValue())
+        tx, metric = refine(coarse, scale_w)
+        lo, hi = np.array(SCALE_BOUNDS).T
+        s = np.array(tx.GetScale())
+        if scale_fit and ((s < lo) | (s > hi)).any():
+            at_bound = True
+            tx.SetScale(tuple(float(v) for v in np.clip(s, lo, hi)))
+            tx, metric = refine(tx, [0.0, 0.0, 0.0])
     except RuntimeError:
         tx, metric = coarse, best_val
-    return tx, metric, moving
+    return tx, metric, moving, {"t0": np.array(init.GetTranslation()), "scale_at_bound": at_bound}
 
 
 def _ap_split(mask, ap):
@@ -366,14 +418,28 @@ def _ap_split(mask, ap):
     return {"ant": mask & (ap >= cut), "post": mask & (ap < cut)}
 
 
-def sbr_from_arrays(S, L, dilate=0, ref_dilate=0, search_vox=2, ap=None, spacing_mm=None):
+# Half-width of the hottest-placement search, in mm. It was +-2 voxels (6-10 mm by camera) until October 2026, and in
+# 81 % of the 8 September 2026 scans the best placement sat on that edge (91 % in the lowest putamen-SBR tertile); putamen
+# agreement with Invicro was r 0.925 inside the window and 0.77 on its edge, so the search was absorbing real
+# misregistration that the window cut short. With perfect registration a noisy synthetic phantom moves it by under
+# half a voxel on average. 12 mm (about one system FWHM) cannot carry the whole-striatum mask onto another structure;
+# ``shift_edge`` flags placements that still reach the edge and ``manifest.QC["dat"]`` fails them.
+SEARCH_MM = 12.0
+
+
+def sbr_from_arrays(S, L, dilate=0, ref_dilate=0, search_vox=None, ap=None, spacing_mm=None):
     """SBRs from a counts array ``S`` and a co-registered label array ``L`` (same grid, any orientation).
     Striatal masks may be dilated (SPECT resolution ~10 mm); the occipital reference (cortical labels,
-    optionally dilated into the brain, striatum excluded); a small translation search (+-``search_vox``
-    voxels) maximises the striatal counts, mimicking ROI placement on the hottest striatal region.
+    optionally dilated into the brain, striatum excluded); a translation search (+-``search_vox`` voxels per axis;
+    None = ``SEARCH_MM`` at ``spacing_mm``) maximises the striatal counts, mimicking ROI placement on the hottest
+    striatal region. The chosen shift is reported per array axis in mm (``shift_{x,y,z}_mm`` for arrays indexed
+    (z, y, x); right, anterior, superior through ``sbr_with_transform``) and ``shift_edge`` says whether any axis
+    reached the window's edge, where the true optimum may lie beyond it.
     With ``ap`` (per-voxel anterior coordinate) every striatal ROI is also split into anterior / posterior
     halves (``_ant`` / ``_post``: the posterior putamen loses dopamine transporter first). A second SBR set
     (``sbrwm_*``) uses cerebral white matter at least WM_MARGIN_MM from the striatum as the reference."""
+    sp = spacing_mm or 3.9
+    search_vox = int(SEARCH_MM / sp + 0.5) if search_vox is None else search_vox
     brain = L > 0
     striatum_ids = {"caudate_l": [CAUDATE_L], "caudate_r": [CAUDATE_R], "putamen_l": [PUTAMEN_L], "putamen_r": [PUTAMEN_R]}
     masks = {k: ndimage.binary_dilation(np.isin(L, v), iterations=dilate) if dilate else np.isin(L, v) for k, v in striatum_ids.items()}
@@ -381,7 +447,7 @@ def sbr_from_arrays(S, L, dilate=0, ref_dilate=0, search_vox=2, ap=None, spacing
     for k in list(masks):
         masks.update({f"{k}_{s}": m for s, m in _ap_split(masks[k], ap).items()})
     occ = ndimage.binary_dilation(np.isin(L, OCCIPITAL), iterations=ref_dilate) & brain & ~striatum if ref_dilate else np.isin(L, OCCIPITAL)
-    far = ndimage.distance_transform_edt(~striatum) > WM_MARGIN_MM / (spacing_mm or 3.9) if striatum.any() else np.ones_like(striatum)
+    far = ndimage.distance_transform_edt(~striatum) > WM_MARGIN_MM / sp if striatum.any() else np.ones_like(striatum)
     wm = np.isin(L, WM) & far
     best, best_shift = -np.inf, (0, 0, 0)
     r = range(-search_vox, search_vox + 1)
@@ -406,6 +472,8 @@ def sbr_from_arrays(S, L, dilate=0, ref_dilate=0, search_vox=2, ap=None, spacing
     out["n_ref_voxels"] = int(occ.sum())
     out["n_wm_voxels"] = int(wm.sum())
     out["shift_vox"] = float(np.sqrt(sum(d * d for d in best_shift)))
+    out["shift_z_mm"], out["shift_y_mm"], out["shift_x_mm"] = (float(d * sp) for d in best_shift)
+    out["shift_edge"] = bool(search_vox > 0 and max(abs(d) for d in best_shift) == search_vox)
     return out
 
 
@@ -417,7 +485,7 @@ def _anterior_map(ref, target, tx):
     return -sitk.GetArrayFromImage(sitk.Resample(sitk.VectorIndexSelectionCast(pts, 1), target, tx, sitk.sitkLinear, 0.0))
 
 
-def sbr_with_transform(spect_img, aparc_img, tx_inv, flip_lr=False, dilate=0, ref_dilate=0, search_vox=2):
+def sbr_with_transform(spect_img, aparc_img, tx_inv, flip_lr=False, dilate=0, ref_dilate=0, search_vox=None):
     """SBRs of ``spect_img`` given ``tx_inv``, the SPECT -> T1 mapping (inverse of the registration's
     fixed -> moving transform): FastSurfer labels and the T1 anterior coordinate are resampled onto the
     SPECT grid, then ``sbr_from_arrays`` on the un-thresholded counts."""
@@ -446,17 +514,29 @@ def transform_from_row(row):
     return tx
 
 
-def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0, search_vox=2, scale_fit=False):
+def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0, search_vox=None, scale_fit=False):
     """Register SPECT -> T1 space (synthetic-template correlation), resample the FastSurfer labels onto the
     SPECT grid and compute SBRs (see ``sbr_from_arrays``). Returns SBRs, ROI means, the registration
-    metric (negative normalised correlation; more negative is better) and QC fields."""
-    tx, metric, moving = register_to_t1(spect_img, t1_img, flip_lr, rz=rz, search=search, aparc_img=aparc_img, scale_fit=scale_fit)
-    out = sbr_with_transform(spect_img, aparc_img, tx.GetInverse(), flip_lr=flip_lr, dilate=dilate, ref_dilate=ref_dilate, search_vox=search_vox)
+    metric (negative normalised correlation; more negative is better) and QC fields: the transform's rotation
+    (``reg_rot_deg`` in total, ``reg_rot_{x,y,z}_deg`` as xyz Euler angles about the T1's LPS axes), its translation
+    beyond the centre-of-mass start (``reg_t{x,y,z}_mm``, LPS), its scales and ``reg_scale_at_bound``."""
+    from scipy.spatial.transform import Rotation
+
+    tx, metric, moving, info = register_to_t1(spect_img, t1_img, flip_lr, rz=rz, search=search, aparc_img=aparc_img, scale_fit=scale_fit)
+    p = tx.GetParameters()       # ScaleVersor3D: versor xyz, translation xyz, scale xyz (fixed -> moving)
+    reg = {"reg_params": " ".join(f"{v:.6g}" for v in p), "reg_center": " ".join(f"{v:.6g}" for v in tx.GetFixedParameters()[:3])}
+    # through the stored values, so --requantify reproduces these SBRs exactly
+    out = sbr_with_transform(spect_img, aparc_img, transform_from_row(reg).GetInverse(), flip_lr=flip_lr, dilate=dilate,
+                             ref_dilate=ref_dilate, search_vox=search_vox)
+    rot = Rotation.from_quat([*p[:3], np.sqrt(max(0.0, 1.0 - sum(v * v for v in p[:3])))])
     out["reg_metric"] = metric
     out["flip_lr"] = bool(flip_lr)
-    out["reg_params"] = " ".join(f"{v:.6g}" for v in tx.GetParameters())  # ScaleVersor3D: versor xyz, translation xyz, scale xyz (fixed -> moving)
-    out["reg_scale_x"], out["reg_scale_y"], out["reg_scale_z"] = (float(v) for v in tx.GetParameters()[6:9])
-    out["reg_center"] = " ".join(f"{v:.6g}" for v in tx.GetFixedParameters()[:3])
+    out.update(reg)
+    out["reg_scale_x"], out["reg_scale_y"], out["reg_scale_z"] = (float(v) for v in p[6:9])
+    out["reg_scale_at_bound"] = info["scale_at_bound"]
+    out["reg_rot_deg"] = float(np.degrees(rot.magnitude()))
+    out["reg_rot_x_deg"], out["reg_rot_y_deg"], out["reg_rot_z_deg"] = (float(v) for v in rot.as_euler("xyz", degrees=True))
+    out["reg_tx_mm"], out["reg_ty_mm"], out["reg_tz_mm"] = (float(v) for v in np.array(p[3:6]) - info["t0"])
     return out
 
 
@@ -487,19 +567,17 @@ def process_series(zip_path, member, out_dir, fastsurfer_subject_dir=None, fwhm_
         row.update({f"hdr_{k}": v for k, v in p["meta"].items()})
         row["point_source_voxels"] = reconstruct.point_source_voxels
         row["kind"] = "projections"
-        spacing = p["spacing_mm"]
-    except ValueError as e:
+        img = to_nifti(vol, p["spacing_mm"])
+    except ValueError:
         itype = [str(x).upper() for x in getattr(ds, "ImageType", [])]
         if "TOMO" in itype and getattr(ds, "RotationInformationSequence", None):
             raise
-        vol, spacing = read_volume(ds)  # stored as a reconstructed stack
-        if not np.isfinite(spacing):
-            raise ValueError(f"{image_id}: reconstructed stack without pixel spacing") from e
-        vol = ndimage.gaussian_filter(vol, sigma=fwhm_mm / 2.3548 / spacing) if fwhm_mm else vol
+        img, spacing = read_volume(ds)  # stored as a reconstructed stack: placed by its DICOM geometry, or refused
+        if fwhm_mm:
+            img = nib.Nifti1Image(ndimage.gaussian_filter(img.get_fdata(dtype=np.float32), sigma=fwhm_mm / 2.3548 / spacing), img.affine)
         row["kind"] = "stored_volume"
         row["hdr_manufacturer"] = str(getattr(ds, "Manufacturer", ""))
         row["hdr_model"] = str(getattr(ds, "ManufacturerModelName", ""))
-    img = to_nifti(vol, spacing)
     nib.save(img, nifti)
     row["nifti"] = str(nifti)
     if fastsurfer_subject_dir:
@@ -643,26 +721,43 @@ if __name__ == "__main__":
     main()
 
 
-def calibrate(d, targets, min_ref=15, vendor="vendor"):
-    """Per-vendor linear map of PIE SBR columns onto published SBRs, as study1_virtual_biomarkers' calibrate_datscan.py
-    (calibrated putamen r 0.85 against PPMI on 880 scans; uncalibrated PIE 0.79-0.81 against Xing). ``targets`` maps
-    a PIE column (e.g. ``sbrwm_putamen_l``) to the published column on the same rows (e.g. Xing's
-    ``PUTAMEN_L_REF_CWM``; keep reference regions matched: CWM to ``sbrwm_*``, occipital to ``sbr_*``). The map is
-    fitted on the rows that have both values (blank QC failures first, as the study did), per vendor with >=
-    ``min_ref`` of them, else on all vendors pooled, and applied to every row (so cohorts without published values get calibrated values too). Adds
-    ``<column>_cal`` and ``calibration`` (the vendor or ``POOLED``, from the first target)."""
+def deming(x, y, delta=1.0):
+    """Deming regression of ``y`` on ``x`` (errors in both; ``delta`` = error variance of y / error variance of x, 1 =
+    orthogonal regression) -> (slope, intercept). Unlike OLS it does not shrink the slope by x's measurement error."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    sxx, syy, sxy = x.var(), y.var(), np.mean((x - x.mean()) * (y - y.mean()))
+    slope = (syy - delta * sxx + np.sqrt((syy - delta * sxx) ** 2 + 4 * delta * sxy ** 2)) / (2 * sxy)
+    return slope, y.mean() - slope * x.mean()
+
+
+def calibrate(d, targets, min_ref=15, by="hdr_model", method="deming", delta=1.0):
+    """Map PIE SBR columns onto published SBRs per camera model (column ``by``). ``targets`` maps a PIE column (e.g.
+    ``sbrwm_putamen_l``) to the published column on the same rows (e.g. Xing's ``PUTAMEN_L_REF_CWM``; keep reference
+    regions matched: CWM to ``sbrwm_*``, occipital to ``sbr_*``). The map is fitted on the rows that have both values
+    (blank QC failures first), per model with >= ``min_ref`` of them, else on all models pooled, and applied to every
+    row (so cohorts without published values get calibrated values too). ``method``: ``deming`` (linear, errors in both
+    variables, see ``deming``) or ``equipercentile`` (each value goes to the published value at the same percentile of
+    the reference scans: the mapped reference rows reproduce the published distribution exactly; values outside the
+    reference range go to its ends). Both keep the published spread; the OLS fit used until October 2026 (never called
+    by the pipeline) regressed towards the mean, leaving the mapped putamen SD at 0.82 of the published one. Adds
+    ``<column>_cal`` and ``calibration`` (the model or ``POOLED``, from the first target)."""
     import pandas as pd
 
     out = d.copy()
     for i, (col, target) in enumerate(targets.items()):
-        ref = out[pd.to_numeric(out[col], errors="coerce").notna() & pd.to_numeric(out[target], errors="coerce").notna()]
+        x_all, y_all = pd.to_numeric(out[col], errors="coerce"), pd.to_numeric(out[target], errors="coerce")
+        ref = x_all.notna() & y_all.notna()
         out[f"{col}_cal"] = np.nan
-        for v, g in out.groupby(vendor):
-            r = ref[ref[vendor] == v]
-            src = v if len(r) >= min_ref else "POOLED"
-            r = r if src == v else ref
-            slope, intercept = np.polyfit(r[col].astype(float), r[target].astype(float), 1)
-            out.loc[g.index, f"{col}_cal"] = intercept + slope * g[col].astype(float)
+        for v, g in out.groupby(by, dropna=False):
+            r = ref & (out[by] == v)
+            src = v if r.sum() >= min_ref else "POOLED"
+            x, y = x_all[r if src == v else ref], y_all[r if src == v else ref]
+            if method == "equipercentile":
+                cal = np.interp(x_all[g.index], np.sort(x), np.sort(y))
+            else:
+                slope, intercept = deming(x, y, delta)
+                cal = intercept + slope * x_all[g.index]
+            out.loc[g.index, f"{col}_cal"] = cal
             if i == 0:
                 out.loc[g.index, "calibration"] = src
     return out

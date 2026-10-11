@@ -22,6 +22,11 @@ def _col(d, c):
     return pd.to_numeric(d[c], errors="coerce") if c in d else pd.Series(np.nan, index=d.index)
 
 
+def _flag(d, c):
+    """A boolean column read back from CSV (True/False/1/0 text or bools); absent or blank = False."""
+    return d[c].astype(str).str.strip().str.lower().isin(("true", "1", "1.0")) if c in d else pd.Series(False, index=d.index)
+
+
 def _nm_slab_coverage_ok(d):
     """Each side's atlas SN >= 90 % inside the slab (``nm.slab_coverage``, the study's bounded geometric rule, 27 Sep
     2026). Rows written before then carry only the unbounded volume ratio ``sn_slab_coverage`` and keep its old bar."""
@@ -36,8 +41,13 @@ QC = {
     # visual "fail" (t1_visual_qc.csv, see t1_visual_ratings) fails. Robust-z outliers are flagged for review, not failed.
     "t1": lambda d: ((d[[c for c in T1_KEY_VOLUMES if c in d]] > 0).all(axis=1) & ~(_col(d, "BrainSegVol") < 7e5)
                      & ~d.get("t1_visual_qc", pd.Series("", index=d.index)).astype(str).str.lower().eq("fail")),
-    # correlation metric: -1 is a perfect fit; a failed registration (inf) or an anti-correlated one must not pass
-    "dat": lambda d: (-d["reg_metric"] >= 0.4) & (d["n_label_voxels"] >= 100),
+    # correlation metric: -1 is a perfect fit; a failed registration (inf) or an anti-correlated one must not pass. Implausible
+    # transforms fail too (datscan, October 2026): rotation > 30 deg (the 19 % of 8 Sep 2026 fits above it agreed with Xing at
+    # putamen r 0.49-0.72, against 0.83-0.85 below), > 50 mm beyond the centre-of-mass start, a scale clamped at
+    # datscan.SCALE_BOUNDS, or the hottest placement on the edge of its window (tables before lack the columns: pass)
+    "dat": lambda d: (-d["reg_metric"] >= 0.4) & (d["n_label_voxels"] >= 100) & ~(_col(d, "reg_rot_deg") > 30)
+    & ~(np.sqrt(_col(d, "reg_tx_mm") ** 2 + _col(d, "reg_ty_mm") ** 2 + _col(d, "reg_tz_mm") ** 2) > 50)
+    & ~_flag(d, "reg_scale_at_bound") & ~_flag(d, "shift_edge"),
     # the study's nigral diffusion rule (split-half ICC FA 0.88, MD 0.97 under it): >= 20 SN voxels, >= 95 % of the SN in
     # the brain mask, >= 80 % physically admissible tensor fits, mean motion <= 2 mm, both posterior SN halves measured;
     # tables written before these columns existed fail it (re-run them)
