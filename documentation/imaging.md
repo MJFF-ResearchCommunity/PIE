@@ -8,7 +8,8 @@ LONI MRI zip(s) ──index──► one T1w per session ──dcm2niix──►
                                                                           │ (T1 anatomy, labels, MNI affine)
           DTI zips ──dwi──────────────► dwi/dwi_features.csv ◄────────────┤
      full-MRI zips ──nm / flair───────► nm/nm_features.csv, flair/flair_features.csv ◄┤
-  SPECT projections ──datscan─────────► datscan_full/datscan_sbr.csv ◄────┘
+  SPECT projections ──datscan─────────► datscan_full/datscan_sbr.csv ◄────┤
+   AV-133 PET zips ──pet─────────────► pet/pet_av133.csv ◄───────────────┘
                            manifest.assemble_features ──► one wide row per subject (QC-failed values blanked)
 ```
 
@@ -38,6 +39,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `dwi_tensor_qc.py`, `freewater_qc.py`, `dwi_acquisition.py`, `dwi_correction.py` | Opt-in DWI measurement and correction safeguards ([page](imaging_dwi.md#opt-in-measurement-apis)) | |
 | `nm.py`, `nm_template.py`, `nm_native.py` | Neuromelanin MRI: contrast ratios, template and territory contrasts, native-space SNc volume (Langley method) and snceg segmentation ([page](imaging_nm_datscan.md)) | yes |
 | `datscan.py` | DaTscan SPECT reconstruction and SBRs ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | yes |
+| `pet.py` | [18F]AV-133 (VMAT2) PET: frame timing and motion QC, time-weighted mean, MI registration to the T1, striatal SBRs against occipital and cerebellar cortex, agreement with PPMI ([section](#av-133-vmat2-pet-petpy)) | yes |
 | `flair.py` | White-matter hyperintensity burden | yes |
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
 | `freesurfer.py` | Environment and runner for FreeSurfer tools that FastSurfer's eTIV, surface and longitudinal stages call | |
@@ -254,6 +256,7 @@ is a frame with `patno`, `image_id`, `session_date`, `EVENT_ID` (e.g. `sessions.
 | `covariates(ppmi_dir)` | Per PATNO: `COHORT`, `ENROLL_DATE`, `ENROLL_AGE`, `SEX`, `BIRTHDT`, `HANDED`, `LRRK2`, `GBA`, `SNCA`, `APOE`, `PATHVAR_COUNT`, `{LRRK2,GBA,SNCA}_carrier` (0 for `0`, `0.0`, `"0"`, `"0.0"` whatever the column dtype, 1 for any other value, NaN when blank or missing: untested is not a control), `APOE_e4` (count), and `PRS_GP2`, `PRS_META5_noLRRK2GBA` when `Polygenic_Risk_Scores_*.csv` exists |
 | `dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")` | Closest analysed DaTscan within 18 months: `PATNO`, `IMAGEID`, `months_to_datscan`, `days_datscan_after_mri` (signed: positive when the DaTscan came later, which for a converter can carry a later disease state), `DATSCAN_DATE`, `DATSCAN_EVENT_ID`, `DATSCAN_{CAUDATE,PUTAMEN}_{R,L}`, `sbr_putamen_min`, `sbr_caudate_min`, `sbr_putamen_mean`, `sbr_pc_ratio_{l,r}` (putamen/caudate), `sbr_ai_{putamen,caudate}` (\|L − R\| / mean x 100), `sbr_pct_expected` (lowest putamen SBR / the age + sex expectation fitted on visually-negative healthy controls), `sbr_putamen_min_z` (same, as a z-score against the controls' residual SD), `dat_visual` (PPMI visual read, 1/0), `dat_deficit_sbr` = `sbr_pct_expected <= threshold` (0.65: PPMI prodromal / PARS rule, Jennings et al. 2017, doi:10.1001/jamaneurol.2017.0985; 0.65–0.80 is their indeterminate band), `dat_d_nsdiss` = `sbr_pct_expected <= 0.75` (the NSD-ISS D+ rule as applied in PPMI, Dam et al. 2024, doi:10.1038/s41531-024-00789-w), `sbr_source` |
 | `dat_sbr_table(ppmi_dir, source="auto")` | PPMI's SBR table and visual reads. `xing`: `Xing_Core_Lab_-_Quant_SBR_*` (PPMI's primary SBRs since December 2024, all earlier scans re-analysed; cerebral white-matter reference; sub-regional `*_REF_CWM` columns kept); `invicro`: the archived `DaTScan_SBR_Analysis_*` (occipital reference, nothing after 1 December 2024); `auto` = Xing when present. The scales differ: never pool them. 99mTc-TRODAT-1 scans are dropped |
+| `pet_labels(ppmi_dir)` | PPMI's `PET_SBR_Analysis`, one row per scan: `tracer` and `pipeline` columns that must never be pooled across, `PET_SCAN_DATE` (month), `EVENT_ID`, `analysed`, `sbr_<region>`, `cb_occ`, `sbrcb_<region>`; see [the PET section](#av-133-vmat2-pet-petpy) |
 | `saa_labels(ppmi_dir, sessions, allow_unmatched=False)` | `PATNO`, `IMAGEID`, `SAA_EVENT_ID`, `SAA_Status` (`Conflicting` when calls at the chosen visit disagree), `SAA_Type`, `saa_positive` (NaN unless one Positive/Negative call), `saa_match` (`same_visit`, `screening_baseline_pair`, `unmatched_visit`), `saa_visit_concurrent` |
 
 On the September 2026 download the Xing table labels 1,447 MRI sessions (1,398 subjects) where the archived Invicro table labels 988. The Xing release lacks about 716 PPMI-1 participants whom Invicro analysed (504 PD, 136 HC, 76 SWEDD).
@@ -306,6 +309,96 @@ Columns: `wmh_mm3`, `wmh_log_mm3` (log1p), `wmh_pv_mm3`, `wmh_deep_mm3`, `wmh_fr
 `series_desc`, `n_series`, `shape`, `voxel_mm`, `slice_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `ti_s`;
 `patno`, `acquisition_date`, `fs_image_id` (the T1 used; `manifest` fails QC on a mismatch), `error`. `manifest.QC["flair"]`: `reg_flair_t1_mi < -0.2`, `wm_mm3 > 200000`, `flair_wm_mad > 0`.
 FastSurfer's T1-based `vol_WM_hypointensities` is the sanity reference. Tests: `tests/test_flair.py`.
+
+## AV-133 (VMAT2) PET (`pet.py`)
+
+[18F]AV-133 binds the vesicular monoamine transporter in dopaminergic terminals: a presynaptic striatal measure like
+DaTscan. PPMI's `PET_SBR_Analysis` (September 2026) holds 237 AV-133 rows (233 analysed, 106 participants, 2012–2024)
+plus 10 [18F]C05-05 and 9 [18F]DPA-714 rows. **Status: implemented and phantom-tested, not yet run: no AV-133 images
+are downloaded, so agreement with PPMI is unmeasured.**
+
+What PPMI did (IND processing methods, rev. 25 April 2014; PET Technical Operations Manual for protocol 004, v4.0 2022):
+- 222 MBq bolus; 2 × 5 min frames from 80 ± 5 min after injection (median injection-to-scan 75–80 min per protocol in
+  `PET_Acquisition_Metadata`); attenuation, scatter, randoms and decay corrected; iterative reconstruction in
+  quantitative units, submitted without post-filtering.
+- Frames checked for motion and corrected where necessary, time-weighted mean, co-registration to the MRI, MNI
+  normalisation, IND's small striatal VOIs (caudate, anterior and posterior putamen) adjusted per subject; follow-ups
+  registered to the baseline PET.
+- SBR = target / occipital − 1 (`PET_OCCIP` is 0 by construction; the DPA-714 rows sit near 0).
+
+The table has no method column. The source (a blank `PET_LIGAND` marks the legacy IND export) and `PROTOCOL` separate
+three pipelines, which `labels.pet_labels` names:
+
+| `pipeline` | Rows (Sep 2026) | Regions | Median SBR, left posterior putamen / left caudate |
+|---|---|---|---|
+| `ind_2014` | protocols 001 (84) and T011 (20) | six small VOIs | 0.66 / 1.38 |
+| `core_lab_6voi` | 004 (94 of 97 analysed) | six small VOIs | 0.72 / 1.46 |
+| `subregional` | 015 (35 of 36); also the C05-05 and DPA-714 rows | six VOIs, ten sub-regions, cerebellum (`PET_CBM`), occipital | 2.26 / 1.81 |
+
+Never pool them: the sub-regional posterior putamen reads about three times higher. On the ten people scanned in T011
+and again in 004 a year later, 004 values ran 12–23 % lower, and progression cannot be told from method, so those two
+stay apart as well. `sbrcb_*` re-references sub-regional rows to the cerebellum: (1 + SBR) / (1 + `PET_CBM`) − 1. There
+is no Xing-style re-analysis of AV-133 (that exists for DaTscan only).
+
+PIE measures every PET visit on the participant's earliest finished FastSurfer T1:
+1. `index_pet`, `select_series`: LONI series plus a first-file DICOM probe. Candidates are modality PT with no other
+   PPMI tracer named. The scanner's FDG default does not exclude a series; the PPMI join decides the tracer. Per
+   participant-day the unfiltered reconstruction wins (`--recon filtered` reverses this), then most frames, then most
+   files; single-frame series of one class are stacked as sequential statics. Choices are kept in `pet_index.csv`.
+2. `load_scan`: dcm2niix gives the 4D image and a PET-BIDS sidecar (`TracerName`, `InjectedRadioactivity`, `Units`,
+   `DecayCorrection`, `ReconMethodName`). Frame timing comes from every DICOM header: `FrameReferenceTime` − duration / 2
+   within a series, anchored at its earliest `AcquisitionTime`, relative to `RadiopharmaceuticalStartTime`.
+   Overlapping frames are refused, and the volume count and dcm2niix's durations must agree.
+3. `mean_image`: frames starting ≥ 60 min after injection (all of them when timing is unknown). Each is registered to
+   the first (rigid MI). If any corner of a ±50 mm cube moves more than 1 mm (`motion_mm`), frames are resampled onto
+   the first. Then the duration-weighted mean.
+4. `register_pet_to_t1`: rigid Mattes MI to `orig.mgz`, the metric restricted to the FastSurfer brain dilated 10 mm,
+   started from the centres of mass, seeded with `datscan.ITK_SEED`.
+5. `quantify`: the PET is resampled onto the T1, and voxels outside its field of view leave every ROI.
+   `datscan.sbr_from_arrays` then measures caudate and putamen, each also split at the median anterior coordinate,
+   against the DKT occipital cortex; `sbrcb_*` uses cerebellar cortex (aseg 8 / 47).
+
+On a phantom with known uptake, a 9° / 14 mm misalignment and 3 mm of inter-frame motion, the SBRs come back within
+10 % (+0.05). With the registration's optimiser switched off they miss by up to 0.45.
+
+```bash
+venv_imaging/bin/python -m pie.imaging.pet --zips <AV-133 PET zips> --sessions <derived>/sessions.csv \
+    --fastsurfer-dir <derived>/fastsurfer --work-dir <derived>/pet --workers 4 [--keep-nifti] [--recon filtered]
+venv_imaging/bin/python -m pie.imaging.pet <same arguments> --agreement PPMI    # -> pet_agreement.csv; no processing
+```
+
+Flags: the shared `batch.add_common_args` set, plus `--recon` and `--agreement PPMI_DIR`. `pet_av133.csv` gets one row
+per visit and resumes by `image_id`. `--keep-nifti` keeps `<patno>/<date>/` (4D NIfTI, `pet.json` with `TimeZero` =
+injection, `pet_mean.nii.gz`, `t1_to_pet.tfm`).
+
+Columns:
+- Outcomes: `sbr_{caudate,putamen}_{l,r}` with `_ant` / `_post` halves (occipital reference), the same set as
+  `sbrcb_*` (cerebellum), `cb_occ`, `mean_*`, `suv_occipital`.
+- QC: `reg_pet_t1_mi`, `reg_template_r` (correlation with `datscan.synthetic_spect`'s striatum-hot template over the
+  head), `motion_mm`, `motion_corrected`, `n_frames`, `n_frames_used`, `start_min`, `end_min`, `frame_minutes`,
+  `timing_ok` (first frame at 75–85 min), `units`, `units_ok`, `cov_{striatum,occipital,cerebellum}`, `n_<roi>`.
+- Acquisition and provenance: `tracer`, `tracer_av133`, `manufacturer`, `model`, `recon`, `postfilter`,
+  `decay_correction`, `injected_mbq`, `voxel_mm`, `series_desc`, `patno`, `image_id`, `acquisition_date`,
+  `fs_image_id`, `processing_version`, `error`.
+
+`pet.qc_pass(d, reference="occipital")` passes rows with no error, an activity or count scale (`units_ok`: Bq/mL, SUV or
+Philips `CNTS`, since the ratio cancels the scale), `reg_template_r >= 0.4` (the
+DaTscan rule), `cov_striatum >= 0.99`, reference coverage ≥ 0.95, `motion_mm <= 5` and all six PPMI-comparable SBRs.
+Confirm the thresholds on the first real batch.
+
+`agreement_table` (`--agreement`) matches QC-passed rows to analysed AV-133 rows by PATNO and scan month. It reports per
+pipeline × reference × region: n, Pearson r, ICC(2,1) (Shrout & Fleiss), Lin's CCC, and the Bland–Altman bias (PIE −
+PPMI) with 95 % limits. Whole-structure ROIs without partial-volume correction should read below IND's small VOIs:
+judge r first, and CCC / ICC after a per-pipeline calibration like `datscan.calibrate`.
+
+Not done:
+- GTM partial-volume correction (needs each scanner's resolution).
+- PPMI's ten sub-regions (no FastSurfer equivalent).
+- Follow-ups anchored on the baseline PET.
+- Enhanced (single-file, multi-frame) PET DICOM: timing is read per file, so such a series stops with a frame-count
+  error rather than being guessed.
+
+Tests: `tests/test_pet.py`.
 
 ## Manifest, feature assembly and QC galleries
 
@@ -600,7 +693,7 @@ finished T1 per PATNO) → `session_rows(group, t1_date)` (the acquisition date 
 `run_batch(jobs, job_fn, out_csv, workers=4, log_every=10, pid_file=None)`. `run_batch` appends one row per
 subject as it finishes, so a killed run loses at most the subjects in flight; `job_fn` must return a row with an
 `error` string rather than raise; when a later row brings new columns the file is rewritten with the union
-header. `done_subjects(out_csv, retry_errors=False)`, `filter_jobs(jobs, patnos_file=None, limit=None)` and
+header. `done_subjects(out_csv, retry_errors=False, key="patno")` (`pet` keys on `image_id`: one row per scan), `filter_jobs(jobs, patnos_file=None, limit=None)` and
 `add_common_args(ap)` (the shared CLI flags) complete it. `datscan`, `qc --modality datscan` and `dwi_refine` use
 the same `fastsurfer_by_patno` rule, and `datscan` writes its table through `run_batch`. `batch.convert_series(zip_path, prefix, out_dir, archive_cache=None)`
 extracts only `.dcm` members and returns every NIfTI dcm2niix wrote.
@@ -793,7 +886,7 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Schaefer cortex + CIT168 subcortex | SOTA default ("4S") | Yes (`atlases.schaefer400_mni2009c`, `striatal_rois`) |
 | | Striatal seed FC, basal-ganglia network (ICA + dual regression) | Canonical, poorly reproducible | Yes |
 | | ALFF / fALFF / ReHo | SOTA | `fmri_connectivity.local_measures` (unvalidated); XCP-D is the community implementation |
-| PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | No PET processing. PPMI's analysed tables can be joined as labels; an AV-133 module (reusing `datscan.sbr_from_arrays` on the PET registered to the T1) is the first candidate |
+| PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | AV-133: `pet.py` follows PPMI's 2014 IND method on the subject's FastSurfer ROIs (occipital and cerebellar references); `labels.pet_labels` reads PPMI's values per pipeline. Not yet run: no AV-133 images downloaded, no agreement measured. No partial-volume correction. SV2A and tau PET: tables only |
 | CT | Safety head CT before the screening lumbar puncture | Not an imaging endpoint: the `Safety_Head_CT_Scan` form (`CTSCAN`, yes/no) records whether one was done; PPMI does not distribute the images | Nothing to process |
 | All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method); ComBat, spline-age ComBat and longitudinal ComBat in `harmonize.py` |
 
@@ -889,6 +982,7 @@ acquisitions.
   not on PPMI's scale; use PPMI's SBRs where they exist. One scan per subject.
 - FLAIR: threshold WMH tracks age more weakly than FastSurfer's T1 WM-hypointensity volume; use the latter as the
   vascular covariate until a validated lesion segmenter is wrapped. About 13 % of FLAIR scans fail the registration QC.
+- AV-133 PET: whole anatomical ROIs, no partial-volume correction and no sub-regional ROIs, so absolute SBRs are not on PPMI's scale until `--agreement` has been run; each visit is measured on the earliest T1 (atrophy at late visits is not modelled).
 - QSM, R2* and SWI are not possible: PPMI does not acquire multi-echo GRE or SWI.
 - Before 25 September 2026 every `ants.registration` call (`nm_template syn`, `dwi_refine`, `tiv_from_registration`, `map_labels_to_subject`) left its transforms in the temp directory, ~140 MB per SyN. They are now deleted after use; files named `tmp*Warp.nii.gz`, `tmp*InverseWarp.nii.gz` and `tmp*GenericAffine.mat` left in `/tmp` by older runs are safe to remove.
 
@@ -901,7 +995,7 @@ venv_imaging/bin/python -m pytest -q tests/test_imaging.py tests/test_imaging_au
     tests/test_manifest.py tests/test_nm.py tests/test_nm_template.py tests/test_qc.py tests/test_staging.py \
     tests/test_staging_files.py tests/test_imaging_regressions.py \
     tests/test_dwi_tracts.py tests/test_fmri_striatal.py tests/test_nm_volume.py tests/test_volumes.py tests/test_normative.py tests/test_harmonize.py \
-    tests/test_fmri_connectivity.py tests/test_brain_viewer.py
+    tests/test_fmri_connectivity.py tests/test_brain_viewer.py tests/test_pet.py tests/test_cohorts.py tests/test_analyse_dwi_fw.py
 ```
 
 `tests/test_imaging_regressions.py` holds one regression test per bug fixed after the September 2026 audit

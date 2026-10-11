@@ -123,7 +123,8 @@ def add_common_args(ap):
     return ap
 
 
-def done_subjects(out_csv, retry_errors=False):
+def done_subjects(out_csv, retry_errors=False, key="patno"):
+    """Values of ``key`` already in ``out_csv`` (``image_id`` for runners with one row per scan, e.g. pet)."""
     out_csv = Path(out_csv)
     if not out_csv.exists() or out_csv.stat().st_size == 0:
         return set()
@@ -131,7 +132,7 @@ def done_subjects(out_csv, retry_errors=False):
     if retry_errors and prev["error"].fillna("").ne("").any():
         prev = prev[prev["error"].fillna("") == ""]
         prev.to_csv(out_csv, index=False)
-    return set(prev["patno"])
+    return set(prev[key])
 
 
 def filter_jobs(jobs, patnos_file=None, limit=None):
