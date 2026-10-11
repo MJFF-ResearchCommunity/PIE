@@ -169,8 +169,8 @@ own `recon-all` is never run):
 | Stage | What it adds | Cost |
 |---|---|---|
 | `run --etiv` | FreeSurfer eTIV for every finished subject: FastSurfer's talairach registration (`talairach_avi` on `orig_nu`, the `--tal_reg` step; `fastsurfer.talairach_etiv`), eTIV = 1948106 / det(`talairach.xfm`); then the table is rebuilt with an `eTIV` column | ~2 CPU-min per scan |
-| `fastsurfer.surfaces(subjects_dir, sid)` | FastSurfer's surface stream with `--fsaparc`: DK `aparc` thickness and area, comparable with PPMI's FS7 tables | ~1 CPU-hour per scan |
-| `run --long` | FastSurfer's longitudinal stream (within-subject template) for every subject with >= 2 finished, real-dated sessions, into `<work>/fastsurfer_long/` (`run.long_timepoints`, `fastsurfer.longitudinal`) | hours per subject, GPU |
+| `run --surfaces` | FastSurfer's surface stream (`fastsurfer.surfaces`, `--fsaparc`) for every finished subject, then the table is rebuilt with PIE's own DK thickness and area, `cth_{lh,rh}_<region>`, `area_{lh,rh}_<region>`, `cth_{lh,rh}_mean` (`features.thickness_columns`). One pinned FastSurfer version for every scan, unlike mixing FS7 releases, and the regions match PPMI's `fs7_cth_*` for agreement checks | ~1 CPU-hour per scan |
+| `run --long` | FastSurfer's longitudinal stream (within-subject template) for every subject with >= 2 finished, real-dated sessions, into `<work>/fastsurfer_long/` (`run.long_timepoints`, `fastsurfer.longitudinal`), then `fastsurfer_long_idps.csv` (`run.write_long_idps`: same columns, `stream=long`, `long_template`) | hours per subject, GPU |
 
 Work dir: `index.csv`, `sessions.csv`, `scan_metadata.csv` (`image_id`, `nifti`, `sidecar` + `SIDECAR_FIELDS`),
 `nifti/<PATNO>/`, `fastsurfer/<IMAGE_ID>/{mri,stats,scripts}`, `failures.csv` (headerless: patno, image_id,
@@ -411,6 +411,30 @@ from pie.imaging import normative
 model = normative.fit(df, ["vol_Left_Putamen", "vol_Right_Putamen"], ["age", "sex", "tiv_mm3"], reference=df.COHORT.eq("Healthy Control"))
 z = normative.zscores(df, model)          # z_vol_Left_Putamen, z_vol_Right_Putamen
 ```
+
+## Longitudinal T1 (`manifest.t1_visits`)
+
+The modality manifest (`build_manifest`, `assemble_features`) still has one row per participant: the earliest usable
+T1 and the modality sessions nearest to it. For change over time, `t1_visits(derived_dir, stream="cross"|"long")`
+returns **every** T1 visit (one per participant and visit day) from `fastsurfer_idps.csv` or the longitudinal stream's
+`fastsurfer_long_idps.csv`. It applies `QC["t1"]` (measures blanked, identifiers kept) and the outlier flags, and adds:
+- `years_from_bl` (from the earliest usable real-dated visit) and `visit_index`;
+- `scanner_id` (`DeviceSerialNumber`, else `StationName`, else vendor and model), with `scanner_changed_since_bl` and
+  `field_changed_since_bl`;
+- `tiv_subject_mm3`, the median eTIV over the participant's usable visits (one head size per participant).
+
+Visits are labelled with PPMI's `EVENT_ID`:
+- `link_sessions_to_events` links by month;
+- `index.visit_to_event` reads LONI collection-CSV codes (`BL`, `V04`, `U01`, …) and IDA names (`Month 24` → `V06`,
+  `Unscheduled Visit 01` → `U01`, `Symptomatic Therapy` → `ST`) on PPMI's schedule (`MONTH_TO_EVENT`).
+
+Recommended analysis:
+- linear mixed models (`pie.stats.longitudinal.linear_mixed_model`) rather than change scores;
+- the longitudinal stream for atrophy rates;
+- scanner changes harmonised with `harmonize.long_combat`, with same-scanner follow-up as a sensitivity analysis.
+
+The pilot's acceptance test is the 29 same-day repeat sets: they should show about zero change, and they give the
+minimal detectable change. Per-visit DWI, NM and FLAIR need per-session modality runs, which come next.
 
 ## Harmonisation (`harmonize.py`)
 
@@ -716,8 +740,8 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Pre/post-commissural, dorsal/ventral putamen | SOTA | PPMI's Xing columns kept; PIE's own: anterior/posterior halves |
 | | Annualised SBR change | Gold trial endpoint | PPMI's longitudinal SBRs + `stats.longitudinal`; PIE's own reconstruction takes one scan per subject |
 | T1 | aseg/DKT volumes, head-size adjustment | Gold | Yes (FastSurfer, release pinned in `setup_imaging.sh`, version on every row); eTIV from `run --etiv` (FreeSurfer 7.4.1 talairach, validated r 0.992 vs FS7 on 40 scans; cohort run pending); the registration TIV is unvalidated |
-| | Cortical thickness and area (DK) | Gold; PPMI releases FS7 tables for 1,716 baseline scans | No (surface stream needs a FreeSurfer licence): use `FS7_APARC_CTH/SA` |
-| | Longitudinal within-subject stream | Gold for atrophy rates | Wrapped (`run --long`), never piloted, no table parser; the manifest is one session per subject |
+| | Cortical thickness and area (DK) | Gold; PPMI releases FS7 tables for 1,716 baseline scans | `run --surfaces` (`cth_*`, `area_*`; needs FreeSurfer 7.4.1 and its licence; not yet run on the cohort); else PPMI's `FS7_APARC_CTH/SA` |
+| | Longitudinal within-subject stream | Gold for atrophy rates | `run --long` writes `fastsurfer_long_idps.csv`; `manifest.t1_visits` gives every visit with time, scanner change and one TIV per participant; not yet piloted |
 | | Brain-age gap | SOTA, replicated in PPMI | SFCN + `embed.brain_age_gap` |
 | | Foundation-model embeddings | SOTA, exploratory | BrainIAC, 3D-Neuro-SimCLR, SFCN; check scanner reliability first |
 | | Normative centiles; NBM Ch4 volume; MRPI; SynthSeg+ | SOTA / specialised | No |

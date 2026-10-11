@@ -24,9 +24,9 @@ import pandas as pd
 
 from pie.imaging.convert import convert_series
 from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, longitudinal, run_fastsurfer, segment_batch,
-                                    talairach_etiv)
+                                    surfaces, talairach_etiv)
 from pie.imaging.features import build_idp_table
-from pie.imaging.index import (IDA_VISIT_TO_EVENT, LONI_VISIT_TO_EVENT, T1_HEADER_FIELDS, index_zips, probe_headers, protocol_phase,
+from pie.imaging.index import (T1_HEADER_FIELDS, visit_to_event, index_zips, probe_headers, protocol_phase,
                                read_ida_metadata, read_loni_collection_csv, select_t1_series, t1_candidates)
 from pie.imaging.link import link_sessions_to_events
 
@@ -55,13 +55,13 @@ def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=()):
     if loni_csv:  # the collection CSV: visit label for every series, group, age at scan
         loni = read_loni_collection_csv(loni_csv)
         sessions = sessions.merge(loni, on="image_id", how="left")
-        ev = sessions["loni_visit"].map(LONI_VISIT_TO_EVENT)
+        ev = sessions["loni_visit"].map(visit_to_event, na_action="ignore")
         sessions["EVENT_ID"] = ev.where(ev.notna(), sessions["EVENT_ID"])
         log.info("LONI collection CSV: %d of %d sessions covered", int(sessions["loni_visit"].notna().sum()), len(sessions))
     if ida_metadata:
         ida = read_ida_metadata(ida_metadata).drop(columns=["patno"])
         sessions = sessions.merge(ida, on="image_id", how="left")
-        ida_event = sessions["ida_visit"].map(IDA_VISIT_TO_EVENT)
+        ida_event = sessions["ida_visit"].map(visit_to_event, na_action="ignore")
         sessions["EVENT_ID"] = ida_event.where(ida_event.notna(), sessions["EVENT_ID"])
         log.info("IDA metadata: %d of %d sessions covered", int(sessions["ida_visit"].notna().sum()), len(sessions))
     sessions.to_csv(sessions_csv, index=False)
@@ -222,6 +222,35 @@ def _etiv_job(args):
         return sid, float("nan"), f"{type(e).__name__}: {str(e)[:200]}"
 
 
+def _surface_job(args):
+    """FastSurfer surfaces (cortical thickness) for one finished subject; a failure is reported, not raised."""
+    fs_dir, sid, threads = args
+    try:
+        surfaces(fs_dir, sid, threads=threads)
+        return sid, ""
+    except Exception as e:
+        return sid, f"{type(e).__name__}: {str(e)[:200]}"
+
+
+def _with_metadata(sessions, work):
+    meta_csv = work / "scan_metadata.csv"
+    if not meta_csv.exists():
+        return sessions
+    meta = pd.read_csv(meta_csv, dtype={"image_id": str}).drop_duplicates("image_id", keep="last")
+    return sessions.merge(meta, on="image_id", how="left")
+
+
+def write_long_idps(sessions, work, timepoints):
+    """``fastsurfer_long_idps.csv``: the IDP table of the longitudinal stream's time points (``stream`` = long,
+    ``long_template`` = the participant), same columns as ``fastsurfer_idps.csv``; read with ``manifest.t1_visits``."""
+    ids = {i for tps in timepoints.values() for i in tps}
+    idps = build_idp_table(_with_metadata(sessions[sessions["image_id"].astype(str).isin(ids)], work), work / "fastsurfer_long")
+    if len(idps):
+        idps = idps.assign(stream="long", long_template=idps["PATNO"].astype(str))
+    idps.to_csv(work / "fastsurfer_long_idps.csv", index=False)
+    return idps
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--zips", nargs="+", required=True)
@@ -238,6 +267,8 @@ def main(argv=None):
     ap.add_argument("--features-only", action="store_true", help="only rebuild fastsurfer_idps.csv")
     ap.add_argument("--long", action="store_true", help="FastSurfer longitudinal stream for every subject with >= 2 finished sessions "
                     "into <work-dir>/fastsurfer_long (needs PIE_FREESURFER_HOME = FreeSurfer 7.4.1 and PIE_FS_LICENSE; hours per subject)")
+    ap.add_argument("--surfaces", action="store_true", help="FastSurfer surfaces (cortical thickness, DK aparc) for every finished "
+                    "subject, then rebuild the table with cth_*/area_* columns; needs PIE_FREESURFER_HOME and PIE_FS_LICENSE; ~1 h per scan")
     ap.add_argument("--etiv", action="store_true", help="add FreeSurfer eTIV (talairach registration) to every finished subject, then "
                     "rebuild the table; needs PIE_FREESURFER_HOME, PIE_FS_LICENSE and /bin/tcsh")
     a = ap.parse_args(argv)
@@ -250,14 +281,25 @@ def main(argv=None):
 
     if a.long:
         _freesurfer_ready()
-        for patno, ids in sorted(long_timepoints(sessions, work / "fastsurfer").items())[:a.limit]:
+        tps = dict(sorted(long_timepoints(sessions, work / "fastsurfer").items())[:a.limit])
+        for patno, ids in tps.items():
             t1s = [work / "nifti" / str(patno) / f"{i}_T1w.nii.gz" for i in ids]
             try:
                 longitudinal(str(patno), t1s, ids, work / "fastsurfer_long", device=a.device, threads=a.threads)
                 log.info("longitudinal %s: %d time points", patno, len(ids))
             except Exception as e:
                 log.error("longitudinal %s failed: %s", patno, str(e)[:300])
+        log.info("long IDP table: %s", write_long_idps(sessions, work, tps).shape)
         return
+
+    if a.surfaces:
+        _freesurfer_ready()
+        sids = sorted(done)[:a.limit] if a.limit else sorted(done)
+        with ProcessPoolExecutor(max_workers=a.workers) as ex:
+            for i, (sid, err) in enumerate(ex.map(_surface_job, [(work / "fastsurfer", s, a.threads) for s in sids]), start=1):
+                if err or i % 20 == 0:
+                    log.info("surfaces %d/%d %s %s", i, len(sids), sid, err)
+        a.features_only = True                     # rebuild fastsurfer_idps.csv with the thickness columns
 
     if a.etiv:
         _freesurfer_ready(tcsh=True)
@@ -291,10 +333,7 @@ def main(argv=None):
         process_all(todo, work, a.workers, a.threads, a.chunk, meta_csv, log_ok, log_fail, device=a.device)
         fail_fh.close()
 
-    if meta_csv.exists():
-        meta = pd.read_csv(meta_csv, dtype={"image_id": str}).drop_duplicates("image_id", keep="last")
-        sessions = sessions.merge(meta, on="image_id", how="left")
-    idps = build_idp_table(sessions, work / "fastsurfer")
+    idps = build_idp_table(_with_metadata(sessions, work), work / "fastsurfer")
     tmp = work / "fastsurfer_idps.csv.partial"
     try:
         idps.to_csv(tmp, index=False)

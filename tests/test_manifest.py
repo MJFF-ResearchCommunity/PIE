@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -113,3 +114,18 @@ def test_t1_outliers_are_flagged_small_brains_and_visual_fails_fail_qc(tmp_path)
     f = assemble_features(tmp_path).set_index("PATNO")
     assert not f.loc[29, "t1_qc_pass"] and not f.loc[5, "t1_qc_pass"] and f.loc[3, "t1_qc_pass"]   # outliers stay, for review
     assert f.loc[3, "t1_outlier"] and np.isnan(f.loc[5, "vol_Left_Putamen"]) and f.loc[5, "t1_visual_qc"] == "fail"
+
+
+def test_t1_visits_keep_every_visit_with_time_scanner_change_and_one_tiv(tmp_path):
+    from pie.imaging.manifest import t1_visits
+    v = pd.DataFrame({"PATNO": [1, 1, 1, 2], "IMAGEID": ["A", "B", "C", "D"], "EVENT_ID": ["BL", "V04", "V06", "BL"],
+                      "SCAN_DATE": ["2021-01-01", "2022-01-01", "2023-01-01", "9999-01-01"], "Manufacturer": ["Siemens"] * 4,
+                      "DeviceSerialNumber": ["111", "111", "222", "333"], "MagneticFieldStrength": [3, 3, 3, 1.5],
+                      "vol_Left_Putamen": [5000.0, 4900.0, 0.0, 5100.0], "eTIV": [1.50e6, 1.52e6, 1.70e6, 1.4e6],
+                      "cth_lh_precuneus": [2.4, 2.3, 2.2, 2.5]})
+    v.to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
+    t = t1_visits(tmp_path).set_index("IMAGEID")
+    assert t.loc["B", "years_from_bl"] == pytest.approx(1.0, abs=0.01) and t.loc["C", "visit_index"] == 2
+    assert not t.loc["B", "scanner_changed_since_bl"] and t.loc["C", "scanner_changed_since_bl"]
+    assert not t.loc["C", "t1_qc_pass"] and np.isnan(t.loc["C", "cth_lh_precuneus"]) and t.loc["C", "EVENT_ID"] == "V06"
+    assert t.loc["A", "tiv_subject_mm3"] == 1.51e6 and np.isnan(t.loc["D", "years_from_bl"])    # failed visit's eTIV left out; masked date

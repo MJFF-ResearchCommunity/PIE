@@ -192,7 +192,6 @@ def read_ida_metadata(paths):
     return pd.DataFrame(rows).drop_duplicates("image_id")
 
 
-IDA_VISIT_TO_EVENT = {"Baseline": "BL", "Screening": "SC"}
 
 
 def read_loni_collection_csv(paths):
@@ -209,4 +208,24 @@ def read_loni_collection_csv(paths):
     return pd.concat(frames, ignore_index=True).drop_duplicates("image_id")
 
 
-LONI_VISIT_TO_EVENT = {"BL": "BL", "SC": "SC", "Baseline": "BL", "Screening": "SC"}
+# PPMI's visit schedule: months after baseline -> EVENT_ID (quarterly to 12 months, 6-monthly to 60, then yearly)
+MONTH_TO_EVENT = {3: "V01", 6: "V02", 9: "V03", 12: "V04", 18: "V05", 24: "V06", 30: "V07", 36: "V08", 42: "V09", 48: "V10",
+                  54: "V11", 60: "V12", **{72 + 12 * i: f"V{13 + i:02d}" for i in range(10)}}
+_EVENT = re.compile(r"(SC|BL|V\d{2}|ST|PW|U\d{2}|R\d{2})")
+
+
+def visit_to_event(label):
+    """A LONI collection-CSV visit (already an EVENT_ID: BL, V04, U01, ...) or an IDA visit name ("Baseline",
+    "Screening", "Month 24", "Unscheduled Visit 01", "Symptomatic Therapy", "Premature Withdrawal") as PPMI's
+    EVENT_ID; None when it cannot be read, so the date-based link stands."""
+    t = str(label).strip()
+    if _EVENT.fullmatch(t.upper()):
+        return t.upper()
+    low = t.lower()
+    named = {"baseline": "BL", "screening": "SC", "symptomatic therapy": "ST", "premature withdrawal": "PW"}
+    if low in named:
+        return named[low]
+    m = re.fullmatch(r"month (\d+)", low) or re.fullmatch(r"unscheduled visit (\d+)", low)
+    if m and low.startswith("month"):
+        return MONTH_TO_EVENT.get(int(m.group(1)))
+    return f"U{int(m.group(1)):02d}" if m else None

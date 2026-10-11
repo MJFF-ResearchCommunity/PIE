@@ -329,6 +329,19 @@ def parse_stats(stats_path):
     return out
 
 
+def parse_aparc_stats(stats_path):
+    """A FreeSurfer surface-parcellation stats file (``lh.aparc.stats``: DK atlas, written by recon-surf ``--fsaparc``)
+    as {region: (ThickAvg mm, SurfArea mm2)} plus "MeanThickness" from its '# Measure Cortex' line."""
+    out = {}
+    for line in Path(stats_path).read_text().splitlines():
+        if line.startswith("# Measure Cortex, MeanThickness"):
+            out["MeanThickness"] = float(line.split(",")[3])
+        elif line and not line.startswith("#"):
+            c = line.split()     # StructName NumVert SurfArea GrayVol ThickAvg ThickStd MeanCurv GausCurv FoldInd CurvInd
+            out[c[0]] = (float(c[4]), float(c[2]))
+    return out
+
+
 if __name__ == "__main__":  # self-check on a minimal stats snippet
     import tempfile
     snippet = ("# Measure Mask, MaskVol, Mask Volume, 1500000.000000, mm^3\n"          # synthetic values

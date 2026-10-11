@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from pie.imaging.convert import field_tesla
-from pie.imaging.fastsurfer import STATS_FILE, parse_stats, valid_etiv
+from pie.imaging.fastsurfer import STATS_FILE, parse_aparc_stats, parse_stats, valid_etiv
 
 BILATERAL = ["Putamen", "Caudate", "Pallidum", "Thalamus", "Hippocampus", "Amygdala", "Accumbens-area",
              "Lateral-Ventricle", "Cerebellum-Cortex", "Cerebellum-White-Matter", "VentralDC"]
@@ -58,8 +58,24 @@ def build_idp_table(sessions, subjects_dir):
         vent = [d.get(k, 0.0) for k in ["Left-Lateral-Ventricle", "Right-Lateral-Ventricle", "3rd-Ventricle",
                                         "4th-Ventricle", "Left-Inf-Lat-Vent", "Right-Inf-Lat-Vent"]]
         row["sum_Ventricles"] = sum(vent)
+        row.update(thickness_columns(Path(subjects_dir) / s.image_id / "stats"))
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def thickness_columns(stats_dir):
+    """PIE's own cortical thickness and area (DK atlas, FastSurfer surfaces at the pinned version; ``run --surfaces``):
+    ``cth_{lh,rh}_<region>``, ``area_{lh,rh}_<region>``, ``cth_{lh,rh}_mean``; empty when surfaces were not run. The DK
+    regions match PPMI's FS7 tables (``fs7_cth_*``), so agreement can be checked region by region."""
+    out = {}
+    for h in ("lh", "rh"):
+        p = Path(stats_dir) / f"{h}.aparc.stats"
+        if p.exists():
+            a = parse_aparc_stats(p)
+            out[f"cth_{h}_mean"] = a.pop("MeanThickness", None)
+            for region, (thick, area) in a.items():
+                out[f"cth_{h}_{_clean(region)}"], out[f"area_{h}_{_clean(region)}"] = thick, area
+    return out
 
 
 FS7_TABLES = {"FS7_APARC_CTH": "fs7_cth_", "FS7_APARC_SA": "fs7_sa_", "FS7_ASEG_VOL": "fs7_", "MRIQC": "mriqc_"}

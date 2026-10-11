@@ -113,3 +113,25 @@ def test_t1_choice_ranks_original_3d_over_a_bigger_interpolated_reformat_and_pha
     assert select_t1_series(idx, hdr)["image_id"].tolist() == ["I1", "I3"]
     assert protocol_phase(pd.Series(["2012-03-01", "2021-03-01", "9999-01-01"])).tolist()[:2] == [1.0, 2.0]
     assert protocol_phase(pd.Series(["9999-01-01"])).isna().all()
+
+
+def test_thickness_long_stream_table_and_visit_codes(tmp_path):
+    from pie.imaging.index import visit_to_event
+    from pie.imaging.run import write_long_idps
+
+    for root, sid in ((tmp_path / "fastsurfer_long", "I9"),):
+        stats = root / sid / "stats"
+        stats.mkdir(parents=True)
+        (stats / "aseg+DKT.stats").write_text("  1  12  4000 4100.0  Left-Putamen  90 5 60 120 60\n")
+        (stats / "lh.aparc.stats").write_text(          # synthetic FreeSurfer aparc rows
+            "# Measure Cortex, MeanThickness, Mean Thickness, 2.4500, mm\n"
+            "# ColHeaders StructName NumVert SurfArea GrayVol ThickAvg ThickStd MeanCurv GausCurv FoldInd CurvInd\n"
+            "precuneus 9000 6100 15000 2.310 0.5 0.1 0.02 100 9\n")
+    sessions = pd.DataFrame([dict(patno=7, image_id="I9", session_date="2022-01-01", EVENT_ID="V04", protocol_phase=2),
+                             dict(patno=7, image_id="I8", session_date="2021-01-01", EVENT_ID="BL", protocol_phase=2)])
+    idp = write_long_idps(sessions, tmp_path, {7: ["I8", "I9"]})       # I8's long time point is unfinished: no row
+    row = idp.iloc[0]
+    assert len(idp) == 1 and row["stream"] == "long" and row["long_template"] == "7" and row["vol_Left_Putamen"] == 4100.0
+    assert row["cth_lh_precuneus"] == 2.31 and row["area_lh_precuneus"] == 6100 and row["cth_lh_mean"] == 2.45
+    assert (tmp_path / "fastsurfer_long_idps.csv").exists()
+    assert [visit_to_event(x) for x in ("V06", "Month 48", "Unscheduled Visit 02", "Screening", "Month 7")] == ["V06", "V10", "U02", "SC", None]

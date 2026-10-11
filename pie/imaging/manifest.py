@@ -134,6 +134,46 @@ def _baseline_idps(derived):
         .drop_duplicates("PATNO", keep="first").drop(columns="_usable")
 
 
+T1_MEASURE = lambda c: c.startswith(("vol_", "sum_", "asym_", "cth_", "area_")) or c.endswith("Vol") or c == "eTIV"
+
+
+def t1_visits(derived_dir, stream="cross"):
+    """Every T1 visit (one per participant and visit day), not only the baseline: the longitudinal table.
+
+    ``stream``: "cross" reads ``fastsurfer_idps.csv``; "long" reads ``fastsurfer_long_idps.csv`` (FastSurfer's
+    longitudinal stream, ``run --long``; within-subject template, so change is less noisy). QC as ``QC["t1"]``
+    (measures blanked, identifiers kept), outlier flags, and:
+    ``years_from_bl`` (from the participant's earliest real-dated usable visit), ``visit_index``,
+    ``scanner_id`` (DeviceSerialNumber, else StationName, else vendor + model) with ``scanner_changed_since_bl`` and
+    ``field_changed_since_bl`` (scanner changes are batch effects: harmonise with ``harmonize.long_combat`` or
+    restrict to same-scanner follow-up), ``tiv_subject_mm3`` (the median eTIV over the participant's usable visits:
+    head size does not change, so one TIV per participant, as FreeSurfer's longitudinal stream does)."""
+    derived = Path(derived_dir)
+    name = {"cross": "fastsurfer_idps.csv", "long": "fastsurfer_long_idps.csv"}[stream]
+    v = pd.read_csv(derived / name, parse_dates=["SCAN_DATE"], low_memory=False, dtype={"DeviceSerialNumber": str, "StationName": str})
+    v = v.join(t1_outliers(v))
+    ratings = t1_visual_ratings(derived)
+    if ratings:
+        v["t1_visual_qc"] = v["IMAGEID"].astype(str).map(ratings)
+    v["t1_qc_pass"] = QC["t1"](v)
+    v.loc[~v["t1_qc_pass"], [c for c in v.columns if T1_MEASURE(c)]] = np.nan
+    v["SCAN_DATE"] = _masked_dates(v["SCAN_DATE"])
+    v = v.sort_values(["PATNO", "SCAN_DATE"]).reset_index(drop=True)
+    pick = lambda c: v.get(c, pd.Series(np.nan, index=v.index)).replace("", np.nan)
+    v["scanner_id"] = pick("DeviceSerialNumber").fillna(pick("StationName")).fillna(
+        _vendor(pick("Manufacturer").fillna("")) + "_" + pick("ManufacturersModelName").fillna("").astype(str)).astype(str)
+    usable = v[v["t1_qc_pass"] & v["SCAN_DATE"].notna()]
+    first = usable.groupby("PATNO").first()
+    v["years_from_bl"] = (v["SCAN_DATE"] - v["PATNO"].map(first["SCAN_DATE"])).dt.days / 365.25
+    v["visit_index"] = v.groupby("PATNO").cumcount()
+    v["scanner_changed_since_bl"] = (v["scanner_id"] != v["PATNO"].map(first["scanner_id"])).where(v["PATNO"].isin(first.index))
+    if "MagneticFieldStrength" in v:
+        v["field_changed_since_bl"] = (v["MagneticFieldStrength"] != v["PATNO"].map(first["MagneticFieldStrength"])).where(v["PATNO"].isin(first.index))
+    if "eTIV" in v:
+        v["tiv_subject_mm3"] = v["PATNO"].map(v.groupby("PATNO")["eTIV"].median())
+    return v
+
+
 def _modality_metadata(d, mod, index_file, subjects, flag):
     dates = _dates_from_index(index_file, subjects, flag)
     inferred = pd.to_datetime(d["patno"].map(dates), errors="coerce")
@@ -257,7 +297,7 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
     man = build_manifest(derived, modality_dirs=modality_dirs)
     idps = _baseline_idps(derived).drop(columns=["SCAN_DATE"])
     idps["t1_qc_pass"] = QC["t1"](idps)   # failed segmentation: T1 measures blanked, flag kept (as for the other modalities)
-    measures = [c for c in idps.columns if c.startswith(("vol_", "sum_", "asym_")) or c.endswith("Vol") or c == "eTIV"]
+    measures = [c for c in idps.columns if T1_MEASURE(c)]
     idps.loc[~idps["t1_qc_pass"], measures] = np.nan     # identifiers, visit and scanner stay
     df = man.merge(idps, on="PATNO", how="left")
     if ppmi_dir is not None and "EVENT_ID" in df:   # PPMI's FS7 / MRIQC values, only for the visit of the T1 PIE used
