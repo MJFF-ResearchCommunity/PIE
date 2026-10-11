@@ -31,6 +31,12 @@ def convert_series(zip_path, member_prefix, patno, image_id, out_dir, dcm2niix=D
     if nifti.exists() and sidecar.exists():
         return _row(nifti, sidecar)
     subj_dir.mkdir(parents=True, exist_ok=True)
+    if Path(zip_path).is_dir():        # a BIDS dataset (index.index_bids): already NIfTI, keep its sidecar
+        src = Path(zip_path) / member_prefix
+        shutil.copyfile(src, nifti)
+        js = src.with_name(src.name[:-7] + ".json")
+        shutil.copyfile(js, sidecar) if js.exists() else sidecar.write_text("{}")
+        return _row(nifti, sidecar)
     with tempfile.TemporaryDirectory(dir=out_dir) as tmp:
         tmp = Path(tmp)
         with zipfile.ZipFile(zip_path) as z:

@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .cohorts import subject_key
+
 # Series that are not a usable 3D T1w volume (localisers, calibration, sequence-specific extras).
 _NOT_T1 = re.compile(r"loc|scout|survey|cal_head|calib|coronal|midline|phase|field|mt_|_mt|t2|flair|dti|dwi|fmri|rs_|rest|gre|swi|asl|pd_", re.I)
 _REPEAT = re.compile(r"repeat|rpt|_2$|artifact|_ia$", re.I)
@@ -38,16 +40,22 @@ def index_zips(zip_paths, cache_csv=None):
         zip_paths = todo
     rows = {}
     for zp in zip_paths:
+        if Path(zp).is_dir():          # a BIDS dataset: its T1w images, already NIfTI
+            rows.update({(zp, r["member_prefix"]): r for r in index_bids(zp)})
+            continue
         with zipfile.ZipFile(zp) as z:
             for info in z.infolist():
                 parts = info.filename.split("/")
-                if len(parts) != 6 or info.is_dir() or not parts[1].isdigit():   # phantom scans are not participants
+                if len(parts) != 6 or info.is_dir():
                     continue
-                _, patno, desc, session, image_id, _fname = parts
-                key = (zp, patno, desc, session, image_id)
-                r = rows.setdefault(key, {"zip": zp, "patno": int(patno), "series_desc": desc, "session": session,
+                project, subject, desc, session, image_id, _fname = parts
+                patno = subject_key(project, subject)              # PPMI PATNO, ADNI RID range, else a hashed key
+                if patno is None:                                  # phantom scans are not participants
+                    continue
+                key = (zp, subject, desc, session, image_id)
+                r = rows.setdefault(key, {"zip": zp, "patno": patno, "series_desc": desc, "session": session,
                                           "image_id": image_id, "n_files": 0, "bytes": 0,
-                                          "member_prefix": "/".join(parts[:5]) + "/"})
+                                          "member_prefix": "/".join(parts[:5]) + "/", "cohort": project.upper(), "participant_id": subject})
                 r["n_files"] += 1
                 r["bytes"] += info.file_size
     df = pd.DataFrame(list(rows.values()))
@@ -85,6 +93,51 @@ def header_quality(headers):
     spacing = text("PixelSpacing").str.split(";").str[0].pipe(pd.to_numeric, errors="coerce")
     return (2 * acq.eq("3D") - 2 * acq.eq("2D") + (kind.str.contains("ORIGINAL") & ~derived).astype(int) - derived.astype(int)
             + (ti > 0).astype(int) - (spacing < 0.75).astype(int))
+
+
+def bids_sessions(root, suffixes=("T1w",)):
+    """``(sub, ses, path, sidecar, date_time)`` rows for the NIfTI images of ``suffixes`` in a BIDS dataset.
+    The acquisition time comes from the sidecar's AcquisitionDateTime, else the session's scans.tsv ``acq_time``;
+    without either, the session is undated."""
+    import json
+
+    root = Path(root)
+    out = []
+    for nii in sorted(root.glob("sub-*/**/*.nii.gz")):
+        name = nii.name[:-7]
+        if name.rsplit("_", 1)[-1] not in suffixes:
+            continue
+        ent = dict(p.split("-", 1) for p in name.split("_")[:-1] if "-" in p)
+        js = nii.with_name(name + ".json")
+        meta = json.loads(js.read_text()) if js.exists() else {}
+        when = meta.get("AcquisitionDateTime")
+        scans = next(iter(nii.parents[1].glob("*_scans.tsv")), None) if nii.parent.name in ("anat", "dwi", "func", "fmap") else None
+        if when is None and scans is not None:
+            t = pd.read_csv(scans, sep="\t")
+            hit = t[t["filename"].astype(str).str.endswith(str(nii.relative_to(nii.parents[1])))]
+            when = hit["acq_time"].iloc[0] if len(hit) and "acq_time" in t else None
+        out.append({"sub": ent.get("sub"), "ses": ent.get("ses", ""), "path": nii, "sidecar": js if js.exists() else None,
+                    "date_time": pd.to_datetime(when, errors="coerce")})
+    return out
+
+
+def index_bids(root):
+    """A BIDS dataset's T1w images as ``index_zips`` rows: ``zip`` = the dataset root, ``member_prefix`` = the image's
+    path inside it, ``patno`` = ``cohorts.subject_key("BIDS:<dataset folder>", sub)``, ``session`` from the
+    acquisition time (undated sessions get LONI's masked form, 9999-01-01, kept apart by session label) and a stable
+    ``image_id`` (B + hash of the path), so the rest of the pipeline is unchanged."""
+    import hashlib
+
+    cohort = f"BIDS:{Path(root).resolve().name}"
+    rows = []
+    for r in bids_sessions(root):
+        rel = str(r["path"].relative_to(root))
+        dt = r["date_time"]
+        session = dt.strftime("%Y-%m-%d_%H_%M_%S.0") if pd.notna(dt) else f"9999-01-01_ses-{r['ses'] or 'none'}"
+        rows.append({"zip": str(root), "patno": subject_key(cohort, r["sub"]), "series_desc": r["path"].name[:-7].rsplit("_", 1)[-1],
+                     "session": session, "image_id": "B" + hashlib.sha1(rel.encode()).hexdigest()[:10], "n_files": 1,
+                     "bytes": r["path"].stat().st_size, "member_prefix": rel, "cohort": cohort, "participant_id": r["sub"]})
+    return rows
 
 
 def select_t1_series(index, headers=None):
@@ -125,6 +178,8 @@ def probe_headers(sessions, fields=("Manufacturer", "ManufacturerModelName", "Ma
 
     out = []
     for zp, group in sessions.groupby("zip"):
+        if Path(zp).is_dir():          # BIDS input: the header fields live in the sidecars, not read here
+            continue
         with zipfile.ZipFile(zp) as z:
             first = {}  # series prefix -> first file (one pass over the listing)
             for n in z.namelist():

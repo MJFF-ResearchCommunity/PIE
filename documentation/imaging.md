@@ -42,6 +42,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
 | `freesurfer.py` | Environment and runner for FreeSurfer tools that FastSurfer's eTIV, surface and longitudinal stages call | |
 | `normative.py` | Deviation (z) scores against a reference group, e.g. PPMI controls | |
+| `cohorts.py` | One integer participant key across cohorts (PPMI PATNO, ADNI RID range, hashed keys for other LONI projects and BIDS) | |
 | `harmonize.py` | ComBat (optionally with a spline age term), longitudinal ComBat, batch × label confounding report | |
 | `qc.py` | Overlay montages and contact sheets for visual QC | yes |
 | `cnn.py` | Whole-image 3D CNN baseline (SFCN) with grouped out-of-fold predictions | yes |
@@ -416,6 +417,29 @@ from pie.imaging import normative
 model = normative.fit(df, ["vol_Left_Putamen", "vol_Right_Putamen"], ["age", "sex", "tiv_mm3"], reference=df.COHORT.eq("Healthy Control"))
 z = normative.zscores(df, model)          # z_vol_Left_Putamen, z_vol_Right_Putamen
 ```
+
+## Other cohorts: ADNI, any LONI project, BIDS (`cohorts.py`)
+
+PIE's tables are keyed on an integer `patno`, so other cohorts get a key in their own range, computed from the
+identifiers alone. That way every pipeline and work dir derives the same key without a shared registry
+(`cohorts.subject_key`):
+- PPMI keeps its PATNO.
+- ADNI gets 10^8 + RID (`002_S_0295` → 100000295).
+- Any other LONI project, and any BIDS dataset, gets 10^15 + 12 hex digits of sha1("<cohort>/<id>").
+
+The ranges never overlap, so cohorts can be pooled. `index.csv`, `sessions.csv` and the modality indexes keep
+`cohort` and `participant_id`.
+- **LONI zips of any project:** `--zips` takes them as they come; the zip's top folder (`PPMI/`, `ADNI/`, …) names
+  the cohort. ADNI sessions get ADNIMERGE's `VISCODE` as `EVENT_ID` with `run --adnimerge ADNIMERGE.csv`
+  (`link.link_adni`: nearest exam date within 90 days). Without PPMI sessions the PPMI MRI table is not needed.
+- **BIDS datasets (T1):** a folder in `--zips` is read as BIDS (`index.index_bids`):
+  - every `sub-*/[ses-*/]anat/*_T1w.nii.gz` becomes a candidate series, with the sidecar's `AcquisitionDateTime`
+    (else `scans.tsv` `acq_time`) as the session time;
+  - undated sessions are kept apart by session label, LONI-masked style (9999-01-01);
+  - images are copied, not converted, with their sidecar (`convert.convert_series`).
+  PPP's data can only be reached inside its PEP environment, so PIE runs there from the container (`docker/`).
+- **Still PPMI-only:** clinical labels (`labels.py`), the DaT core-lab reader, the modality pipelines' BIDS input
+  (DWI, NM and FLAIR read LONI zips; BIDS for them is next), and PPMI-specific series names in their selection rules.
 
 ## Longitudinal T1 (`manifest.t1_visits`)
 

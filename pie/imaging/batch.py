@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from .archives import ZipArchiveCache
+from .cohorts import subject_key
 from .convert import DCM2NIIX
 
 
@@ -32,10 +33,12 @@ def index_series(zips):
                     key = "/".join(n.split("/")[:5])
                     counts[key] = counts.get(key, 0) + 1
         for key, c in counts.items():
-            _, patno, desc, date, image_id = key.split("/")
-            if not patno.isdigit():          # LONI phantom scans ("00000JAN00") are not participants
+            project, subject, desc, date, image_id = key.split("/")
+            patno = subject_key(project, subject)   # PPMI PATNO, ADNI RID range, else a hashed key (cohorts.py)
+            if patno is None:                # LONI phantom scans ("00000JAN00") are not participants
                 continue
-            rows.append({"zip": str(zp), "prefix": key + "/", "patno": int(patno), "desc": desc, "date": date[:10], "image_id": image_id, "n_files": c})
+            rows.append({"zip": str(zp), "prefix": key + "/", "patno": patno, "desc": desc, "date": date[:10], "image_id": image_id, "n_files": c,
+                         "cohort": project.upper(), "participant_id": subject})
     return pd.DataFrame(rows)
 
 

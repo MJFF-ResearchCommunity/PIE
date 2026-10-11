@@ -28,13 +28,13 @@ from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_st
 from pie.imaging.features import build_idp_table
 from pie.imaging.index import (T1_HEADER_FIELDS, visit_to_event, index_zips, probe_headers, protocol_phase,
                                read_ida_metadata, read_loni_collection_csv, select_t1_series, t1_candidates)
-from pie.imaging.link import link_sessions_to_events
+from pie.imaging.link import link_adni, link_sessions_to_events
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("PIE.imaging")
 
 
-def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=()):
+def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=(), adnimerge=None):
     """Index zips, choose one T1 per session, link to EVENT_ID. Cached in sessions.csv.
     IDA metadata zips (LONI 'Advanced Download'), when given, override the date-based visit link
     and add scanner/protocol columns."""
@@ -52,6 +52,8 @@ def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=()):
         log.info("sessions.csv does not match the zips' T1 selection (new download or selection fix): rebuilding")
     sessions["protocol_phase"] = protocol_phase(sessions["session_date"])
     sessions = link_sessions_to_events(sessions, ppmi_dir)
+    if adnimerge:      # ADNI sessions: ADNIMERGE's VISCODE by exam date
+        sessions = link_adni(sessions, adnimerge)
     if loni_csv:  # the collection CSV: visit label for every series, group, age at scan
         loni = read_loni_collection_csv(loni_csv)
         sessions = sessions.merge(loni, on="image_id", how="left")
@@ -253,7 +255,7 @@ def write_long_idps(sessions, work, timepoints):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--zips", nargs="+", required=True)
+    ap.add_argument("--zips", nargs="+", required=True, help="LONI zips (PPMI, ADNI or any LONI project) and/or BIDS dataset folders")
     ap.add_argument("--ppmi-dir", default="PPMI")
     ap.add_argument("--work-dir", default="Imaging/derived")
     ap.add_argument("--workers", type=int, default=4)
@@ -262,6 +264,7 @@ def main(argv=None):
     ap.add_argument("--device", default="cuda", help="FastSurfer inference device, passed to its --device (e.g. cuda, cuda:1, cpu; cpu is far slower)")
     ap.add_argument("--ida-metadata", nargs="*", default=(), help="LONI 'Advanced Download' metadata zip(s) (idaxs XML)")
     ap.add_argument("--loni-csv", nargs="*", default=(), help="LONI collection CSV(s) downloaded with the images (visit, group, age)")
+    ap.add_argument("--adnimerge", help="ADNIMERGE.csv: visit codes for ADNI sessions (zips whose top folder is ADNI)")
     ap.add_argument("--priority", help="text file of PATNOs to process first")
     ap.add_argument("--limit", type=int, help="process at most N sessions this call")
     ap.add_argument("--features-only", action="store_true", help="only rebuild fastsurfer_idps.csv")
@@ -275,7 +278,7 @@ def main(argv=None):
 
     work = Path(a.work_dir).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    sessions = prepare_sessions(a.zips, a.ppmi_dir, work, a.ida_metadata, a.loni_csv)
+    sessions = prepare_sessions(a.zips, a.ppmi_dir, work, a.ida_metadata, a.loni_csv, a.adnimerge)
     meta_csv = work / "scan_metadata.csv"
     done = {p.parent.parent.name for p in (work / "fastsurfer").glob(f"*/{STATS_FILE}")}
 

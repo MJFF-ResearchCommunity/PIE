@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import pie.imaging
-from pie.imaging import (cnn, datscan, dwi, dwi_refine, embed, fba, features, flair, labels, manifest, nm, nm_template, qc,
+from pie.imaging import (cnn, datscan, dwi, dwi_refine, embed, fba, features, flair, labels, manifest, nm, nm_native, nm_template, qc,
                          run)
 
 
@@ -280,7 +280,7 @@ def test_module_docstrings_only_mention_real_cli_flags(monkeypatch):
         raise _Parsed(set(self._option_string_actions))
 
     monkeypatch.setattr(argparse.ArgumentParser, "parse_args", grab)
-    mods = [run, dwi, nm, flair, datscan, qc, fba, dwi_refine, nm_template, cnn, embed]
+    mods = [run, dwi, nm, nm_native, flair, datscan, qc, fba, dwi_refine, nm_template, cnn, embed]
     flags = set()
     for m in mods:
         with pytest.raises(_Parsed) as e:
