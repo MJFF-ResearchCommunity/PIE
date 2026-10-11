@@ -46,6 +46,7 @@ def main(argv=None):
     ap.add_argument("--source", choices=["xing", "invicro"], default="xing")
     ap.add_argument("--method", choices=["deming", "equipercentile"], default="deming")
     ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--patnos", help="optional text file of PATNOs: compare two runs on the same participants")
     ap.add_argument("--threshold", type=float, default=0.65,
                     help="deficit cut-off on the core lab's percent-of-expected (0.65 was derived on Invicro's scale; "
                          "labels.xing_deficit_threshold gives Xing's equivalent)")
@@ -53,6 +54,7 @@ def main(argv=None):
 
     d = pd.read_csv(a.sbr, low_memory=False, dtype={"image_id": str})
     d = d[d["error"].fillna("") == ""] if "error" in d else d
+    d = d[d["patno"].isin({int(x) for x in Path(a.patnos).read_text().split()})] if a.patnos else d
     col = lambda c: pd.to_numeric(d[c], errors="coerce") if c in d else pd.Series(np.nan, index=d.index)
     if "shift_x_mm" in d:      # per-axis placement (tables since October 2026); older tables only carry the norm
         old_edge = d[["shift_x_mm", "shift_y_mm", "shift_z_mm"]].abs().max(axis=1) / col("hdr_spacing_mm").fillna(3.9) >= 2 - 1e-6

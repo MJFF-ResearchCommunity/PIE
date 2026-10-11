@@ -688,7 +688,8 @@ only, so its values are not comparable with older tables: check the 0.4 bar on t
 ### Validation
 
 `scripts/validate_datscan.py --sbr <derived>/datscan_full/datscan_sbr.csv --index <derived>/spect_index.csv
---ppmi-dir PPMI [--source xing|invicro] [--method deming|equipercentile] [--folds 5] [--threshold 0.65]` matches
+--ppmi-dir PPMI [--source xing|invicro] [--method deming|equipercentile] [--folds 5] [--threshold 0.65] [--patnos
+file]` (`--patnos` compares two runs on the same participants) matches
 QC-passing scans to the core lab on PATNO and month and calibrates per camera model on the other folds (split by
 PATNO). Per region it prints r of the raw values (overall, and inside versus at or past the old ±2-voxel edge), and
 CCC, ICC(2,1) and Bland–Altman bias and limits of the calibrated values. It then prints Cohen's kappa of the deficit
