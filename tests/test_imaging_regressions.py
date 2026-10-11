@@ -120,7 +120,7 @@ def test_flair_rows_record_acquisition_date_and_t1(tmp_path, monkeypatch):
     monkeypatch.setattr(flair, "register_flair_to_t1", lambda f, t1, m: (sitk.Transform(), -0.5))
     monkeypatch.setattr(flair, "wmh", lambda a, b, vox_mm=1.0: (np.zeros(a.shape, bool), {"wmh_mm3": 0.0}))
     rows = [{"zip": "z", "prefix": "p/", "desc": "3D FLAIR", "flair_3d": True, "n_files": 176, "date": "2000-01-01"}]
-    row = flair.process_subject(1, rows, str(mri.parent), str(tmp_path / "work"))
+    row = flair.process_subject(1, rows, str(mri.parent), str(tmp_path / "work"), method="threshold")
     assert row["acquisition_date"] == "2000-01-01" and row["fs_image_id"] == "I000001"
 
 

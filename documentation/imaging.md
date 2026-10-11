@@ -81,7 +81,7 @@ bundled with PIE, so no template is downloaded.
 | MRtrix3 3.0.x | `dwi --fba`, `fba`; `dwidenoise`/`mrdegibbs` for `--denoise` if present | `PATH` |
 | ANTsPy | `dwi_refine`, `nm_template` | Python import `ants` |
 | FreeSurfer 7.4.1 + license (optional) | `run --etiv`, `run --long`, `fastsurfer.surfaces` | `$PIE_FREESURFER_HOME` (a path without spaces: FreeSurfer's scripts break on them, so link an install on a drive like "Seagate Portable Drive" to e.g. `~/freesurfer-7.4.1`), `$PIE_FS_LICENSE` (else `$FS_LICENSE`); `talairach_avi` also needs `/bin/tcsh` |
-| TrUE-Net (optional) | FLAIR WMH segmentation (installed; the PIE wrapper is not written yet) | `truenet` 2.0.2 in `venv_imaging` (Apache-2.0); weights in `third_party/weights/truenet/` (FSL non-commercial), `TRUENET_PRETRAINED_MODEL_PATH` |
+| TrUE-Net + FSL `fsl_anat` | `flair` (default `--method truenet`) | `truenet` 2.0.2 and `prepare_truenet_data` in `venv_imaging` (Apache-2.0); weights from `$TRUENET_PRETRAINED_MODEL_PATH`, else `$PIE_WEIGHTS_DIR/truenet`, else `<repo>/third_party/weights/truenet` (FSL licence, non-commercial); FSL from `$FSLDIR`, else `~/fsl` |
 | Pretrained weights | `embed`, `cnn --pretrained` | `$PIE_WEIGHTS_DIR`, else `<repo>/third_party/weights`, then `<backend>/`; sources and checksums in `third_party/weights/WEIGHTS.md` |
 
 The defaults are relative to the source tree; set the `PIE_*` environment variables (read at import) to run from an
@@ -277,38 +277,103 @@ iu_genetic_consensus,Polygenic_Risk_Scores}_*.csv`, `Imaging/DaTScan_{SBR_Analys
 ## FLAIR white-matter hyperintensities (`flair.py`)
 
 A vascular covariate, not a synucleinopathy marker: WMH load confounds subcortical volumes and marks the vascular
-mimic behind some normal DaTscans. The default is the classic threshold method below; TrUE-Net (FSL's WMH U-Net,
-Sundaresan et al. 2021) is installed as the deep-learning alternative but not yet wired into `flair.py`, and FastSurfer's T1-only
-`vol_WM_hypointensities` tracks age better than the threshold measure (see the validity table). In the study's
-September 2026 MRI download (snapshot) 1,340 subjects with a T1 have a FLAIR, 3D 1 mm or 2D 5 mm.
+mimic behind some normal DaTscans. In the study's September 2026 MRI download (snapshot) 1,340 subjects with a T1
+have a FLAIR, 3D 1 mm or 2D 5 mm.
+
+The default method is **TrUE-Net** (October 2026). The intensity threshold it replaces tracked age at only ρ 0.18
+(validity table), below FastSurfer's T1-only `vol_WM_hypointensities`. TrUE-Net (Sundaresan et al. 2021, MedIA,
+doi:10.1016/j.media.2021.102184) was trained on vascular WMH. It recovered the WMH–age relation in an independent
+comparison (Strain et al. 2024, NeuroImage, doi:10.1016/j.neuroimage.2023.120494). LST-AI and SAMSEG lesions were
+not chosen as primary because both are MS-trained. **TrUE-Net is not yet validated in PPMI** (plan below).
 
 1. Series: `flag_flair` (`FLAIR|dark.?fluid|tirm`, excluding T1 FLAIR and repeats); `flag_flair_3d` = "3D" in
    the description or >= 100 files. 3D is preferred, then the largest series (`flair_3d` is recorded for
    harmonisation).
-2. `n4(img_sitk, shrink=2)` → `register_flair_to_t1(flair_sitk, t1_img, t1_mask_img)` (rigid MI to the T1
+2. Both methods: `n4(img_sitk, shrink=2)` → `register_flair_to_t1(flair_sitk, t1_img, t1_mask_img)` (rigid MI to the T1
    *head* at 2 mm from two starts, the scanner header and the centre of mass, the better final pose winning; the
    reported `reg_flair_t1_mi` is the brain-masked MI at that pose) → FLAIR resampled onto the T1 grid. Until 25
    September 2026 the fixed image was the brain-masked T1 with a centre-of-mass start, which put partial-coverage 2D
    FLAIR (5 mm slices over the upper head) centimetres off: 177 of 1,338 scans failed QC, and their WMH volumes were
    inflated (median 11.1 mL against 2.5 mL once registered). On 30 of those scans the new registration passed QC for
    21; the other 9 look aligned in the gallery but stay below the MI threshold, so their QC rule is still under review.
-3. `wmh(flair_t1, aseg, vox_mm=1.0)`: white matter = FastSurfer labels 2, 41, 77 eroded by one voxel; lesions =
-   WM voxels brighter than median + `K_MAD` (3) x 1.4826 MAD of normal-appearing WM; components below
-   `MIN_LESION_MM3` (5 mm^3) dropped; periventricular = within `PV_MM` (10 mm) of the lateral ventricles.
+3. `--method truenet` (default; `run_truenet`), TrUE-Net 2.0.2 run as distributed, on the FLAIR and FastSurfer's `orig.mgz`:
+
+   ```bash
+   prepare_truenet_data --FLAIR=<out>/flair --T1=<out>/t1 --outname=<out>/sub --nodistmaps
+   truenet evaluate -i <out> -m mwsc -o <out>/pred
+   ```
+
+   - `prepare_truenet_data` is TrUE-Net's own preprocessing: `fslreorient2std`, BET and FAST bias correction of the
+     FLAIR, `fsl_anat` on the T1, rigid FLIRT of T1 to FLAIR, and the `make_bianca_mask` white-matter mask. The
+     distance maps it skips are only used for training.
+   - Model `mwsc`: MICCAI WMH Challenge, FLAIR + T1, three scanners with 3 mm 2D and 3D FLAIR. `ukbb` (UK Biobank,
+     one protocol) is also installed.
+   - Lesions: the probability map masked by the WM mask, then >= 0.5 (`WMH_PROB`; the paper's post-processing,
+     section 2.1.4). No minimum lesion size is applied, as in the paper. Voxels are counted on the prepared FLAIR grid.
+   - Periventricular: within 10 mm of FastSurfer's lateral ventricles. The distance map is computed on the T1 grid
+     and carried to the FLAIR grid by step 2's registration, which also supplies the QC metric. TrUE-Net's own FLIRT
+     is used only for its input.
+   - Runtime: `fsl_anat` (FNIRT to MNI, for the WM mask) dominates. On FSL's MNI152 T1, `prepare_truenet_data` had
+     not finished after 9 minutes: the FLAIR steps were done and FNIRT was still running. It has not been timed on PPMI
+     scans, so time `--limit 2` before a full run. `truenet` uses the GPU when there is one;
+     `CUDA_VISIBLE_DEVICES=` forces the CPU.
+   - Needs FSL (`$FSLDIR`, else `~/fsl`) and a work directory without spaces, because the FSL script breaks on them.
+     Put it on the NVMe; the zips may stay on the Seagate.
+   - Weights: `third_party/weights/truenet/{mwsc,ukbb}` from the FSL conda package `fsl-truenet_data` 2508.0
+     (download commands and sha256 in `third_party/weights/truenet/README.md`). `$TRUENET_PRETRAINED_MODEL_PATH`,
+     else `$PIE_WEIGHTS_DIR/truenet`, overrides the location. **Licence:** the truenet code is Apache-2.0; the weights
+     are an FSL component under the FSL licence, so non-commercial use only.
+4. `--method threshold` (`wmh(flair_t1, aseg, vox_mm=1.0)`): white matter = FastSurfer labels 2, 41, 77 eroded by one
+   voxel; lesions = WM voxels brighter than median + `K_MAD` (3) x 1.4826 MAD of normal-appearing WM; components
+   below `MIN_LESION_MM3` (5 mm^3) dropped; periventricular = within `PV_MM` (10 mm) of the lateral ventricles.
+
+WMH-SynthSeg, the planned second opinion for 5 mm 2D FLAIR and for cohorts without FLAIR, is not wrapped.
+`mri_WMHsynthseg` is not in FreeSurfer 7.4.1: it is in FreeSurfer's development tree and needs its 790 MB model
+`WMH-SynthSeg_v10_231110.pth` in `$FREESURFER_HOME/models`.
 
 ```bash
 venv_imaging/bin/python -m pie.imaging.flair --zips <full-MRI zips> --sessions <derived>/sessions.csv \
-    --fastsurfer-dir <derived>/fastsurfer --work-dir <derived>/flair --workers 6 [--keep-nifti]
-# -> flair_features.csv, flair_index.csv; --keep-nifti adds <patno>/flair_t1.nii.gz, wmh_t1.nii.gz
+    --fastsurfer-dir <derived>/fastsurfer --work-dir <derived>/flair_truenet --workers 4 [--method threshold] [--keep-nifti]
+# -> flair_features.csv, flair_index.csv; --keep-nifti adds <patno>/flair_t1.nii.gz, wmh_t1.nii.gz and, for TrUE-Net,
+#    <patno>/truenet/ (TrUE-Net's inputs and outputs, including the unthresholded probability map)
 ```
 
-Flags: the shared `batch.add_common_args` set, see [the DWI flag table](imaging_dwi.md#cli) (no extra flags).
+`assemble_features(derived, modality_dirs={"flair": "<derived>/flair_truenet"})` reads the TrUE-Net table. Use
+`--keep-nifti` only on subsets, because the disk is nearly full.
 
-Columns: `wmh_mm3`, `wmh_log_mm3` (log1p), `wmh_pv_mm3`, `wmh_deep_mm3`, `wmh_frac_wm`, `wmh_n_lesions`; QC
-`reg_flair_t1_mi`, `wm_mm3`, `flair_wm_median`, `flair_wm_mad`, `wmh_threshold`; acquisition `flair_3d`,
-`series_desc`, `n_series`, `shape`, `voxel_mm`, `slice_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `ti_s`;
-`patno`, `acquisition_date`, `fs_image_id` (the T1 used; `manifest` fails QC on a mismatch), `error`. `manifest.QC["flair"]`: `reg_flair_t1_mi < -0.2`, `wm_mm3 > 200000`, `flair_wm_mad > 0`.
-FastSurfer's T1-based `vol_WM_hypointensities` is the sanity reference. Tests: `tests/test_flair.py`.
+Flags: the shared `batch.add_common_args` set, see [the DWI flag table](imaging_dwi.md#cli), plus `--method`
+(`truenet` default, `threshold`). One work directory holds one method: resuming into a directory written by the
+other method stops with an error (rows from before `wmh_method` existed count as threshold rows).
+
+Columns: `wmh_mm3`, `wmh_log_mm3` (log1p), `wmh_pv_mm3`, `wmh_deep_mm3`, `wmh_frac_wm` (WMH / eroded FastSurfer WM
+volume), `wmh_n_lesions`. Method: `wmh_method`; TrUE-Net rows add `truenet_model`, `truenet_version`, `fsl_version`
+and `wmh_prob_threshold`, threshold rows add `wmh_threshold`. QC: `reg_flair_t1_mi`, `wm_mm3`, `flair_wm_median`,
+`flair_wm_mad`, `flair_si_mm` (S–I extent: slices x spacing along the axis nearest S–I). Acquisition: `flair_3d`,
+`series_desc`, `n_series`, `shape`, `voxel_mm`, `slice_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `ti_s`. Also
+`patno`, `acquisition_date`, `fs_image_id` (the T1 used; `manifest` fails QC on a mismatch) and `error`.
+
+`manifest.QC["flair"]`: `reg_flair_t1_mi < -0.2`, `wm_mm3 > 200000`, `flair_wm_mad > 0`, `flair_si_mm >= 130`.
+27 of 486 PPMI 2D slabs cover less than 130 mm S–I, which leaves white matter outside the slab; 3D scans all pass.
+Tables written before October 2026 lack `flair_si_mm` and pass that rule. **QC pass rates differ by acquisition:**
+72 % of 2D and 95 % of 3D FLAIRs passed (threshold-method table, September 2026). Blanked WMH is therefore not
+missing at random: report it by `flair_batch` (vendor x 2D/3D), adjust for 2D/3D, and run a 3D-only sensitivity
+analysis. FastSurfer's T1-based `vol_WM_hypointensities` is the sanity reference. Tests: `tests/test_flair.py`.
+
+### TrUE-Net validation plan (before WMH is used as more than an exploratory covariate)
+
+Fix the thresholds below before anyone traces or rates. Sample all subsets stratified by 2D/3D, vendor and TrUE-Net
+volume tertile. Readers are blind to TrUE-Net output and diagnosis. `--keep-nifti` on these subjects (`--patnos`)
+keeps the prepared FLAIR and the probability map.
+
+1. **Manual tracing, 30–40 scans**, traced on the prepared FLAIR. Report voxel Dice and the volume ICC(2,1) with
+   Bland–Altman, overall and by 2D/3D. Suggested pass: median Dice >= 0.6 and ICC >= 0.85 on 3D. Report 2D separately;
+   a 2D failure restricts the covariate to 3D. Threshold sweeps on the saved probability maps are secondary analyses.
+   They do not re-tune the 0.5 threshold.
+2. **Fazekas ratings, about 150 scans** (periventricular and deep, 0–3), with a second rater on 30 for weighted κ.
+   Report Spearman ρ of `wmh_pv_mm3` against the periventricular score and of `wmh_deep_mm3` against the deep score.
+3. **Age as positive control**: Spearman ρ of `wmh_log_mm3` with age in QC-passed scans, overall and by 2D/3D. It
+   should clearly exceed the threshold method's 0.18 and at least match FastSurfer's `vol_WM_hypointensities` (0.46).
+   Also report the QC pass rate by 2D/3D under TrUE-Net.
 
 ## AV-133 (VMAT2) PET (`pet.py`)
 
@@ -783,7 +848,7 @@ venv_imaging/bin/python -m pie.imaging.run --zips Imaging/MRI_First_Study.zip Im
     --ppmi-dir PPMI --work-dir $D --loni-csv Imaging/MRI_First_Study_9_07_2026.csv
 venv_imaging/bin/python -m pie.imaging.dwi   --zips Imaging/<DTI>.zip  --sessions $D/sessions.csv --fastsurfer-dir $D/fastsurfer --work-dir $D/dwi --fsl
 venv_imaging/bin/python -m pie.imaging.nm    --zips Imaging/<MRI>.zip  --sessions $D/sessions.csv --fastsurfer-dir $D/fastsurfer --work-dir $D/nm --keep-nifti
-venv_imaging/bin/python -m pie.imaging.flair --zips Imaging/<MRI>.zip  --sessions $D/sessions.csv --fastsurfer-dir $D/fastsurfer --work-dir $D/flair
+venv_imaging/bin/python -m pie.imaging.flair --zips Imaging/<MRI>.zip  --sessions $D/sessions.csv --fastsurfer-dir $D/fastsurfer --work-dir $D/flair_truenet
 venv_imaging/bin/python -m pie.imaging.qc --work-dir $D/nm --modality nm --out $D/qc/nm --worst reg_nm_t1_mi
 ```
 
@@ -881,7 +946,7 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | NM SN volume loss rate (longitudinal) | SOTA progression marker | Cross-sectional volume only; no longitudinal pipeline |
 | | Locus coeruleus | SOTA in prodromal work | Not in PPMI's 24 mm slab |
 | Iron | QSM, R2*, nigrosome-1 on SWI | SOTA | Not acquired by PPMI-1 or PPMI 2.0 (no multi-echo GRE or SWI) |
-| FLAIR | WMH volume | Gold (vascular covariate) | Threshold method; deep-learning segmenters not wrapped. Prefer FastSurfer's `vol_WM_hypointensities` (below) |
+| FLAIR | WMH volume | Gold (vascular covariate) | TrUE-Net (Oct 2026), not yet validated in PPMI; until then prefer FastSurfer's `vol_WM_hypointensities` (below) |
 | rs-fMRI | fMRIPrep + 24P + aCompCor + censoring, GSR as sensitivity | Best practice | Yes |
 | | Schaefer cortex + CIT168 subcortex | SOTA default ("4S") | Yes (`atlases.schaefer400_mni2009c`, `striatal_rois`) |
 | | Striatal seed FC, basal-ganglia network (ICA + dual regression) | Canonical, poorly reproducible | Yes |
@@ -980,8 +1045,10 @@ acquisitions.
   where a reverse-PE b0 exists (`--fsl`, PPMI 2.0). Single-shell free water is not assembled by default.
 - DaTscan: PIE's own reconstruction (FBP, no attenuation correction, subject-space ROIs, hottest-placement search) is
   not on PPMI's scale; use PPMI's SBRs where they exist. One scan per subject.
-- FLAIR: threshold WMH tracks age more weakly than FastSurfer's T1 WM-hypointensity volume; use the latter as the
-  vascular covariate until a validated lesion segmenter is wrapped. About 13 % of FLAIR scans fail the registration QC.
+- FLAIR: TrUE-Net is the default but unvalidated in PPMI (validation plan in the FLAIR section); the threshold
+  method tracks age more weakly than FastSurfer's T1 WM-hypointensity volume. Use the latter as the vascular
+  covariate until TrUE-Net passes. QC passed 72 % of 2D against 95 % of 3D FLAIRs (threshold-method table), so
+  blanked WMH is not missing at random. WMH-SynthSeg is not available in FreeSurfer 7.4.1.
 - AV-133 PET: whole anatomical ROIs, no partial-volume correction and no sub-regional ROIs, so absolute SBRs are not on PPMI's scale until `--agreement` has been run; each visit is measured on the earliest T1 (atrophy at late visits is not modelled).
 - QSM, R2* and SWI are not possible: PPMI does not acquire multi-echo GRE or SWI.
 - Before 25 September 2026 every `ants.registration` call (`nm_template syn`, `dwi_refine`, `tiv_from_registration`, `map_labels_to_subject`) left its transforms in the temp directory, ~140 MB per SyN. They are now deleted after use; files named `tmp*Warp.nii.gz`, `tmp*InverseWarp.nii.gz` and `tmp*GenericAffine.mat` left in `/tmp` by older runs are safe to remove.
