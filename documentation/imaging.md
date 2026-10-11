@@ -39,7 +39,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `dwi_tensor_qc.py`, `freewater_qc.py`, `dwi_acquisition.py`, `dwi_correction.py` | Opt-in DWI measurement and correction safeguards ([page](imaging_dwi.md#opt-in-measurement-apis)) | |
 | `nm.py`, `nm_template.py`, `nm_native.py` | Neuromelanin MRI: contrast ratios, template and territory contrasts, native-space SNc volume (Langley method) and snceg segmentation ([page](imaging_nm_datscan.md)) | yes |
 | `datscan.py` | DaTscan SPECT reconstruction and SBRs ([page](imaging_nm_datscan.md#datscan-spect-datscanpy)) | yes |
-| `pet.py` | [18F]AV-133 (VMAT2) PET: frame timing and motion QC, time-weighted mean, MI registration to the T1, striatal SBRs against occipital and cerebellar cortex, agreement with PPMI ([section](#av-133-vmat2-pet-petpy)) | yes |
+| `pet.py` | PET: [18F]AV-133 (VMAT2) striatal SBRs against occipital and cerebellar cortex; SV2A and PI-2620 tau SUVRs (`--tracer`); frame timing and motion QC, time-weighted mean, MI registration to the T1, agreement with PPMI ([section](#av-133-vmat2-pet-petpy)) | yes |
 | `flair.py` | White-matter hyperintensity burden | yes |
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
 | `freesurfer.py` | Environment and runner for FreeSurfer tools that FastSurfer's eTIV, surface and longitudinal stages call | |
@@ -444,7 +444,7 @@ injection, `pet_mean.nii.gz`, `t1_to_pet.tfm`).
 
 Columns:
 - Outcomes: `sbr_{caudate,putamen}_{l,r}` with `_ant` / `_post` halves (occipital reference), the same set as
-  `sbrcb_*` (cerebellum), `cb_occ`, `mean_*`, `suv_occipital`.
+  `sbrcb_*` (cerebellum), `cb_occ`, `mean_*`, `suv_reference` (body-weight SUV of the reference region).
 - QC: `reg_pet_t1_mi`, `reg_template_r` (correlation with `datscan.synthetic_spect`'s striatum-hot template over the
   head), `motion_mm`, `motion_corrected`, `n_frames`, `n_frames_used`, `start_min`, `end_min`, `frame_minutes`,
   `timing_ok` (first frame at 75–85 min), `units`, `units_ok`, `cov_{striatum,occipital,cerebellum}`, `n_<roi>`.
@@ -468,6 +468,33 @@ Not done:
 - Follow-ups anchored on the baseline PET.
 - Enhanced (single-file, multi-frame) PET DICOM: timing is read per file, so such a series stops with a frame-count
   error rather than being guessed.
+
+### SV2A and tau PET (`pet.py --tracer sv2a | tau`)
+
+PPMI's tables:
+- **SV2A** (synaptic density; [18F]SynVesT-1): 18 scans of 15 participants on one Siemens Biograph, 88 Hammers-atlas
+  regions plus Braak composites, SUVR against the centrum semiovale (`SV2A_PET_SUVR_Analysis`).
+- **Tau** ([18F]PI-2620; the form is named MK-6240): 23 scans, Braak VI SUVR against the ventral cerebellum
+  (`TAU_PET_Analysis`).
+- Static scans start about 55–60 minutes after injection.
+
+The same ingest, frame QC and registration as AV-133 apply. Frames from 40 minutes on are averaged (`timing_ok` for a
+start within 45–70 minutes). `quantify_suvr` then gives `suvr_<region>` over FastSurfer aseg/DKT regions named after
+the PPMI region they approximate (`SUVR_REGIONS`):
+- striatum, pallidum, thalamus, amygdala, hippocampus and accumbens;
+- insula, fusiform, cuneus, lingual, precentral, postcentral, superior frontal and superior parietal;
+- anterior and posterior cingulate, parahippocampal, brainstem;
+- the Braak VI composite (Schöll 2016: pericalcarine, postcentral, precentral, paracentral).
+
+The references are:
+- `cs`, the centrum semiovale: cerebral white matter at least 8 mm from any other label, above the lateral
+  ventricles;
+- `cerebellum_ventral`: cerebellar cortex below its median height, at least 6 mm from the cerebrum.
+
+Outputs and checks:
+- `pet_sv2a.csv` / `pet_tau.csv` hold the values; `qc_pass_suvr` checks units, reference coverage and motion;
+- `--agreement` compares each region with PPMI's of the same name (`labels.suvr_labels`, `agreement_table_suvr`);
+- **status:** phantom-tested; no SV2A or tau images downloaded yet.
 
 Tests: `tests/test_pet.py`.
 
@@ -1017,7 +1044,7 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Schaefer cortex + CIT168 subcortex | SOTA default ("4S") | Yes (`atlases.schaefer400_mni2009c`, `striatal_rois`) |
 | | Striatal seed FC, basal-ganglia network (ICA + dual regression) | Canonical, poorly reproducible | Yes |
 | | ALFF / fALFF / ReHo | SOTA | XCP-D's ALFF (as mALFF) and ReHo via `xcpd_features`; `fmri_connectivity.local_measures` adds fALFF (unvalidated) |
-| PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | AV-133: `pet.py` follows PPMI's 2014 IND method on the subject's FastSurfer ROIs (occipital and cerebellar references); `labels.pet_labels` reads PPMI's values per pipeline. Not yet run: no AV-133 images downloaded, no agreement measured. No partial-volume correction. SV2A and tau PET: tables only |
+| PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | AV-133: `pet.py` follows PPMI's 2014 IND method on the subject's FastSurfer ROIs (occipital and cerebellar references); `labels.pet_labels` reads PPMI's values per pipeline. Not yet run: no AV-133 images downloaded, no agreement measured. No partial-volume correction. SV2A and tau: `pet.py --tracer sv2a|tau` SUVRs (phantom-tested; images not yet downloaded) |
 | CT | Safety head CT before the screening lumbar puncture | Not an imaging endpoint: the `Safety_Head_CT_Scan` form (`CTSCAN`, yes/no) records whether one was done; PPMI does not distribute the images | Nothing to process |
 | All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method); ComBat, spline-age ComBat and longitudinal ComBat in `harmonize.py` |
 

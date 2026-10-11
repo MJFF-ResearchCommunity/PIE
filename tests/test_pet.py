@@ -316,3 +316,26 @@ def test_cli_end_to_end_on_phantom_dicom_with_resume_and_agreement(tmp_path):
     pet.main(args + ["--agreement", str(tmp_path / "PPMI")])
     agree = pd.read_csv(tmp_path / "pet" / "pet_agreement.csv")
     assert set(agree["pipeline"]) == {"core_lab_6voi"} and (agree["n"] == 1).all()
+
+
+def test_sv2a_and_tau_suvr_against_their_reference_regions(tmp_path):
+    t1, lab, up = _phantom()
+    f, aff = _acquire(up, (4.0, -3.0, 5.0), (6.0, -4.0, 8.0))
+    out, _ = pet.quantify_suvr(nib.Nifti1Image(f, aff), t1, lab, "cs")              # SV2A: centrum semiovale (deep WM 0.7)
+    assert out["cov_reference"] == 1.0 and out["n_reference"] > 1000
+    assert abs(out["suvr_superiorfrontal_l"] - 1.1 / 0.7) < 0.12 and abs(out["suvr_caudate_l"] - TRUTH["caudate_l"] / 0.7) < 0.15 * TRUTH["caudate_l"] / 0.7
+    assert np.isnan(out["suvr_braak6"])                                                # no such labels in the phantom
+    tau, _ = pet.quantify_suvr(nib.Nifti1Image(f, aff), t1, lab, "cerebellum_ventral")
+    assert abs(tau["suvr_superiorfrontal_l"] - 1.1 / CB) < 0.12
+    sel = pet.select_series(pd.DataFrame([_index_rows(image_id="I1", desc="SV2A_PET_DYNAMIC"), _index_rows(image_id="I2", desc="AV133")]), tracer="sv2a")
+    assert sel.loc[sel["selected"], "image_id"].tolist() == ["I1"]
+
+
+def test_suvr_labels_pivot_regions_per_scan(tmp_path):
+    from pie.imaging.labels import suvr_labels
+    (tmp_path / "Imaging").mkdir()
+    pd.DataFrame({"PROTOCOL": [14] * 3, "PATNO": [1, 1, 2], "EVENT_ID": ["BL"] * 3, "SV2A_SCAN_DATE": ["01/2023"] * 3,
+                  "SV2A_REGION": ["PUTAMEN_L", "CS", "PUTAMEN_L"], "SV2A_SUVR_CS": [5.0, 1.0, 4.5], "SV2A_ANALYZED": ["Yes", "Yes", "No"]}
+                 ).to_csv(tmp_path / "Imaging" / "SV2A_PET_SUVR_Analysis_08Sep2026.csv", index=False)
+    w = suvr_labels(tmp_path, "sv2a")
+    assert len(w) == 1 and w["PUTAMEN_L"].item() == 5.0 and w["PET_SCAN_DATE"].dt.year.item() == 2023

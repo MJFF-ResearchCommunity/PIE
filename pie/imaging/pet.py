@@ -59,6 +59,41 @@ PPMI_COLUMNS = dict(zip(REGIONS, ["PET_LCAUD_S", "PET_RCAUD_S", "PET_LPUTANT_S",
 TRACERS = {"AV-133": r"AV.?133", "DPA-714": r"DPA.?714", "C05-05": r"C05.?05"}
 PROCESSING_VERSION = "2026-10-11-av133-v1"
 
+# Tracers PIE processes: series pattern, analysis frames (start, min after injection), the protocol's start window
+# (``timing_ok``), outcome table. SV2A ([18F]SynVesT-1) and tau ([18F]PI-2620): PPMI's static scans start ~55-60 min
+# after injection (SV2A_PET_Acquisition_Metadata, TAU_PET_Metadata); SUVR against the centrum semiovale (SV2A) and the
+# ventral cerebellum (tau), as PPMI's SV2A_PET_SUVR_Analysis and TAU_PET_Analysis.
+TRACER_CONFIG = {
+    "av133": {"pattern": AV133, "from_min": ANALYSIS_FROM_MIN, "window": PROTOCOL_START_MIN, "csv": "pet_av133.csv"},
+    "sv2a": {"pattern": r"SV2A|SynVesT|SDM.?8|UCB.?J", "from_min": 40.0, "window": (45.0, 70.0), "csv": "pet_sv2a.csv", "reference": "cs"},
+    "tau": {"pattern": r"PI.?2620|\btau\b", "from_min": 40.0, "window": (45.0, 70.0), "csv": "pet_tau.csv", "reference": "cerebellum_ventral"},
+}
+# FastSurfer aseg / DKT labels for the SUVR tracers, named after the PPMI region they approximate (Hammers-atlas names in
+# SV2A_PET_SUVR_Analysis; Braak VI after Schoell et al. 2016: pericalcarine, postcentral, precentral, paracentral)
+_LR = lambda l, r: {"_l": l, "_r": r}
+SUVR_REGIONS = {
+    **{f"caudate{k}": (v, f"CAUDATENUCL{k.upper()}") for k, v in _LR([11], [50]).items()},
+    **{f"putamen{k}": (v, f"PUTAMEN{k.upper()}") for k, v in _LR([12], [51]).items()},
+    **{f"pallidum{k}": (v, f"PALLIDUM{k.upper()}") for k, v in _LR([13], [52]).items()},
+    **{f"thalamus{k}": (v, f"THALAMUS{k.upper()}") for k, v in _LR([10], [49]).items()},
+    **{f"amygdala{k}": (v, f"AMYGDALA{k.upper()}") for k, v in _LR([18], [54]).items()},
+    **{f"hippocampus{k}": (v, f"HIPPOCAMPUS{k.upper()}") for k, v in _LR([17], [53]).items()},
+    **{f"accumbens{k}": (v, f"NUCLACCUMB{k.upper()}") for k, v in _LR([26], [58]).items()},
+    **{f"insula{k}": (v, f"INSULA{k.upper()}") for k, v in _LR([1035], [2035]).items()},
+    **{f"fusiform{k}": (v, f"G_FUS{k.upper()}") for k, v in _LR([1007], [2007]).items()},
+    **{f"cuneus{k}": (v, f"OL_CUNEUS{k.upper()}") for k, v in _LR([1005], [2005]).items()},
+    **{f"lingual{k}": (v, f"OL_LING_G{k.upper()}") for k, v in _LR([1013], [2013]).items()},
+    **{f"precentral{k}": (v, f"FL_PRECEN_G{k.upper()}") for k, v in _LR([1024], [2024]).items()},
+    **{f"postcentral{k}": (v, f"PL_POSTCE_G{k.upper()}") for k, v in _LR([1022], [2022]).items()},
+    **{f"superiorfrontal{k}": (v, f"FL_SUP_FR_G{k.upper()}") for k, v in _LR([1028], [2028]).items()},
+    **{f"superiorparietal{k}": (v, f"PL_SUP_PA_G{k.upper()}") for k, v in _LR([1029], [2029]).items()},
+    **{f"cingulate_ant{k}": (v, f"G_CING_ANT{k.upper()}") for k, v in _LR([1002, 1026], [2002, 2026]).items()},
+    **{f"cingulate_post{k}": (v, f"G_CING_POST{k.upper()}") for k, v in _LR([1023, 1010], [2023, 2010]).items()},
+    **{f"parahippocampal{k}": (v, f"G_PARAH_AMB{k.upper()}") for k, v in _LR([1016, 1006], [2016, 2006]).items()},
+    "brainstem": ([16], "BRAINSTEM"),
+    "braak6": ([1021, 2021, 1022, 2022, 1024, 2024, 1017, 2017], "BRAAK_6"),
+}
+
 
 # ------------------------------------------------------------------------------------------ index / select
 def _text(v):
@@ -110,7 +145,7 @@ def _postfilter(text):
     return "unfiltered" if re.search(UNFILTERED, t) else "filtered" if re.search(FILTERED, t) else "unknown"
 
 
-def select_series(idx, prefer="unfiltered"):
+def select_series(idx, prefer="unfiltered", tracer="av133"):
     """Flag one PET reconstruction per participant-day (``selected``). Candidates: modality PT whose description or
     DICOM tracer names no other PPMI tracer (sites often leave the scanner's FDG default, so FDG in the tracer field
     alone does not exclude: the PPMI table join decides the tracer). Order: the ``prefer``red post-filter class (the
@@ -121,7 +156,10 @@ def select_series(idx, prefer="unfiltered"):
     d["kernel"] = d["kernel"].fillna("").astype(str)
     d["postfilter"] = (d["desc"].astype(str) + " " + d["kernel"]).map(_postfilter)
     named = d["desc"].astype(str) + " " + d["tracer"].fillna("").astype(str)
-    d["candidate"] = d["modality"].eq("PT") & ~named.str.contains(OTHER_TRACERS, case=False, regex=True)
+    if tracer == "av133":
+        d["candidate"] = d["modality"].eq("PT") & ~named.str.contains(OTHER_TRACERS, case=False, regex=True)
+    else:      # SV2A and tau zips hold only their tracer in PPMI's downloads, but a name must say so
+        d["candidate"] = d["modality"].eq("PT") & named.str.contains(TRACER_CONFIG[tracer]["pattern"], case=False, regex=True)
     rank = d["postfilter"].map({prefer: 0, "unknown": 1}).fillna(2)
     d["selected"] = False
     for _, g in d[d["candidate"]].assign(_rank=rank).groupby(["patno", "date"]):
@@ -243,7 +281,7 @@ def _displacement_mm(tx, radius=50.0):
     return float(max(np.linalg.norm(np.array(tx.TransformPoint(tuple(map(float, p)))) - p) for p in corners))
 
 
-def mean_image(data, frames, affine, sampling_seed=ITK_SEED):
+def mean_image(data, frames, affine, sampling_seed=ITK_SEED, from_min=ANALYSIS_FROM_MIN, window=PROTOCOL_START_MIN):
     """Analysis frames (starting >= ANALYSIS_FROM_MIN after injection; all frames when timing is unknown or none
     qualifies), rigid inter-frame motion of each against the first (MI, ``dwi._register_volume``), frames resampled onto
     the first when the largest displacement exceeds MOTION_CORRECT_MM, then the time-weighted mean.
@@ -253,7 +291,7 @@ def mean_image(data, frames, affine, sampling_seed=ITK_SEED):
     from .dwi import _register_volume, _sitk_native
 
     start = frames["start_s"].to_numpy(dtype=float)
-    use = start >= ANALYSIS_FROM_MIN * 60 if np.isfinite(start).all() else np.ones(len(frames), bool)
+    use = start >= from_min * 60 if np.isfinite(start).all() else np.ones(len(frames), bool)
     use = use if use.any() else np.ones(len(frames), bool)
     d, dur = data[..., use], frames["duration_s"].to_numpy(dtype=float)[use]
     motion, corrected = np.nan, False
@@ -269,7 +307,7 @@ def mean_image(data, frames, affine, sampling_seed=ITK_SEED):
     s = start[use]
     info = {"n_frames": int(len(frames)), "n_frames_used": int(use.sum()), "frame_minutes": float(np.nansum(dur) / 60),
             "start_min": float(s[0] / 60), "end_min": float((s[-1] + dur[-1]) / 60),
-            "timing_ok": bool(PROTOCOL_START_MIN[0] <= s[0] / 60 <= PROTOCOL_START_MIN[1]) if np.isfinite(s[0]) else np.nan,
+            "timing_ok": bool(window[0] <= s[0] / 60 <= window[1]) if np.isfinite(s[0]) else np.nan,
             "motion_mm": motion, "motion_corrected": corrected}
     return time_weighted_mean(d, dur), info
 
@@ -350,6 +388,54 @@ def quantify(pet_img, t1_img, aparc_img, sampling_seed=ITK_SEED):
     return out, tx
 
 
+def suvr_reference(L, ijk_world_z, name, spacing_mm=1.0):
+    """Reference masks on the T1 label grid: ``cs`` = centrum semiovale, cerebral white matter at least 8 mm from any
+    other label, above the lateral ventricles' top (SV2A); ``cerebellum_ventral`` = cerebellar cortex below its median
+    height, at least 6 mm from the cerebrum (tau)."""
+    from scipy import ndimage
+
+    if name == "cs":
+        wm = np.isin(L, [2, 41])
+        core = ndimage.distance_transform_edt(wm) * spacing_mm >= 8
+        vent = np.isin(L, [4, 43])
+        top = ijk_world_z[vent].max() if vent.any() else -np.inf
+        return core & (ijk_world_z > top)
+    cb = np.isin(L, CEREBELLUM)
+    cerebrum = (L > 0) & ~np.isin(L, CEREBELLUM + [7, 46, 16, 15])
+    far = ndimage.distance_transform_edt(~cerebrum) * spacing_mm >= 6
+    return cb & far & (ijk_world_z < np.median(ijk_world_z[cb])) if cb.any() else cb
+
+
+def quantify_suvr(pet_img, t1_img, aparc_img, reference, sampling_seed=ITK_SEED):
+    """SV2A / tau: register (``register_pet_to_t1``), resample the PET onto the T1 and give ``suvr_<region>`` (region
+    mean / reference mean, ``SUVR_REGIONS``), ``mean_reference``, ``n_reference``, ``cov_reference`` (share of the
+    reference inside the field of view) and ``reg_pet_t1_mi``. Returns (row dict, transform)."""
+    import SimpleITK as sitk
+
+    from .dwi import _sitk_native
+
+    tx, metric = register_pet_to_t1(pet_img, t1_img, aparc_img, sampling_seed)
+    fixed = _sitk_from_nib(t1_img)
+    moving = _sitk_native(np.asanyarray(pet_img.dataobj).astype(np.float32), pet_img.affine)
+    ones = sitk.Image(moving.GetSize(), sitk.sitkFloat32) + 1
+    ones.CopyInformation(moving)
+    S = sitk.GetArrayFromImage(sitk.Resample(moving, fixed, tx, sitk.sitkLinear, 0.0))
+    inside = sitk.GetArrayFromImage(sitk.Resample(ones, fixed, tx, sitk.sitkLinear, 0.0)) > 0.99
+    L = np.rint(sitk.GetArrayFromImage(_sitk_from_nib(nib.Nifti1Image(np.asanyarray(aparc_img.dataobj).astype(np.float32), aparc_img.affine)))).astype(np.int32)
+    zz, yy, xx = np.indices(L.shape)          # sitk arrays are (z, y, x): world (LPS) z of each voxel
+    world = np.array(fixed.GetOrigin())[2] + np.einsum("j,j...->...", np.array(fixed.GetDirection()).reshape(3, 3)[2] * np.array(fixed.GetSpacing()),
+                                                         np.stack([xx, yy, zz]))
+    ref = suvr_reference(L, world, reference, float(np.mean(fixed.GetSpacing())))
+    out = {"reg_pet_t1_mi": metric, "cov_reference": float(inside[ref].mean()) if ref.any() else np.nan}
+    ref &= inside
+    out["n_reference"] = int(ref.sum())
+    out["mean_reference"] = mref = float(S[ref].mean()) if ref.sum() >= 50 else np.nan
+    for name, (ids, _) in SUVR_REGIONS.items():
+        m = np.isin(L, ids) & inside
+        out[f"suvr_{name}"] = float(S[m].mean() / mref) if m.sum() >= 20 and mref > 0 else np.nan
+    return out, tx
+
+
 def _suv(mean, sidecar, header, start_s):
     """Mean of a region as SUV (body-weight), from Bq/mL with the injected dose decayed to the image's decay-correction
     reference (START: the first frame; ADMIN: injection); NaN when units, dose or weight are missing. A units check."""
@@ -366,8 +452,8 @@ def _suv(mean, sidecar, header, start_s):
 
 
 # ------------------------------------------------------------------------------------------ driver
-def process_scan(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, sampling_seed=ITK_SEED):
-    """One participant-day: convert, average, register and quantify. Returns a flat row for ``pet_av133.csv``."""
+def process_scan(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, sampling_seed=ITK_SEED, tracer="av133"):
+    """One participant-day: convert, average, register and quantify. Returns a flat row for ``TRACER_CONFIG[tracer]["csv"]``."""
     import SimpleITK as sitk
 
     from .archives import ZipArchiveCache
@@ -377,22 +463,25 @@ def process_scan(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False,
     work = Path(work_dir) / str(patno) / date
     with ZipArchiveCache() as cache:
         data, frames, affine, sidecar, header = load_scan(series_rows, work, cache)
-    mean, info = mean_image(data, frames, affine, sampling_seed)
+    cfg = TRACER_CONFIG[tracer]
+    mean, info = mean_image(data, frames, affine, sampling_seed, cfg["from_min"], cfg["window"])
     pet = nib.Nifti1Image(mean, affine)
     mri = Path(fastsurfer_dir) / "mri"
-    q, tx = quantify(pet, nib.load(mri / "orig.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz"), sampling_seed)
-    tracer = str(sidecar.get("TracerName", ""))
+    t1, aparc = nib.load(mri / "orig.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
+    q, tx = quantify(pet, t1, aparc, sampling_seed) if tracer == "av133" else quantify_suvr(pet, t1, aparc, cfg["reference"], sampling_seed)
+    tracer_name = str(sidecar.get("TracerName", ""))
     desc = ";".join(sorted({str(r["desc"]) for r in series_rows}))
     row = {"patno": patno, "image_id": ";".join(r["image_id"] for r in series_rows), "acquisition_date": date,
            "series_desc": desc, "n_series": len(series_rows), "postfilter": series_rows[0].get("postfilter", ""),
-           "tracer": tracer, "tracer_av133": bool(re.search(AV133, tracer + " " + desc, re.I)),
+           "tracer": tracer_name, "tracer_av133": bool(re.search(AV133, tracer_name + " " + desc, re.I)),
            "manufacturer": str(sidecar.get("Manufacturer", "")), "model": str(sidecar.get("ManufacturersModelName", "")),
            "recon": str(sidecar.get("ReconMethodName") or sidecar.get("ReconstructionMethod") or ""),
            "units": str(sidecar.get("Units", "")), "units_ok": str(sidecar.get("Units", "")).lower() in RATIO_UNITS,
            "decay_correction": str(sidecar.get("DecayCorrection", "")), "injected_mbq": sidecar.get("InjectedRadioactivity", np.nan),
            "shape": "x".join(map(str, mean.shape)), "voxel_mm": "x".join(str(round(float(z), 2)) for z in pet.header.get_zooms()[:3]),
-           **info, **q, "fs_image_id": Path(fastsurfer_dir).name, "processing_version": PROCESSING_VERSION}
-    row["suv_occipital"] = _suv(q["mean_occipital"], sidecar, header, float(frames["start_s"].iloc[0]))
+           **info, **q, "fs_image_id": Path(fastsurfer_dir).name, "processing_version": PROCESSING_VERSION, "pie_tracer": tracer}
+    ref_mean = q["mean_occipital"] if tracer == "av133" else q["mean_reference"]
+    row["suv_reference"] = _suv(ref_mean, sidecar, header, float(frames["start_s"].iloc[0]))
     if keep_nifti:
         nib.save(pet, work / "pet_mean.nii.gz")
         (work / "pet.json").write_text(json.dumps(sidecar, indent=1, default=str))
@@ -403,9 +492,9 @@ def process_scan(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False,
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep = args
+    patno, rows, fs_dir, work_dir, keep, tracer = args
     try:
-        out = process_scan(patno, rows, fs_dir, work_dir, keep_nifti=keep)
+        out = process_scan(patno, rows, fs_dir, work_dir, keep_nifti=keep, tracer=tracer)
         out["error"] = ""
     except Exception as e:
         out = {"patno": patno, "image_id": ";".join(r["image_id"] for r in rows), "acquisition_date": rows[0]["date"],
@@ -455,6 +544,26 @@ def agreement(pie, ref):
             "loa_high": float(diff.mean() + 1.96 * sd), "pie_mean": float(y.mean()), "ppmi_mean": float(x.mean())}
 
 
+def qc_pass_suvr(d):
+    """SV2A / tau rows: no error, an activity or count scale, >= 95 % of the reference region in the field of view, at
+    least 50 reference voxels, inter-frame motion <= 5 mm (single-frame scans pass)."""
+    col = lambda c, fill: d[c] if c in d else pd.Series(fill, index=d.index)
+    num = lambda c: pd.to_numeric(col(c, np.nan), errors="coerce")
+    return (col("error", "").fillna("").eq("") & col("units_ok", False).astype(str).str.lower().eq("true")
+            & (num("cov_reference") >= 0.95) & (num("n_reference") >= 50) & ~(num("motion_mm") > 5))
+
+
+def agreement_table_suvr(pie, labels, qc=True):
+    """PIE's ``suvr_<region>`` against PPMI's region of the same name in ``SUVR_REGIONS`` (``labels.suvr_labels``), on
+    the same scans (PATNO + scan month): one row per region present in both."""
+    p = pie[pie.get("error", pd.Series("", index=pie.index)).fillna("") == ""].copy()
+    p = p[qc_pass_suvr(p)] if qc else p
+    p = p.assign(PATNO=p["patno"].astype(int), month=pd.to_datetime(p["acquisition_date"]).dt.to_period("M"))
+    j = p.merge(labels.assign(month=labels["PET_SCAN_DATE"].dt.to_period("M")), on=["PATNO", "month"])
+    return pd.DataFrame([{"region": name, "ppmi_region": ppmi, **agreement(j[f"suvr_{name}"], j[ppmi])}
+                         for name, (_, ppmi) in SUVR_REGIONS.items() if ppmi in j and f"suvr_{name}" in j])
+
+
 def agreement_table(pie, labels, qc=True):
     """PIE (``pet_av133.csv``) against PPMI (``labels.pet_labels``) on the same scans (PATNO + scan month), AV-133 only,
     one row per PPMI pipeline x reference x region: the pipelines are never pooled. References: occipital (every
@@ -482,7 +591,8 @@ def main(argv=None):
     from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, run_batch
     from .labels import pet_labels
 
-    ap = add_common_args(argparse.ArgumentParser(description="[18F]AV-133 PET striatal binding ratios"))
+    ap = add_common_args(argparse.ArgumentParser(description="PET: [18F]AV-133 striatal binding ratios; SV2A and PI-2620 tau SUVRs"))
+    ap.add_argument("--tracer", choices=list(TRACER_CONFIG), default="av133", help="which PPMI PET tracer the zips hold")
     ap.add_argument("--recon", choices=["unfiltered", "filtered"], default="unfiltered",
                     help="post-filter class preferred when a visit has both reconstructions (the TOM asks for unfiltered)")
     ap.add_argument("--agreement", metavar="PPMI_DIR", help="write pet_agreement.csv (PIE vs PET_SBR_Analysis per pipeline, "
@@ -490,21 +600,23 @@ def main(argv=None):
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
-    out_csv = work / "pet_av133.csv"
+    out_csv = work / TRACER_CONFIG[a.tracer]["csv"]
     if a.agreement:
-        t = agreement_table(pd.read_csv(out_csv, dtype={"image_id": str}), pet_labels(a.agreement))
-        t.to_csv(work / "pet_agreement.csv", index=False)
+        from .labels import suvr_labels
+        pie = pd.read_csv(out_csv, dtype={"image_id": str})
+        t = agreement_table(pie, pet_labels(a.agreement)) if a.tracer == "av133" else agreement_table_suvr(pie, suvr_labels(a.agreement, a.tracer))
+        t.to_csv(work / ("pet_agreement.csv" if a.tracer == "av133" else f"pet_agreement_{a.tracer}.csv"), index=False)
         print(t.round(3).to_string(index=False))
         return
-    idx = select_series(index_pet(a.zips, work / "pet_index.csv"), a.recon)
-    idx.to_csv(work / "pet_index.csv", index=False)                  # the cache, now with the choice of series
+    idx = select_series(index_pet(a.zips, work / "pet_index.csv"), a.recon, a.tracer)
+    idx.to_csv(work / f"pet_index_{a.tracer}.csv", index=False)      # the choice of series for this tracer
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
     done = done_subjects(out_csv, a.retry_errors, key="image_id")
     jobs = []
     for (patno, _), g in idx[idx["selected"]].groupby(["patno", "date"]):
         rows = g.sort_values("image_id").to_dict("records")
         if int(patno) in fs and ";".join(r["image_id"] for r in rows) not in done:
-            jobs.append((int(patno), rows, fs[int(patno)], str(work), a.keep_nifti))
+            jobs.append((int(patno), rows, fs[int(patno)], str(work), a.keep_nifti, a.tracer))
     print(f"{idx[idx['selected']].groupby(['patno', 'date']).ngroups} PET visits selected, {len(done)} done", flush=True)
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, pid_file=a.pid_file)
 

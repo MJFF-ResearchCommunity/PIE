@@ -268,6 +268,18 @@ def pet_labels(ppmi_dir):
     return t
 
 
+def suvr_labels(ppmi_dir, tracer):
+    """PPMI's SV2A (``SV2A_PET_SUVR_Analysis``: 88 Hammers-atlas regions and Braak composites against the centrum
+    semiovale) or tau (``TAU_PET_Analysis``, [18F]PI-2620: Braak VI against the ventral cerebellum) SUVRs, one row per
+    analysed scan: PATNO, EVENT_ID, ``PET_SCAN_DATE`` (month start) and one column per PPMI region name."""
+    stem, pre = {"sv2a": ("SV2A_PET_SUVR_Analysis", "SV2A"), "tau": ("TAU_PET_Analysis", "TAU")}[tracer]
+    t = _latest(ppmi_dir, "Imaging", stem)
+    t = t[t[f"{pre}_ANALYZED"].astype(str).str.lower().eq("yes")]
+    value = f"{pre}_SUVR_CS" if tracer == "sv2a" else f"{pre}_SUVR_CBM"
+    w = t.pivot_table(index=["PATNO", "EVENT_ID", f"{pre}_SCAN_DATE"], columns=f"{pre}_REGION", values=value, aggfunc="mean").reset_index()
+    return w.rename(columns={f"{pre}_SCAN_DATE": "PET_SCAN_DATE"}).assign(PET_SCAN_DATE=lambda x: _month(x["PET_SCAN_DATE"]))
+
+
 def ppmi_dti_roi_table(ppmi_dir):
     """PPMI's hand-drawn nigral DTI ROIs (CIND; Schuff et al. 2015, doi:10.1002/mds.26325; three ROIs per side: I rostral,
     II middle, III caudal; two cerebral-peduncle references), one row per PATNO and scan month: a reference for
