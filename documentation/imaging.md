@@ -42,6 +42,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `manifest.py` | Per-subject manifest, QC rules, assembled feature table | |
 | `freesurfer.py` | Environment and runner for FreeSurfer tools that FastSurfer's eTIV, surface and longitudinal stages call | |
 | `normative.py` | Deviation (z) scores against a reference group, e.g. PPMI controls | |
+| `harmonize.py` | ComBat (optionally with a spline age term), longitudinal ComBat, batch × label confounding report | |
 | `qc.py` | Overlay montages and contact sheets for visual QC | yes |
 | `cnn.py` | Whole-image 3D CNN baseline (SFCN) with grouped out-of-fold predictions | yes |
 | `embed.py` | Embeddings from pretrained open-weight T1 models | yes |
@@ -392,6 +393,52 @@ model = normative.fit(df, ["vol_Left_Putamen", "vol_Right_Putamen"], ["age", "se
 z = normative.zscores(df, model)          # z_vol_Left_Putamen, z_vol_Right_Putamen
 ```
 
+## Harmonisation (`harmonize.py`)
+
+| Function | What it does |
+|---|---|
+| `combat(df, features, batch, covariates=(), nonlinear=("age",), label=None, eb=True, spline_df=4)` | ComBat with empirical Bayes and protected covariates. Covariates named in `nonlinear` enter as a cubic B-spline, like ComBat-GAM (Pomponio 2020) but unpenalised. Returns `(harmonised copy, model)`. With `nonlinear=()` it reproduces neuroCombat 0.2.12 to 1e-12 |
+| `combat_apply(model, df)` | Applies a fitted model to new rows. Raises for batches the model has not seen. Spline covariates are clipped to the fitted range |
+| `long_combat(df, features, batch, subject, time, covariates=(), label=None, ranef="1", niter=30)` | Longitudinal ComBat (Beer 2020): a REML mixed model with a subject random intercept is the location model, then empirical-Bayes batch location and scale on its residuals. A participant's scanner may change between visits. Ported from the R package `longCombat` (method `REML`), with statsmodels `MixedLM` in place of lme4 |
+| `confounding_report(df, batch, label, covariates=(), min_per_class=5)` | Batch × label counts, label proportions per batch and Cramér's V. Flags batches that are single-label or have fewer than `min_per_class` of a class. Also gives covariate means (or level proportions) per batch |
+
+Feature values must be complete, every batch needs at least 2 rows, and covariates are column names or patsy terms
+(wrap numerically coded multi-level categories in `C()`).
+
+**Inference mode** (group differences across cohorts): fit on every scan with the outcome protected, e.g.
+`combat(df, f, "site", ["age", "sex"], label="saa")` or `long_combat(..., label="saa")`. Every such call logs the
+confounding report (logger `pie.imaging.harmonize`, WARNING) and keeps it in `model["confounding"]`. These values
+depend on every participant's label, so they must not feed a classifier evaluated on the same participants.
+`combat_apply` refuses such a model.
+
+**Prediction mode** (classifiers): fit inside each training fold with nuisance covariates only, never the outcome,
+then `combat_apply` the model to the held-out fold. The held-out rows need covariates but no labels. Pool or drop
+rare scanners first: a batch the training fold never saw is an error. `pie.experiment.prediction` does not call
+this module. Its in-fold batch handling is still the study's ridge residualisation on batch one-hot codes (levels
+seen fewer than 8 times pooled), applied when `residualize=True`.
+
+**Harmonisation cannot fix complete confounding.** ComBat estimates each batch's shift after removing the protected
+covariates. In a batch that holds only one label class, that shift is identified only by assuming the label effect
+estimated in the other batches holds there too, and nothing in that batch can check this. If the label is constant
+within every batch, the design is singular and `combat` / `long_combat` raise. In this consortium SAA positivity is
+about 88 % in PPMI PD but about 22 % in ADNI, so cohort and label are entangled. Read `cramers_v` and `flagged`
+before interpreting harmonised SAA differences, and check flagged cohorts with within-cohort contrasts. For
+`long_combat`, the within-subject slope is protected only if scanner changes do not coincide with one visit for
+everyone (some participants stay on a scanner over the same interval, or change dates vary). Otherwise the scanner
+change and time are confounded.
+
+Tests (`tests/test_harmonize.py`, simulated data only) cover:
+- linear `combat` against neuroCombat, with and without empirical Bayes;
+- recovery of known additive and multiplicative site effects when sites differ in age range and age acts on a
+  curve. Spline ComBat brings the site-mean spread from 3.7 to 0.14 and the site SD ratio to 1.07; linear ComBat
+  leaves 1.2 and 4.2;
+- in-fold fit and apply, unseen batches and complete confounding;
+- the confounding report on the consortium's prevalences;
+- a longitudinal study where 60 % of participants change scanner at year 2. Their raw within-subject slope is
+  −1.4 against a true −0.5; `long_combat` recovers −0.50 and removes 98 % of the scanner-mean spread.
+
+No R reference numbers: R is not installed here, so the lme4 → `MixedLM` swap is unchecked against R itself.
+
 ## Whole-image models
 
 ### 3D CNN baseline (`cnn.py`)
@@ -559,7 +606,7 @@ python pie/pipeline.py --data-dir PPMI --output-dir <output> \
 
 The table enters the reduction/merge step as the `imaging` modality: `IMAGEID`, `SCAN_DATE` and text columns
 (scanner strings) are dropped and the rest are prefixed `imaging_`. Harmonise scanner effects inside the
-cross-validation folds, never on the full dataset before splitting. The study's final method, which PIE ships as `pie.experiment.prediction.ImageDesign(residualize=True, batch_cols=…)`, is a training-fold ridge residualisation on an age spline, sex (plus ICV for T1) and batch one-hot codes, chosen against the unadjusted features in the inner loop. ComBat (e.g. `endgame.preprocessing.ComBatHarmonizer`) is the alternative; with a few dozen scans per batch it can over-shrink. For multi-modality work use `manifest.assemble_features` and
+cross-validation folds, never on the full dataset before splitting. The study's final method, which PIE ships as `pie.experiment.prediction.ImageDesign(residualize=True, batch_cols=…)`, is a training-fold ridge residualisation on an age spline, sex (plus ICV for T1) and batch one-hot codes, chosen against the unadjusted features in the inner loop. ComBat ([`harmonize.py`](#harmonisation-harmonizepy)) is the alternative; with a few dozen scans per batch it can over-shrink. For multi-modality work use `manifest.assemble_features` and
 [`pie.experiment`](experiment.md) instead.
 
 ## End-to-end example
@@ -676,7 +723,7 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | ALFF / fALFF / ReHo | SOTA | `fmri_connectivity.local_measures` (unvalidated); XCP-D is the community implementation |
 | PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | No PET processing. PPMI's analysed tables can be joined as labels; an AV-133 module (reusing `datscan.sbr_from_arrays` on the PET registered to the T1) is the first candidate |
 | CT | Safety head CT before the screening lumbar puncture | Not an imaging endpoint: the `Safety_Head_CT_Scan` form (`CTSCAN`, yes/no) records whether one was done; PPMI does not distribute the images | Nothing to process |
-| All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method; ComBat is the alternative) |
+| All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method); ComBat, spline-age ComBat and longitudinal ComBat in `harmonize.py` |
 
 ### Real-data validity checks (September 2026)
 
@@ -781,7 +828,7 @@ venv_imaging/bin/python -m pytest -q tests/test_imaging.py tests/test_imaging_au
     tests/test_dwi.py tests/test_dwi_correction.py tests/test_embed.py tests/test_flair.py tests/test_freewater_qc.py \
     tests/test_manifest.py tests/test_nm.py tests/test_nm_template.py tests/test_qc.py tests/test_staging.py \
     tests/test_staging_files.py tests/test_imaging_regressions.py \
-    tests/test_dwi_tracts.py tests/test_fmri_striatal.py tests/test_nm_volume.py tests/test_volumes.py tests/test_normative.py \
+    tests/test_dwi_tracts.py tests/test_fmri_striatal.py tests/test_nm_volume.py tests/test_volumes.py tests/test_normative.py tests/test_harmonize.py \
     tests/test_fmri_connectivity.py tests/test_brain_viewer.py
 ```
 
