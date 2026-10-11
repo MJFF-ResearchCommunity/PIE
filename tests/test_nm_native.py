@@ -165,6 +165,24 @@ def test_snceg_features_measure_the_segmented_nigra_against_the_crus(tmp_path):
     assert abs(out["nms_sn_l_cnr"] - 3.0) < 1e-6 and abs(out["nms_sn_mean_cr"] - 0.3) < 1e-6
 
 
+def test_snceg_reference_is_each_sides_crus_on_its_own_sn_slices():
+    """A through-slab intensity gradient cancels: each side is referenced to its own crus on the slices of its own SN.
+    The crus over the whole slab (the reference before 11 Oct 2026, kept as *_cr_allslices) does not cancel it."""
+    shape = (40, 40, 8)
+    codes = np.full(shape, 100, np.int16)
+    codes[20:] += 100
+    codes[5:15, 25:35, :] = 100 + N.CRUS                     # the crus spans the whole slab
+    codes[25:35, 25:35, :] = 200 + N.CRUS
+    sn = np.zeros(shape, bool)
+    sn[5:10, 5:15, 4:8] = True                               # left SN in the upper slices, right SN in the lower ones
+    sn[25:30, 5:15, 0:4] = True
+    nm = np.where(sn, 130.0, 100.0) * (1 + 0.05 * np.arange(8))   # 5 % per slice through the slab
+    out = N.snceg_features(nib.Nifti1Image(nm, np.diag([0.5, 0.5, 2.0, 1.0])), sn, codes)
+    assert out["nms_sn_l_cr"] == pytest.approx(0.3) and out["nms_sn_r_cr"] == pytest.approx(0.3)
+    assert out["nms_sn_mean_cr"] == pytest.approx(0.3) and out["nms_crus_l_mean"] == pytest.approx(127.5)
+    assert out["nms_sn_l_cr_allslices"] > 0.35 and out["nms_sn_r_cr_allslices"] < 0.25
+
+
 def test_snceg_runs_in_its_own_environment_and_must_return_the_input_grid(tmp_path, monkeypatch):
     img = nib.Nifti1Image(np.random.default_rng(0).random((20, 20, 6)).astype(np.float32), np.diag([0.5, 0.5, 2.0, 1.0]))
     nib.save(img, tmp_path / "nm_mean.nii.gz")

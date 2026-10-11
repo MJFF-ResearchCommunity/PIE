@@ -51,6 +51,27 @@ def test_study_nigral_dwi_is_assembled_under_its_own_qc_and_failed_t1_keeps_iden
     assert not row3["t1_qc_pass"] and np.isnan(row3["vol_Left_Putamen"]) and row3["EVENT_ID"] == "BL" and row3["Manufacturer"] == "GE"
 
 
+def test_nm_assembly_names_snceg_the_primary_measure_and_carries_vendor_and_slab_thickness(tmp_path):
+    d = tmp_path
+    pd.DataFrame({"PATNO": [1, 2, 3], "IMAGEID": ["I1", "I2", "I3"], "SCAN_DATE": ["2022-01-01"] * 3,
+                  "vol_Left_Putamen": [5000.0] * 3}).to_csv(d / "fastsurfer_idps.csv", index=False)
+    (d / "nm").mkdir()
+    qc = {"error": "", "n_sn_l": 40, "n_sn_r": 40, "sn_slab_coverage_l": 1., "sn_slab_coverage_r": 1., "repeat_motion_mm_max": .5,
+          "nm_ref_l_sd": 1., "nm_ref_l_mean": 10., "nm_ref_r_sd": 1., "nm_ref_r_mean": 10., "nm_sn_mean_cnr": .1}
+    siemens, ge = {"manufacturer": "Siemens", "shape": "384x512x16", "voxel_mm": "0.5x0.5x1.5"}, \
+        {"manufacturer": "GE MEDICAL SYSTEMS", "shape": "512x512x10", "voxel_mm": "0.43x0.43x2.0"}
+    pd.DataFrame([{**qc, **siemens, "patno": 1, "n_repeats": 5}, {**qc, **ge, "patno": 2, "n_repeats": 5},
+                  {**qc, **siemens, "patno": 3, "n_repeats": 1}]).to_csv(d / "nm" / "nm_features.csv", index=False)
+    pd.DataFrame({"patno": [1, 2, 3], "error": [""] * 3, "nms_sn_mean_cr": [.2, .15, .25], "nms_sn_volume_mm3": [300., 250., 280.],
+                  "nms_sn_mean_cr_allslices": [.21, .16, .26]}).to_csv(d / "nm" / "nm_native_features.csv", index=False)
+    f = assemble_features(d).set_index("PATNO")
+    assert f.loc[1, "nm_primary_cr"] == .2 and f.loc[2, "nm_primary_volume_mm3"] == 250 and "nms_sn_mean_cr_allslices" not in f
+    assert np.isnan(f.loc[3, "nm_primary_cr"]) and np.isnan(f.loc[3, "nm_sn_mean_cnr"])       # one repeat: the slab fails QC
+    assert f["nm_vendor"].tolist() == ["SIEMENS", "GE", "SIEMENS"] and f["nm_slab_mm"].tolist() == [24., 20., 24.]   # kept, not dropped
+    blocks = feature_blocks(f.columns)["nm"]
+    assert "nms_sn_mean_cr" in blocks and not any(c.startswith("nm_primary_") for c in blocks)
+
+
 def test_dat_qc_rejects_failed_and_anticorrelated_registrations():
     from pie.imaging.manifest import QC
 

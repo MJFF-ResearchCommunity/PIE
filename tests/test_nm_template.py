@@ -54,6 +54,24 @@ def test_template_features_recover_planted_contrast():
     assert abs(out0["nmt_sn_mean_cnr"]) < 0.03                                 # no contrast invented from noise
 
 
+def test_template_crus_lies_on_the_sn_levels_so_a_through_slab_gradient_above_them_cancels():
+    """The crus was the darker half of a 3D shell around the SN prior, which reached the darker peduncle above the SN
+    (median 7 mm on PPMI): a slab brighter towards its top then moved the reference but not the SN. On the SN's own
+    levels the reference shares the SN's slices, and the contrast does not change."""
+    img, band, prior = _synthetic()
+    X, Y, Z = _box_xyz()
+    top = Z[prior].max()
+    shell = (T._dilate_mm(prior, 8.0) & ~T._dilate_mm(prior, 4.0) & (Y > np.median(Y[prior])) & (np.abs(X) > 5)) & (Z > top)
+    img[shell] = 0.75                                        # the peduncle above the SN: darker than the crus beside it
+    m = T.template_masks(img)
+    assert all(m[f"crus_{s}"].any() and Z[m[f"crus_{s}"]].max() <= top for s in "lr")
+    rng = np.random.default_rng(1)
+    subj = img * 500.0 + rng.normal(0, 25, img.shape).astype(np.float32)
+    ramp = 1 + 0.03 * np.clip(Z - top, 0, None)              # 3 % per mm through the slab above the SN
+    flat, graded = T.template_features(subj, m), T.template_features(subj * ramp, m)
+    assert abs(graded["nmt_sn_mean_cnr"] - flat["nmt_sn_mean_cnr"]) < 1e-6 and np.isfinite(flat["nmt_sn_mean_cnr"])
+
+
 def _box_xyz():
     x = np.arange(T.BOX_SHAPE[0])[:, None, None] * T.BOX_MM + T.BOX_ORIGIN_RAS[0]
     y = np.arange(T.BOX_SHAPE[1])[None, :, None] * T.BOX_MM + T.BOX_ORIGIN_RAS[1]

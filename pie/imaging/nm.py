@@ -14,11 +14,11 @@ by site ("AX T2 GRE MT", "2D GRE-MT", "AXIAL 2D GRE-MT", "2D GRE-MT_ACPC", "NM-G
 3. `features`     substantia nigra (SNc + SNr, left/right, anterior/posterior halves): mean signal, contrast ratio
                   CNR = (SN - ref) / ref against the surrounding-midbrain ring (atlas SN dilated 3 mm minus nuclei,
                   inside brainstem/ventral DC). The same-side anterior ring, nominally crus cerebri, is retained
-                  as `*_cnr_crus`. This is a contrast ratio, not a noise-SD-normalized CNR. The atlas SN (SNc + SNr) is
-                  wider than the thin neuromelanin band and sits off it in many subjects (by 1-2 mm through the
-                  affine used before 27 Sep 2026, less through the SyN), so its position is refined per side by a
-                  translation (<= 2 mm in-plane, +-1 slice) that maximises the ROI mean on a 1 mm-smoothed copy while
-                  keeping the ROI inside brainstem labels (`nm_sn_shift_mm_*`; the unrefined value is `*_cnr_atlas`).
+                  as `*_cnr_crus`. This is a contrast ratio, not a noise-SD-normalized CNR, and a diagnostic since
+                  11 Oct 2026: PIE's default NM measure is the snceg segmentation (`nm_native --snceg`). The atlas SN
+                  is read where the SyN puts it; the optional refinement (`features(refine=True)`: a translation
+                  <= 2 mm in-plane, +-1 slice, maximising the ROI mean on a 1 mm-smoothed copy) selects on the image
+                  it measures and added ~+0.023 contrast, so it is off by default (`nm_sn_shift_mm_*` = 0).
                   Order statistics on single voxels (brightest-fraction contrast, fixed-threshold volumes) were removed
                   after the 2026-09 audit: on PPMI slabs (per-voxel CV ~0.13) they tracked the noise level
                   (Spearman 0.65-0.71) and carried no group signal. QC: repeats, inter-repeat motion, registration
@@ -53,7 +53,7 @@ NM_PATTERN = r"GRE.?MT|MT.?GRE|GRE ?- ?MT|NM\s*-|Neuromelanin|NM_MT|NM MT"
 EXCLUDE = r"MTC-NO|B0|Map|TRACEW|ADC|_FA"
 DILATE_MM = 3.0
 REFINE_MM = 2.0        # max in-plane translation when refining the atlas SN position on the slab
-PROCESSING_VERSION = "2026-09-27-study-syn-slab-qc-v6"   # complete runs; --refeature appends "-refeatured"
+PROCESSING_VERSION = "2026-10-11-coverage-weighted-unrefined-v7"   # complete runs; --refeature appends "-refeatured"
 
 
 # ------------------------------------------------------------------------------------------ index / convert
@@ -142,6 +142,7 @@ def _mppca_centre(stack, frac=0.5):
 def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=False):
     """Align/average one compatible reconstruction per acquisition; return image, metadata, count, motion and the
     repeat support: per voxel of the image, the share of repeats whose field of view reaches it (1 = every repeat).
+    Each voxel is the mean of the repeats that reach it (coverage-weighted, since 11 Oct 2026).
     ``denoise``: MP-PCA (Veraart et al. 2016, DIPY ``mppca``, 5-voxel patches) over the stacked repeats before
     alignment, as in the published PPMI nigral-volume pipeline (Langley et al. 2025), on the slab's central in-plane
     half (``_mppca_centre``). On a phantom it cut the error of the average about threefold in uniform tissue but only
@@ -172,7 +173,9 @@ def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=F
         ones.CopyInformation(mov)
         support += sitk.GetArrayFromImage(sitk.Resample(ones, ref, tx, sitk.sitkLinear, 0.0))
         motion.append(float(np.linalg.norm(np.array(tx.GetParameters())[3:6])))
-    mean = (acc / len(group)).astype(np.float32)
+    # coverage-weighted: each voxel is averaged over the repeats that reach it (the anchor reaches all), so a moved
+    # repeat's missing edge does not darken it (dividing by the number of repeats did, by 1/n per missing repeat)
+    mean = (acc / support).astype(np.float32)
     support = (support / len(group)).transpose(2, 1, 0).astype(np.float32)
     if transforms_dir is not None:
         Path(transforms_dir).mkdir(parents=True, exist_ok=True)
@@ -283,9 +286,13 @@ def _refine(sn, sm, stem, spacing_zyx, max_mm=REFINE_MM):
     return shift
 
 
-def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None, support=None):
-    """Signal and CNR per side (+ anterior/posterior halves of the SN) at the refined atlas-SN position.
-    Primary reference = the whole surrounding-midbrain ring (``nm_ring_mean``); the part of the ring anterior to the
+def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None, support=None, refine=False):
+    """Signal and CNR per side (+ anterior/posterior halves of the SN) at the atlas-SN position, or with ``refine`` at
+    the position ``_refine`` picks. Refinement is off by default since 11 Oct 2026: it selects the position on the image
+    it then measures, which added ~+0.023 to the contrast on PPMI slabs, more than the HC-PD gap; unrefined,
+    ``*_cnr`` equals ``*_cnr_atlas`` and ``nm_sn_shift_mm_*`` is 0. This ring contrast is a diagnostic: PIE's default
+    NM measure is snceg (``nm_native.snceg_features``).
+    Reference = the whole surrounding-midbrain ring (``nm_ring_mean``); the part of the ring anterior to the
     SN on the same side (nominally crus cerebri) is kept as ``*_cnr_crus``. The audit of 2026-09 showed the anterior
     part is contaminated by the neuromelanin band itself (it lies 1-2 mm off the atlas SN and is lost in PD: the
     anterior/ring intensity ratio is lower in PD), which cancelled the group difference. The ring is an alternative
@@ -302,7 +309,7 @@ def features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, 
     shifts, refined = {}, {}
     for side in ("l", "r"):
         original = rois[f"sn_{side}"]
-        shifts[side] = _refine(original, sm, stem, spacing_zyx) if original.any() else (0, 0, 0)
+        shifts[side] = _refine(original, sm, stem, spacing_zyx) if refine and original.any() else (0, 0, 0)
         refined[side] = _shift_mask(original, shifts[side])
     reference = rois["ref"] & ~(refined['l'] | refined['r'])
     if mask_out is not None:

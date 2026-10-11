@@ -276,7 +276,10 @@ def template_masks(template, crus_mm=(4.0, 9.0), sn_mm=3.0, cnr_min=0.06):
         if not pr.any():
             continue
         cx, cy = x.ravel()[np.nonzero(pr)[0]].mean(), y.ravel()[np.nonzero(pr)[1]].mean()
-        sector = _dilate_mm(pr, crus_mm[1]) & ~_dilate_mm(pr, crus_mm[0]) & (np.broadcast_to(y, BOX_SHAPE) > cy) & (np.abs(np.broadcast_to(x, BOX_SHAPE)) > abs(cx)) & (template > 0)
+        levels = np.isin(np.arange(BOX_SHAPE[2]), np.nonzero(pr)[2])[None, None, :]   # the SN's own axial levels (11 Oct 2026):
+        # the 3D shell reached the darker peduncle above the SN (crus median 7 mm above it), so a through-slab gradient
+        # did not cancel between SN and reference
+        sector = _dilate_mm(pr, crus_mm[1]) & ~_dilate_mm(pr, crus_mm[0]) & (np.broadcast_to(y, BOX_SHAPE) > cy) & (np.abs(np.broadcast_to(x, BOX_SHAPE)) > abs(cx)) & levels & (template > 0)
         if sector.sum() < 50:
             continue
         crus = _largest(sector & (template <= np.median(template[sector])))
