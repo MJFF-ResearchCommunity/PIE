@@ -518,7 +518,17 @@ subjects on the September 2026 download). It also adds **PPMI's core-lab SBRs fo
 asymmetry indices, and `dat_core_source` (`xing_cwm` where Xing analysed the scan, else `invicro_occipital`). These are
 PPMI's endpoint values and the ones to analyse for PPMI; they take no PIE DaT QC. PIE's own `dat_sbr_*` reconstruction
 is a screening measure for cohorts without a core lab. The two core-lab scales differ, so stratify or harmonise on
-`dat_core_source` (`feature_blocks` gives them as their own `dat_core` block). With `nm/nm_template_features.csv` present it adds the template-space NM
+`dat_core_source` (`feature_blocks` gives them as their own `dat_core` block).
+
+With `pet/pet_av133.csv` present (`pet.py`), the manifest takes the AV-133 visit nearest the T1:
+- columns `pet_av133_image_id`, `_date`, `_days_from_t1`, `_batch`, `_fs_image_id` and `_qc_pass`;
+- QC is `pet.qc_pass`, and it fails when the stored registration refers to another T1;
+- the assembled table adds `pet_av133_sbr_*` (occipital reference, PPMI's scale), `pet_av133_sbrcb_*` (cerebellum,
+  under its own coverage rule) and `pet_av133_cb_occ`, as the `pet_av133` block;
+- `pet_av133_validated` is False until `pet --agreement` has been run.
+
+FLAIR rows carry `flair_wmh_method` (`truenet`, or `threshold` for tables written before 11 Oct 2026). Never pool the
+two methods. With `nm/nm_template_features.csv` present it adds the template-space NM
 contrasts `nmt_*_cnr` under their own QC (`QC["nmt"]`: SN mask >= 90 % covered on both sides, crus CV < 0.3; flag
 `nmt_qc_pass`).
 

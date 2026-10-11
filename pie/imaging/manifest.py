@@ -88,7 +88,7 @@ def _masked_dates(s):
     return s.where(s.dt.year < 2100)
 
 
-DEFAULT_DIRS = {"dat": "datscan_full"}     # modality -> directory under the derived root when it is not the modality name
+DEFAULT_DIRS = {"dat": "datscan_full", "pet_av133": "pet"}     # modality -> directory under the derived root when it is not the modality name
 
 
 def _modality_dir(derived, modality, modality_dirs):
@@ -274,9 +274,15 @@ def build_manifest(derived_dir, modality_dirs=None):
     if fl is not None:
         fl["flair_qc_pass"] = QC["flair"](fl)
         fl["flair_batch"] = _vendor(fl["manufacturer"]) + "_" + np.where(fl["flair_3d"].astype(bool), "3D", "2D")
+        fl["flair_wmh_method"] = fl.get("wmh_method", pd.Series("threshold", index=fl.index)).fillna("threshold")
         extra = _modality_metadata(fl, "flair", flair_dir / "flair_index.csv", subjects, "selected")
-        man = man.merge(fl[["patno", "flair_date", "flair_batch", "flair_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
-    for mod in ("dat", "dwi", "nm", "flair"):
+        man = man.merge(fl[["patno", "flair_date", "flair_batch", "flair_wmh_method", "flair_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+    # AV-133 PET (pet.py): one row per visit, so the visit nearest the T1; the stored registration refers to fs_image_id
+    pet = pet_av133_rows(derived, modality_dirs, man)
+    if pet is not None:
+        man = man.merge(pet[["PATNO", "pet_av133_image_id", "pet_av133_date", "pet_av133_batch", "pet_av133_fs_image_id",
+                             "pet_av133_qc_pass"]], on="PATNO", how="left")
+    for mod in ("dat", "dwi", "nm", "flair", "pet_av133"):
         if f"{mod}_date" in man:
             man[f"{mod}_days_from_t1"] = (man[f"{mod}_date"] - man["t1_date"]).dt.days
         if f"{mod}_fs_image_id" in man:
@@ -285,6 +291,38 @@ def build_manifest(derived_dir, modality_dirs=None):
             man[f"{mod}_t1_mismatch"] = mismatch
             man.loc[mismatch, f"{mod}_qc_pass"] = False
     return man
+
+
+# AV-133 PET (pet.py) is unvalidated: agreement with PPMI's PET_SBR_Analysis (`pet --agreement`) has not been run.
+PET_AV133_VALIDATED = False
+
+
+def pet_av133_rows(derived, modality_dirs, man):
+    """``pet/pet_av133.csv`` per participant: the visit nearest the manifest's T1 (dated visits first), with
+    ``pet_av133_*`` names, the QC of ``pet.qc_pass`` (occipital; cerebellum-referenced values under their own rule) and a
+    failed QC when the stored registration refers to another T1. None when the table is absent."""
+    from .pet import qc_pass
+
+    p = _modality_dir(Path(derived), "pet_av133", modality_dirs) / "pet_av133.csv"
+    if not p.exists() or p.stat().st_size == 0:
+        return None
+    d = pd.read_csv(p, low_memory=False, dtype={"image_id": str, "fs_image_id": str})
+    d = d[d.get("error", pd.Series("", index=d.index)).fillna("") == ""].copy()
+    d["_qc"], d["_qc_cb"] = qc_pass(d), qc_pass(d, "cerebellum")
+    d = d.merge(man[["PATNO", "t1_date", "t1_image_id"]], left_on="patno", right_on="PATNO")
+    d["pet_av133_date"] = _masked_dates(d["acquisition_date"])
+    d["_gap"] = (d["pet_av133_date"] - d["t1_date"]).dt.days.abs().fillna(np.inf)
+    d = d.sort_values(["PATNO", "_gap"]).drop_duplicates("PATNO")
+    sbr = [c for c in d.columns if re.fullmatch(r"sbr(?:cb)?_\w+", c)] + (["cb_occ"] if "cb_occ" in d else [])
+    d.loc[~d["_qc"], sbr] = np.nan
+    d.loc[~d["_qc_cb"], [c for c in sbr if c.startswith("sbrcb_")]] = np.nan
+    text = lambda c: d.get(c, pd.Series("", index=d.index)).fillna("").astype(str)
+    d["pet_av133_qc_pass"] = d["_qc"] & ~(text("fs_image_id").ne("") & text("fs_image_id").ne(d["t1_image_id"].astype(str)))
+    d.loc[~d["pet_av133_qc_pass"], sbr] = np.nan
+    d["pet_av133_batch"] = _vendor(text("manufacturer")) + "_" + text("model").str[:12] + "_" + text("postfilter")
+    out = d.rename(columns={"image_id": "pet_av133_image_id", "fs_image_id": "pet_av133_fs_image_id", **{c: f"pet_av133_{c}" for c in sbr}})
+    keep = ["PATNO", "pet_av133_image_id", "pet_av133_date", "pet_av133_batch", "pet_av133_fs_image_id", "pet_av133_qc_pass"]
+    return out.reindex(columns=keep + [f"pet_av133_{c}" for c in sbr])
 
 
 def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, ppmi_dir=None):
@@ -381,6 +419,10 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
     df["tiv_source"] = np.where(pie_tiv.notna(), "pie_talairach", np.where(fs7_tiv.notna(), "ppmi_fs7", "none"))
     if ppmi_dir is not None and "dat_date" in df:
         df = df.merge(core_lab_sbr(ppmi_dir, df[["PATNO", "dat_date"]]), on=["PATNO", "dat_date"], how="left")
+    pet = pet_av133_rows(derived, modality_dirs, man)
+    if pet is not None:
+        df = df.merge(pet[["PATNO"] + [c for c in pet if c.startswith(("pet_av133_sbr", "pet_av133_cb_occ"))]], on="PATNO", how="left")
+        df["pet_av133_validated"] = PET_AV133_VALIDATED
     return df
 
 
@@ -418,4 +460,5 @@ def feature_blocks(columns):
             "dwi": [c for c in cols if (c.startswith("dwi_") and is_dwi_feature(c)) or any(re.fullmatch(r, c) for r in STUDY_DWI.values())],
             "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_voxels", "_cr", "_mm3"))
                    and not c.startswith("nm_primary_")],   # aliases of nms_* columns
-            "flair": [c for c in cols if c.startswith("flair_wmh")]}
+            "flair": [c for c in cols if c.startswith("flair_wmh") and c != "flair_wmh_method"],
+            "pet_av133": [c for c in cols if c.startswith("pet_av133_sbr")]}

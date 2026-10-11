@@ -150,3 +150,26 @@ def test_t1_visits_keep_every_visit_with_time_scanner_change_and_one_tiv(tmp_pat
     assert not t.loc["B", "scanner_changed_since_bl"] and t.loc["C", "scanner_changed_since_bl"]
     assert not t.loc["C", "t1_qc_pass"] and np.isnan(t.loc["C", "cth_lh_precuneus"]) and t.loc["C", "EVENT_ID"] == "V06"
     assert t.loc["A", "tiv_subject_mm3"] == 1.51e6 and np.isnan(t.loc["D", "years_from_bl"])    # failed visit's eTIV left out; masked date
+
+
+def test_av133_visit_nearest_the_t1_is_assembled_under_pet_qc_and_wmh_method_is_kept(tmp_path):
+    from pie.imaging.pet import REGIONS
+    d = tmp_path
+    pd.DataFrame({"PATNO": [1, 2], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2022-01-01"] * 2, "vol_Left_Putamen": [5000.0] * 2}).to_csv(d / "fastsurfer_idps.csv", index=False)
+    (d / "pet").mkdir()
+    ok = {"error": "", "units_ok": True, "reg_template_r": 0.8, "cov_striatum": 1.0, "cov_occipital": 1.0, "cov_cerebellum": 1.0, "motion_mm": 1.0,
+          "manufacturer": "Siemens", "model": "Biograph", "postfilter": "none"}
+    rows = [dict(ok, patno=1, image_id="P1a", acquisition_date="2019-01-01", fs_image_id="I1", **{f"sbr_{r}": 1.0 for r in REGIONS}, **{f"sbrcb_{r}": 0.5 for r in REGIONS}),
+            dict(ok, patno=1, image_id="P1b", acquisition_date="2022-02-01", fs_image_id="I1", **{f"sbr_{r}": 2.0 for r in REGIONS}, **{f"sbrcb_{r}": 0.7 for r in REGIONS}),
+            dict(ok, patno=2, image_id="P2", acquisition_date="2022-01-05", fs_image_id="I9", **{f"sbr_{r}": 3.0 for r in REGIONS}, **{f"sbrcb_{r}": 0.9 for r in REGIONS})]
+    pd.DataFrame(rows).to_csv(d / "pet" / "pet_av133.csv", index=False)
+    (d / "flair").mkdir()
+    pd.DataFrame({"patno": [1], "reg_flair_t1_mi": [-0.5], "wm_mm3": [4e5], "flair_wm_mad": [1.0], "manufacturer": ["GE"], "flair_3d": [True],
+                  "wmh_method": ["truenet"], "wmh_log_mm3": [8.0], "wmh_pv_mm3": [1.0], "wmh_deep_mm3": [1.0], "wmh_frac_wm": [0.01],
+                  "wmh_n_lesions": [3], "wmh_mm3": [3000.0]}).to_csv(d / "flair" / "flair_features.csv", index=False)
+    f = assemble_features(d).set_index("PATNO")
+    assert f.loc[1, "pet_av133_image_id"] == "P1b" and f.loc[1, "pet_av133_sbr_putamen_l_post"] == 2.0 and f.loc[1, "pet_av133_days_from_t1"] == 31
+    assert not f.loc[2, "pet_av133_qc_pass"] and np.isnan(f.loc[2, "pet_av133_sbr_caudate_l"])      # measured on another T1
+    assert f.loc[1, "flair_wmh_method"] == "truenet" and not f["pet_av133_validated"].any()
+    blocks = feature_blocks(f.columns)
+    assert "pet_av133_sbrcb_caudate_l" in blocks["pet_av133"] and "flair_wmh_method" not in blocks["flair"]
