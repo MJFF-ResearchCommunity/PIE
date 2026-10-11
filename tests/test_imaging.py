@@ -96,3 +96,20 @@ def test_read_loni_collection_csv(tmp_path):
     r = df.iloc[0]
     assert r["image_id"] == "I000002" and r["loni_visit"] == "BL" and r["loni_age"] == 70 and r["loni_group"] == "PD"
     assert str(r["loni_acq_date"])[:10] == "2000-01-01"
+
+
+def test_t1_choice_ranks_original_3d_over_a_bigger_interpolated_reformat_and_phase_follows_the_date():
+    import pandas as pd
+
+    from pie.imaging.index import protocol_phase, select_t1_series, t1_candidates
+
+    idx = pd.DataFrame([dict(zip="z", patno=1, series_desc="MPRAGE", session="2021-03-01_10_00_00.0", image_id="I1", n_files=176, bytes=40e6, member_prefix="a/"),
+                        dict(zip="z", patno=1, series_desc="MPRAGE_MPR", session="2021-03-01_10_20_00.0", image_id="I2", n_files=176, bytes=90e6, member_prefix="b/"),
+                        dict(zip="z", patno=2, series_desc="MPRAGE", session="2012-03-01_10_00_00.0", image_id="I3", n_files=176, bytes=40e6, member_prefix="c/")])
+    assert set(t1_candidates(idx)["image_id"]) == {"I1", "I2"}
+    assert select_t1_series(idx)["image_id"].tolist() == ["I2", "I3"]              # bytes alone favour the reformat
+    hdr = pd.DataFrame({"image_id": ["I1", "I2"], "ImageType": ["ORIGINAL;PRIMARY;M;NORM", "DERIVED;SECONDARY;MPR"],
+                        "MRAcquisitionType": ["3D", "3D"], "InversionTime": [900, 900], "PixelSpacing": ["1.0;1.0", "0.5;0.5"]})
+    assert select_t1_series(idx, hdr)["image_id"].tolist() == ["I1", "I3"]
+    assert protocol_phase(pd.Series(["2012-03-01", "2021-03-01", "9999-01-01"])).tolist()[:2] == [1.0, 2.0]
+    assert protocol_phase(pd.Series(["9999-01-01"])).isna().all()

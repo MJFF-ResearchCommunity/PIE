@@ -9,6 +9,7 @@ import re
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 # Series that are not a usable 3D T1w volume (localisers, calibration, sequence-specific extras).
@@ -58,24 +59,59 @@ def index_zips(zip_paths, cache_csv=None):
     return df
 
 
-def select_t1_series(index):
-    """Pick one T1w series per (patno, session date).
+def _visit_day(df):
+    """LONI stamps every series with its own time, so a visit is a day; masked dates (9999-...) say nothing about the day."""
+    return df["session"].where(df["session"].str.startswith("9999"), df["session"].str[:10])
 
-    Rules: drop non-T1 descriptions; rank by (3D/MPRAGE-family description, not 2D/axial,
-    not a repeat), then the series with the most data (bytes, which also handles single-file
-    multi-frame DICOM). Sessions dated 9999 (LONI date-masked) are kept but flagged with ``date_masked``.
+
+def t1_candidates(index):
+    """T1 candidate series in visits that have more than one: the ones ``select_t1_series`` ranks with headers."""
+    df = index[~index["series_desc"].str.contains(_NOT_T1)]
+    return df[df.groupby([df["patno"], _visit_day(df)])["image_id"].transform("size") > 1]
+
+
+T1_HEADER_FIELDS = ("ImageType", "MRAcquisitionType", "InversionTime", "PixelSpacing")
+
+
+def header_quality(headers):
+    """image_id -> header score: +2 3D acquisition (-2 2D), +1 ORIGINAL (-1 derived, reformatted, MPR, projection),
+    +1 an inversion time (MPRAGE / IR-SPGR), -1 in-plane spacing under 0.75 mm (a 512-matrix interpolated
+    reconstruction, which the byte count would otherwise favour)."""
+    h = headers.set_index("image_id")
+    text = lambda c: h.get(c, pd.Series("", index=h.index)).fillna("").astype(str).str.upper()
+    acq, kind = text("MRAcquisitionType"), text("ImageType")
+    derived = kind.str.contains("DERIVED|REFORMAT|MPR|MIP|PROJECTION")
+    ti = pd.to_numeric(h.get("InversionTime", pd.Series(np.nan, index=h.index)), errors="coerce")
+    spacing = text("PixelSpacing").str.split(";").str[0].pipe(pd.to_numeric, errors="coerce")
+    return (2 * acq.eq("3D") - 2 * acq.eq("2D") + (kind.str.contains("ORIGINAL") & ~derived).astype(int) - derived.astype(int)
+            + (ti > 0).astype(int) - (spacing < 0.75).astype(int))
+
+
+def select_t1_series(index, headers=None):
+    """Pick one T1w series per (patno, visit day).
+
+    Rules: drop non-T1 descriptions; rank by (3D/MPRAGE-family description, not 2D/axial, not a repeat) plus, when
+    ``headers`` (``probe_headers`` of ``t1_candidates`` with ``T1_HEADER_FIELDS``) are given, ``header_quality``; then
+    the series with the most data (bytes, which also handles single-file multi-frame DICOM). Sessions dated 9999
+    (LONI date-masked) are kept but flagged with ``date_masked``.
     """
     df = index.copy()
     df = df[~df["series_desc"].str.contains(_NOT_T1)]
     desc = df["series_desc"]
     df["score"] = (2 * desc.str.contains(_IS_3D).astype(int) - 2 * desc.str.contains(_IS_2D).astype(int)
                    - desc.str.contains(_REPEAT).astype(int))
+    if headers is not None and len(headers):
+        df["score"] += df["image_id"].map(header_quality(headers)).fillna(0).astype(int)
     df["date_masked"] = df["session"].str.startswith("9999")
-    # LONI stamps every series with its own time, so a visit is a day; masked dates (9999-...) say nothing about the day
-    day = df["session"].where(df["date_masked"], df["session"].str[:10])
-    df = df.assign(_day=day).sort_values(["patno", "_day", "score", "bytes", "session"], ascending=[True, True, False, False, True])
+    df = df.assign(_day=_visit_day(df)).sort_values(["patno", "_day", "score", "bytes", "session"], ascending=[True, True, False, False, True])
     chosen = df.drop_duplicates(["patno", "_day"], keep="first").reset_index(drop=True)
     return chosen.drop(columns=["score", "_day"])
+
+
+def protocol_phase(session_dates):
+    """1 = PPMI clinical protocol (001, scans before 2020), 2 = PPMI 2.0 (002, 2020 on); NaN for masked dates."""
+    d = pd.to_datetime(session_dates, errors="coerce")
+    return pd.Series(np.where(d.dt.year >= 2020, 2.0, 1.0), index=d.index).where(d.notna() & (d.dt.year < 2100))
 
 
 def probe_headers(sessions, fields=("Manufacturer", "ManufacturerModelName", "MagneticFieldStrength", "InstitutionName",
@@ -98,8 +134,11 @@ def probe_headers(sessions, fields=("Manufacturer", "ManufacturerModelName", "Ma
                 member = first.get(s.member_prefix)
                 row = {"image_id": s.image_id}
                 if member:
-                    with z.open(member) as fh:
-                        d = pydicom.dcmread(fh, stop_before_pixels=True, force=True)
+                    try:
+                        with z.open(member) as fh:
+                            d = pydicom.dcmread(fh, stop_before_pixels=True, force=True)
+                    except Exception:            # an unreadable header leaves the fields empty; the series stays rankable by name
+                        d = {}
                     for f in fields:
                         v = d.get(f)
                         row[f] = ";".join(map(str, v)) if isinstance(v, (list, pydicom.multival.MultiValue)) else v

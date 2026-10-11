@@ -100,7 +100,7 @@ download, and the IDA metadata zip comes with "Advanced Download".
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--zips` | required | LONI zip(s), laid out `PPMI/<PATNO>/<SeriesDescription>/<yyyy-mm-dd_HH_MM_SS.0>/<IMAGE_ID>/*.dcm`. Their order sets `protocol_phase` (1, 2, …) |
+| `--zips` | required | LONI zip(s), laid out `PPMI/<PATNO>/<SeriesDescription>/<yyyy-mm-dd_HH_MM_SS.0>/<IMAGE_ID>/*.dcm` |
 | `--ppmi-dir` | `PPMI` | PPMI tabular download; `Imaging/Magnetic_Resonance_Imaging__MRI__*.csv` (latest file) is used for visit linking |
 | `--work-dir` | `Imaging/derived` | Output root |
 | `--workers` | 4 | CPU processes for conversion and stats |
@@ -123,9 +123,13 @@ What happens:
 2. **Choose the T1** — `select_t1_series(index)` drops localisers, calibration and non-T1 descriptions (`_NOT_T1`),
    then per participant and visit day (LONI timestamps every series separately, so an MPRAGE and its repeat minutes
    later are one visit; before 11 Oct 2026 they were two sessions, 29 subject-days in the September 2026 tables) ranks 3D/MPRAGE-family descriptions up, 2D/axial ones down (some sites label a
-   2-frame axial T1 as the only "T1", which FastSurfer cannot use), repeats down, and breaks ties by bytes (this
-   also handles single-file multi-frame DICOM). Sessions dated 9999 (LONI date masking) are kept with
-   `date_masked=True`.
+   2-frame axial T1 as the only "T1", which FastSurfer cannot use) and repeats down. Where a visit has more than one
+   candidate (`t1_candidates`), one DICOM header per candidate is read from the zip (`run.t1_headers`, cached in
+   `t1_headers.csv`) and `header_quality` adds +2 for a 3D acquisition (-2 for 2D), +1 for an `ORIGINAL` image (-1 for
+   derived, reformatted, MPR or projection images), +1 for an inversion time, and -1 for in-plane spacing under
+   0.75 mm. Ties are then broken by bytes, which also handles single-file multi-frame DICOM; before 11 Oct 2026 bytes
+   alone decided, which favoured 512-matrix interpolated reconstructions. Sessions dated 9999 (LONI date masking)
+   are kept with `date_masked=True`.
 3. **Link visits** — `link_sessions_to_events(sessions, ppmi_dir, max_months=3)`: the MRI table's `INFODT` is a
    month, so a session gets the `EVENT_ID` of the same month, else the nearest within 3 months, else `UNK`
    (`months_off` records the gap). `--loni-csv` (`read_loni_collection_csv`) and then `--ida-metadata`
@@ -176,7 +180,7 @@ message), `fastsurfer_idps.csv`.
 
 | Column | Meaning |
 |---|---|
-| `PATNO`, `EVENT_ID`, `IMAGEID`, `SCAN_DATE`, `protocol_phase` | Identifiers; `protocol_phase` = position of the source zip in `--zips` |
+| `PATNO`, `EVENT_ID`, `IMAGEID`, `SCAN_DATE`, `protocol_phase` | Identifiers; `protocol_phase` = 1 for the PPMI clinical protocol (scans before 2020), 2 for PPMI 2.0 (2020 on), missing for masked dates (`index.protocol_phase`; until 11 Oct 2026 it was the zip's position in `--zips`) |
 | `Manufacturer`, `ManufacturersModelName`, `MagneticFieldStrength`, `SoftwareVersions`, `InstitutionName`, `RepetitionTime`, `EchoTime`, `InversionTime`, `FlipAngle`, `SliceThickness` | dcm2niix sidecar (`features.META_COLS`); scanner batch for harmonisation |
 | `MaskVol`, `BrainSegVol`, … | Global measures whose short name ends in `Vol` keep that name; other measures become `vol_<name>` |
 | `vol_<Structure>` | Regional volume in mm^3, name with non-alphanumerics replaced by `_` (`vol_Left_Putamen`, `vol_ctx_lh_precuneus`, `vol_WM_hypointensities`) |
@@ -324,8 +328,18 @@ the four (`manifest.DEFAULT_DIRS` holds the `datscan_full` default); rows with a
 manifest's, `<mod>_t1_mismatch` is set and its QC fails; this includes DaTscan, whose stored transform refers to
 that T1.
 
-`assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False)` adds the IDPs (all blanked with
-`t1_qc_pass=False` when a key subcortical label is empty, i.e. FastSurfer failed), every `dat_sbr_*` (occipital) and
+`assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False)` adds the IDPs. All of them are blanked,
+with `t1_qc_pass=False`, when `QC["t1"]` fails:
+- a key subcortical label is empty (FastSurfer failed);
+- `BrainSegVol` is under 0.7 L, FastSurfer's own segmentation-volume check;
+- the scan is rated `fail` in `<derived>/t1_visual_qc.csv` (`IMAGEID, rating` with pass, borderline or fail; column
+  `t1_visual_qc`).
+
+`t1_robust_z_max` and `t1_outlier` (`manifest.t1_outliers`) flag scans for visual review but never fail them,
+because atrophy is an outlier too. They are the robust z of log key volumes within vendor × field strength, and
+`t1_outlier` means |z| > 4. Review the outliers first, then a random 100, with
+`python -m pie.imaging.qc --work-dir <derived> --modality t1 --worst t1_robust_z_max --out <dir>`, and record the
+ratings in the CSV. The assembled table also adds every `dat_sbr_*` (occipital) and
 `dat_sbrwm_*` (cerebral WM, PPMI's current reference) SBR with its anterior/posterior halves, putamen/caudate ratios and
 asymmetry indices, `dwi_*` tensor and tract features (`manifest.is_dwi_feature`; single-shell free water blanked
 unless `single_shell_fw=True`, see [imaging_dwi.md](imaging_dwi.md#single-shell-free-water-is-not-assembled-by-default)),

@@ -95,3 +95,21 @@ def test_fw_endpoint_is_assembled_under_its_own_qc(tmp_path):
     f = assemble_features(d).set_index("PATNO")
     assert f.loc[1, "dwisf_fw_sn_posterior_mean"] == 0.2 and np.isnan(f.loc[2, "dwisf_fw_sn_posterior_mean"])
     assert "dwisf_n_sn" not in f.columns and "dwisf_fw_sn_posterior_mean" in feature_blocks(f.columns)["dwi"]
+
+
+def test_t1_outliers_are_flagged_small_brains_and_visual_fails_fail_qc(tmp_path):
+    from pie.imaging.manifest import t1_outliers
+    rng = np.random.default_rng(0)
+    n = 30
+    vols = {c: rng.normal(5000, 200, n) for c in ("vol_Left_Putamen", "vol_Right_Putamen", "vol_Left_Caudate", "vol_Right_Caudate",
+                                                  "vol_Left_Thalamus", "vol_Right_Thalamus")}
+    vols["vol_Left_Putamen"][3] = 1500                                  # a gross segmentation error
+    d = pd.DataFrame({"PATNO": range(n), "IMAGEID": [f"I{i}" for i in range(n)], "SCAN_DATE": ["2022-01-01"] * n,
+                      "Manufacturer": ["Siemens"] * n, "MagneticFieldStrength": [3] * n, "BrainSegVol": [1.1e6] * (n - 1) + [6e5], **vols})
+    o = t1_outliers(d)
+    assert o["t1_outlier"].tolist() == [i == 3 for i in range(n)]
+    d.to_csv(tmp_path / "fastsurfer_idps.csv", index=False)
+    pd.DataFrame({"IMAGEID": ["I5"], "rating": ["fail"]}).to_csv(tmp_path / "t1_visual_qc.csv", index=False)
+    f = assemble_features(tmp_path).set_index("PATNO")
+    assert not f.loc[29, "t1_qc_pass"] and not f.loc[5, "t1_qc_pass"] and f.loc[3, "t1_qc_pass"]   # outliers stay, for review
+    assert f.loc[3, "t1_outlier"] and np.isnan(f.loc[5, "vol_Left_Putamen"]) and f.loc[5, "t1_visual_qc"] == "fail"

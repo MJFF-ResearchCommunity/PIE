@@ -5,6 +5,9 @@ so registration and segmentation can be reviewed systematically instead of by ad
     venv_imaging/bin/python -m pie.imaging.qc --work-dir Imaging/derived/dwi --modality dwi --out Imaging/derived/qc/dwi [--n 40] [--worst reg_b0_t1_mi]
 
 Modalities and what is drawn (one PNG per subject, three orthogonal views):
+  t1     FastSurfer's conformed T1 with putamen/caudate (cyan), thalamus (magenta), hippocampus (lime), lateral
+         ventricles (yellow) and cortex (red); --work-dir is the run's work dir; --worst t1_robust_z_max puts the
+         manifest's outliers first; record ratings in <derived>/t1_visual_qc.csv (IMAGEID, rating)
   dwi    FA map with striatum (cyan), thalamus (magenta) and substantia nigra (red) contours from aseg_dwi/pauli_dwi
   nm     mean neuromelanin slab with SN (red) and reference ring (lime) contours
   flair  FLAIR resampled onto the T1 grid with the WMH mask (red)
@@ -31,7 +34,7 @@ def worst_first(frame, column):
     values = pd.to_numeric(frame[column], errors="coerce")
     if column == "reg_metric":
         badness = -values.abs()  # SPECT normalised correlation magnitude
-    elif column.endswith("_mi") or "motion" in column or "rotation" in column:
+    elif column.endswith(("_mi", "_z_max")) or "motion" in column or "rotation" in column:
         badness = values
     else:
         badness = -values  # coverage/ROI count, where larger is better
@@ -79,7 +82,11 @@ def _load(p):
 
 def render_subject(modality, subj_dir, out_png, fastsurfer_dir=None, row=None):
     d = Path(subj_dir)
-    if modality == "dwi":
+    if modality == "t1":
+        t1, seg = _load(d / "mri" / "orig.mgz"), _load(d / "mri" / "aparc.DKTatlas+aseg.deep.mgz")
+        montage(t1, [(np.isin(seg, [11, 12, 50, 51]), "cyan"), (np.isin(seg, [10, 49]), "magenta"), (np.isin(seg, [17, 53]), "lime"),
+                     (np.isin(seg, [4, 43]), "yellow"), (seg >= 1000, "red")], out_png, title=d.name)
+    elif modality == "dwi":
         fa, aseg, pauli = _load(d / "fa.nii.gz"), _load(d / "aseg_dwi.nii.gz"), _load(d / "pauli_dwi.nii.gz")
         montage(fa, [(np.isin(pauli, [7, 9]), "red"), (np.isin(aseg, [11, 12, 50, 51]), "cyan"), (np.isin(aseg, [10, 49]), "magenta")], out_png, title=d.name, zoom=40)
     elif modality == "nm":
@@ -128,7 +135,7 @@ def gallery(pngs, out_png, cols=4):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--work-dir", required=True)
-    ap.add_argument("--modality", required=True, choices=["dwi", "nm", "flair", "datscan"])
+    ap.add_argument("--modality", required=True, choices=["t1", "dwi", "nm", "flair", "datscan"])
     ap.add_argument("--out", required=True)
     ap.add_argument("--n", type=int, default=40)
     ap.add_argument("--worst", help="QC column to order worst-first (worst_first: MI, motion and rotation columns largest "
@@ -139,9 +146,14 @@ def main(argv=None):
     a = ap.parse_args(argv)
     work, out = Path(a.work_dir), Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    feats_name = {"dwi": "dwi_features.csv", "nm": "nm_features.csv", "flair": "flair_features.csv", "datscan": "datscan_sbr.csv"}[a.modality]
-    feats = pd.read_csv(work / feats_name)
-    feats = feats[feats["error"].fillna("") == ""]
+    if a.modality == "t1":           # the manifest's IDP rows with their robust-z outlier score
+        from .manifest import t1_outliers
+        feats = pd.read_csv(work / "fastsurfer_idps.csv", low_memory=False)
+        feats = feats.join(t1_outliers(feats)).rename(columns={"PATNO": "patno"})
+    else:
+        feats_name = {"dwi": "dwi_features.csv", "nm": "nm_features.csv", "flair": "flair_features.csv", "datscan": "datscan_sbr.csv"}[a.modality]
+        feats = pd.read_csv(work / feats_name)
+        feats = feats[feats["error"].fillna("") == ""]
     if a.patnos:
         keep = {int(x) for x in Path(a.patnos).read_text().split()}
         feats = feats[feats["patno"].isin(keep)]
@@ -156,9 +168,11 @@ def main(argv=None):
     done = []
     for row in feats.head(a.n).itertuples():
         r = row._asdict()
-        png = out / f"{r['patno']}.png"
+        png = out / (f"{r['IMAGEID']}.png" if a.modality == "t1" else f"{r['patno']}.png")
         try:
-            if a.modality == "datscan":
+            if a.modality == "t1":
+                render_subject("t1", work / "fastsurfer" / str(r["IMAGEID"]), png)
+            elif a.modality == "datscan":
                 rec = r.get("fs_image_id")
                 fs_dir = Path(a.fastsurfer_dir) / rec if isinstance(rec, str) and rec else fs_by_patno.get(int(r["patno"]))
                 render_subject("datscan", str(work / "nifti" / f"{r['image_id']}_datscan.nii.gz"), png, fastsurfer_dir=fs_dir, row=r)

@@ -26,7 +26,8 @@ from pie.imaging.convert import convert_series
 from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, longitudinal, run_fastsurfer, segment_batch,
                                     talairach_etiv)
 from pie.imaging.features import build_idp_table
-from pie.imaging.index import IDA_VISIT_TO_EVENT, LONI_VISIT_TO_EVENT, index_zips, read_ida_metadata, read_loni_collection_csv, select_t1_series
+from pie.imaging.index import (IDA_VISIT_TO_EVENT, LONI_VISIT_TO_EVENT, T1_HEADER_FIELDS, index_zips, probe_headers, protocol_phase,
+                               read_ida_metadata, read_loni_collection_csv, select_t1_series, t1_candidates)
 from pie.imaging.link import link_sessions_to_events
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
@@ -44,12 +45,12 @@ def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=()):
             log.warning("some zips are not on disk: using sessions.csv as it is")
             return cached
     index = index_zips(zips, cache_csv=work / "index.csv")
-    sessions = select_t1_series(index)
+    sessions = select_t1_series(index, t1_headers(index, work / "t1_headers.csv"))
     if sessions_csv.exists():
         if set(cached["image_id"]) == set(sessions["image_id"]):
             return cached
         log.info("sessions.csv does not match the zips' T1 selection (new download or selection fix): rebuilding")
-    sessions["protocol_phase"] = sessions["zip"].map({z: i + 1 for i, z in enumerate(map(str, zips))})
+    sessions["protocol_phase"] = protocol_phase(sessions["session_date"])
     sessions = link_sessions_to_events(sessions, ppmi_dir)
     if loni_csv:  # the collection CSV: visit label for every series, group, age at scan
         loni = read_loni_collection_csv(loni_csv)
@@ -66,6 +67,18 @@ def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=()):
     sessions.to_csv(sessions_csv, index=False)
     log.info("sessions: %d (from %d series, %d subjects)", len(sessions), len(index), sessions["patno"].nunique())
     return sessions
+
+
+def t1_headers(index, cache_csv):
+    """DICOM headers (``T1_HEADER_FIELDS``) of the T1 candidates in visits with more than one, one file per series read
+    from the zips; cached and extended incrementally."""
+    cand = t1_candidates(index)
+    cached = pd.read_csv(cache_csv, dtype={"image_id": str}) if Path(cache_csv).exists() else pd.DataFrame({"image_id": []})
+    todo = cand[~cand["image_id"].astype(str).isin(set(cached["image_id"]))]
+    if len(todo):
+        cached = pd.concat([cached, probe_headers(todo, fields=T1_HEADER_FIELDS)], ignore_index=True)
+        cached.to_csv(cache_csv, index=False)
+    return cached
 
 
 def convert_one(row, work):

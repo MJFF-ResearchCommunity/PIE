@@ -32,7 +32,10 @@ def _nm_slab_coverage_ok(d):
 # QC rules per modality (the same thresholds the study used); keep in one place
 T1_KEY_VOLUMES = ["vol_Left_Putamen", "vol_Right_Putamen", "vol_Left_Caudate", "vol_Right_Caudate", "vol_Left_Thalamus", "vol_Right_Thalamus"]
 QC = {
-    "t1": lambda d: (d[[c for c in T1_KEY_VOLUMES if c in d]] > 0).all(axis=1),   # a failed FastSurfer run leaves empty labels (0 mm3): ratios/asymmetries undefined
+    # a failed FastSurfer run leaves empty labels (0 mm3); FastSurfer's own check fails a segmented brain under 0.7 L; a
+    # visual "fail" (t1_visual_qc.csv, see t1_visual_ratings) fails. Robust-z outliers are flagged for review, not failed.
+    "t1": lambda d: ((d[[c for c in T1_KEY_VOLUMES if c in d]] > 0).all(axis=1) & ~(_col(d, "BrainSegVol") < 7e5)
+                     & ~d.get("t1_visual_qc", pd.Series("", index=d.index)).astype(str).str.lower().eq("fail")),
     # correlation metric: -1 is a perfect fit; a failed registration (inf) or an anti-correlated one must not pass
     "dat": lambda d: (-d["reg_metric"] >= 0.4) & (d["n_label_voxels"] >= 100),
     # the study's nigral diffusion rule (split-half ICC FA 0.88, MD 0.97 under it): >= 20 SN voxels, >= 95 % of the SN in
@@ -87,8 +90,44 @@ def _modality_dir(derived, modality, modality_dirs):
     return Path((modality_dirs or {}).get(modality, derived / DEFAULT_DIRS.get(modality, modality)))
 
 
+T1_QC_VOLUMES = T1_KEY_VOLUMES + ["vol_Left_Hippocampus", "vol_Right_Hippocampus", "vol_Left_Lateral_Ventricle",
+                                   "vol_Right_Lateral_Ventricle", "BrainSegVol"]
+
+
+def t1_outliers(idps, z_max=4.0, min_batch=20):
+    """Robust z of log key volumes (``T1_QC_VOLUMES``; median and 1.4826 x MAD) within scanner batch (vendor x field
+    strength; a batch under ``min_batch`` scans is scored against all scans): ``t1_robust_z_max`` and ``t1_outlier``
+    (any |z| > ``z_max``), the scans to review first. Not a QC failure: atrophy is an outlier too."""
+    cols = [c for c in T1_QC_VOLUMES if c in idps]
+    v = np.log(idps[cols].apply(pd.to_numeric, errors="coerce").where(lambda x: x > 0))
+    batch = _vendor(idps.get("Manufacturer", pd.Series("", index=idps.index))) + "_" + \
+        idps.get("MagneticFieldStrength", pd.Series("", index=idps.index)).astype(str)
+    batch = batch.where(batch.map(batch.value_counts()) >= min_batch, "all")
+    z = pd.DataFrame(index=idps.index, columns=cols, dtype=float)
+    for b in batch.unique():
+        ref = v if b == "all" else v[batch == b]
+        mad = 1.4826 * (ref - ref.median()).abs().median()
+        z.loc[batch == b] = ((v[batch == b] - ref.median()) / mad.replace(0, np.nan)).to_numpy()
+    zmax = z.abs().max(axis=1)
+    return pd.DataFrame({"t1_robust_z_max": zmax, "t1_outlier": zmax > z_max}, index=idps.index)
+
+
+def t1_visual_ratings(derived):
+    """``<derived>/t1_visual_qc.csv`` (IMAGEID, rating: pass | borderline | fail, optional rater, date) as IMAGEID ->
+    rating; empty when absent. A "fail" fails ``QC["t1"]``; review the ``t1_outlier`` scans first (``qc --modality t1``)."""
+    p = Path(derived) / "t1_visual_qc.csv"
+    if not p.exists():
+        return {}
+    r = pd.read_csv(p, dtype={"IMAGEID": str})
+    return r.drop_duplicates("IMAGEID", keep="last").set_index("IMAGEID")["rating"].astype(str).str.lower().to_dict()
+
+
 def _baseline_idps(derived):
     idps = pd.read_csv(derived / "fastsurfer_idps.csv", parse_dates=["SCAN_DATE"], low_memory=False)
+    idps = idps.join(t1_outliers(idps))
+    ratings = t1_visual_ratings(derived)
+    if ratings:
+        idps["t1_visual_qc"] = idps["IMAGEID"].astype(str).map(ratings)
     idps["_usable"] = QC["t1"](idps)
     # Prefer the earliest usable session, as build_dataset does; retain a failed subject only for QC reporting.
     return idps.sort_values(["PATNO", "_usable", "SCAN_DATE", "IMAGEID"], ascending=[True, False, True, True])\
