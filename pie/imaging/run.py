@@ -23,8 +23,8 @@ from pathlib import Path
 import pandas as pd
 
 from pie.imaging.convert import convert_series
-from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, longitudinal, run_fastsurfer, segment_batch,
-                                    surfaces, talairach_etiv)
+from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, hippocampal_subfields, longitudinal, run_fastsurfer,
+                                    sclimbic, segment_batch, surfaces, synthseg, talairach_etiv)
 from pie.imaging.features import build_idp_table
 from pie.imaging.index import (T1_HEADER_FIELDS, visit_to_event, index_zips, probe_headers, protocol_phase,
                                read_ida_metadata, read_loni_collection_csv, select_t1_series, t1_candidates)
@@ -224,11 +224,19 @@ def _etiv_job(args):
         return sid, float("nan"), f"{type(e).__name__}: {str(e)[:200]}"
 
 
-def _surface_job(args):
-    """FastSurfer surfaces (cortical thickness) for one finished subject; a failure is reported, not raised."""
-    fs_dir, sid, threads = args
+STAGES = {   # optional per-subject stages on finished FastSurfer subjects: (subjects dir, sid, threads, raw T1 NIfTI)
+    "surfaces": lambda fs, sid, t, nii: surfaces(fs, sid, threads=t),
+    "sclimbic": lambda fs, sid, t, nii: sclimbic(fs, sid, threads=t),
+    "subfields": lambda fs, sid, t, nii: hippocampal_subfields(fs, sid, threads=t),
+    "synthseg": lambda fs, sid, t, nii: synthseg(nii, Path(fs) / sid / "synthseg", threads=t),
+}
+
+
+def _stage_job(args):
+    """One optional stage for one finished subject; a failure is reported, not raised (module level: pickled by name)."""
+    stage, fs_dir, sid, threads, nii = args
     try:
-        surfaces(fs_dir, sid, threads=threads)
+        STAGES[stage](fs_dir, sid, threads, nii)
         return sid, ""
     except Exception as e:
         return sid, f"{type(e).__name__}: {str(e)[:200]}"
@@ -272,6 +280,12 @@ def main(argv=None):
                     "into <work-dir>/fastsurfer_long (needs PIE_FREESURFER_HOME = FreeSurfer 7.4.1 and PIE_FS_LICENSE; hours per subject)")
     ap.add_argument("--surfaces", action="store_true", help="FastSurfer surfaces (cortical thickness, DK aparc) for every finished "
                     "subject, then rebuild the table with cth_*/area_* columns; needs PIE_FREESURFER_HOME and PIE_FS_LICENSE; ~1 h per scan")
+    ap.add_argument("--sclimbic", action="store_true", help="FreeSurfer ScLimbic (basal forebrain / nucleus basalis region, hypothalamus, "
+                    "fornix, septal nuclei) for every finished subject, then rebuild the table; ~1 min and ~3.3 GB per scan")
+    ap.add_argument("--subfields", action="store_true", help="hippocampal subfields and amygdala nuclei (segment_subregions) for every "
+                    "subject that has run --surfaces, then rebuild the table")
+    ap.add_argument("--synthseg", action="store_true", help="SynthSeg-robust volumes and QC on the raw T1 of every finished subject "
+                    "(legacy 1.5 T / thick-slice robustness, FastSurfer cross-check), then rebuild the table")
     ap.add_argument("--etiv", action="store_true", help="add FreeSurfer eTIV (talairach registration) to every finished subject, then "
                     "rebuild the table; needs PIE_FREESURFER_HOME, PIE_FS_LICENSE and /bin/tcsh")
     a = ap.parse_args(argv)
@@ -295,14 +309,18 @@ def main(argv=None):
         log.info("long IDP table: %s", write_long_idps(sessions, work, tps).shape)
         return
 
-    if a.surfaces:
+    stages = [st for st in STAGES if getattr(a, st)]     # surfaces before subfields, which need them
+    if stages:
         _freesurfer_ready()
         sids = sorted(done)[:a.limit] if a.limit else sorted(done)
-        with ProcessPoolExecutor(max_workers=a.workers) as ex:
-            for i, (sid, err) in enumerate(ex.map(_surface_job, [(work / "fastsurfer", s, a.threads) for s in sids]), start=1):
-                if err or i % 20 == 0:
-                    log.info("surfaces %d/%d %s %s", i, len(sids), sid, err)
-        a.features_only = True                     # rebuild fastsurfer_idps.csv with the thickness columns
+        nii = dict(zip(sessions["image_id"].astype(str), (work / "nifti" / str(p) / f"{i}_T1w.nii.gz" for p, i in zip(sessions["patno"], sessions["image_id"]))))
+        for st in stages:
+            with ProcessPoolExecutor(max_workers=a.workers) as ex:
+                jobs = [(st, work / "fastsurfer", s, a.threads, nii.get(s)) for s in sids]
+                for i, (sid, err) in enumerate(ex.map(_stage_job, jobs), start=1):
+                    if err or i % 20 == 0:
+                        log.info("%s %d/%d %s %s", st, i, len(sids), sid, err)
+        a.features_only = True                     # rebuild fastsurfer_idps.csv with the new columns
 
     if a.etiv:
         _freesurfer_ready(tcsh=True)

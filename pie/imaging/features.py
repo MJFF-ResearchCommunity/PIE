@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from pie.imaging.convert import field_tesla
-from pie.imaging.fastsurfer import STATS_FILE, parse_aparc_stats, parse_stats, valid_etiv
+from pie.imaging.fastsurfer import STATS_FILE, parse_aparc_stats, parse_stats, parse_volume_txt, valid_etiv
 
 BILATERAL = ["Putamen", "Caudate", "Pallidum", "Thalamus", "Hippocampus", "Amygdala", "Accumbens-area",
              "Lateral-Ventricle", "Cerebellum-Cortex", "Cerebellum-White-Matter", "VentralDC"]
@@ -59,6 +59,7 @@ def build_idp_table(sessions, subjects_dir):
                                         "4th-Ventricle", "Left-Inf-Lat-Vent", "Right-Inf-Lat-Vent"]]
         row["sum_Ventricles"] = sum(vent)
         row.update(thickness_columns(Path(subjects_dir) / s.image_id / "stats"))
+        row.update(extra_t1_columns(Path(subjects_dir) / s.image_id))
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -75,6 +76,32 @@ def thickness_columns(stats_dir):
             out[f"cth_{h}_mean"] = a.pop("MeanThickness", None)
             for region, (thick, area) in a.items():
                 out[f"cth_{h}_{_clean(region)}"], out[f"area_{h}_{_clean(region)}"] = thick, area
+    return out
+
+
+def extra_t1_columns(subj):
+    """The optional FreeSurfer 7.4.1 stages when they have run (``run --sclimbic / --subfields / --synthseg``):
+    ``vol_sclimbic_<structure>`` (basal forebrain, the nucleus basalis region, and the other limbic nuclei) with
+    ``sclimbic_qa_z_max`` (largest |z| of the tool's volume QA against its population); ``vol_hsf_{lh,rh}_<subfield>`` and
+    ``vol_amyg_{lh,rh}_<nucleus>``; ``synthseg_<structure>`` volumes with ``synthseg_qc_min`` (lowest per-structure QC
+    score; below ~0.65 is suspect, Billot 2023)."""
+    subj, out = Path(subj), {}
+    stats = subj / "stats" / "sclimbic.stats"
+    if stats.exists():
+        out.update({f"vol_sclimbic_{_clean(k)}": v for k, v in parse_stats(stats).items()})
+        qa = subj / "stats" / "sclimbic.zqa_scores_all.csv"
+        if qa.exists():
+            out["sclimbic_qa_z_max"] = float(pd.read_csv(qa).drop(columns="case", errors="ignore").abs().max(axis=1).iloc[0])
+    for h in ("lh", "rh"):
+        for kind, prefix in (("hippoSfVolumes", "hsf"), ("amygNucVolumes", "amyg")):
+            f = subj / "mri" / f"{h}.{kind}.txt"
+            if f.exists():
+                out.update({f"vol_{prefix}_{h}_{_clean(k)}": v for k, v in parse_volume_txt(f).items()})
+    ss = subj / "synthseg"
+    if (ss / "volumes.csv").exists():
+        out.update({f"synthseg_{_clean(k)}": float(v) for k, v in pd.read_csv(ss / "volumes.csv").iloc[0, 1:].items()})
+    if (ss / "qc.csv").exists():
+        out["synthseg_qc_min"] = float(pd.read_csv(ss / "qc.csv").iloc[0, 1:].astype(float).min())
     return out
 
 

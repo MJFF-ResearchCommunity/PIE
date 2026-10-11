@@ -329,6 +329,63 @@ def parse_stats(stats_path):
     return out
 
 
+def sclimbic(subjects_dir, sid, threads=2, env=None):
+    """FreeSurfer 7.4.1 ScLimbic (``mri_sclimbic_seg``; Greve et al. 2021, NeuroImage 10.1016/j.neuroimage.2021.118610)
+    on FastSurfer's conformed T1: nucleus accumbens, hypothalamus, fornix, mammillary bodies, septal nuclei and the
+    **basal forebrain**, the region holding the nucleus basalis of Meynert (Ch4). ~1 CPU-min and ~3.3 GB per scan.
+    Writes ``mri/sclimbic.mgz`` and ``stats/sclimbic.stats`` (+ the tool's per-structure QA z-scores and confidences)."""
+    subj = Path(subjects_dir) / sid
+    stats = subj / "stats" / "sclimbic.stats"
+    if stats.exists():
+        return stats
+    env = env if env is not None else freesurfer.fs_env()
+    mri = subj / "mri"
+    (subj / "scripts").mkdir(parents=True, exist_ok=True)
+    freesurfer.run([Path(env["FREESURFER_HOME"]) / "bin" / "mri_sclimbic_seg", "--i", mri / "orig.mgz", "--o", mri / "sclimbic.mgz",
+                    "--write_volumes", "--write_qa_stats", "--threads", threads], subj / "scripts" / "pie_sclimbic.log", subj, env=env,
+                   timeout=1800)
+    for f in [*mri.glob("sclimbic*.csv"), mri / "sclimbic.stats"]:     # the tool writes next to its output
+        os.replace(f, subj / "stats" / f.name)
+    return stats
+
+
+def hippocampal_subfields(subjects_dir, sid, threads=2, env=None):
+    """FreeSurfer 7.4.1 hippocampal subfields and amygdala nuclei (``segment_subregions hippo-amygdala``, the Python port of
+    Iglesias 2015/Saygin 2017; no MATLAB) on a subject that has run the surface stream (``surfaces``: it needs
+    ``mri/norm.mgz``, ``aseg.mgz`` and ``wmparc.mgz``). Writes ``mri/{lh,rh}.{hippoSfVolumes,amygNucVolumes}.txt``."""
+    subj = Path(subjects_dir).resolve() / sid
+    mri = subj / "mri"
+    if (mri / "rh.amygNucVolumes.txt").exists():
+        return mri
+    missing = [f for f in ("norm.mgz", "aseg.mgz", "wmparc.mgz") if not (mri / f).exists()]
+    if missing:
+        raise FileNotFoundError(f"{sid}: {missing} missing; run the surface stream first (run --surfaces)")
+    env = env if env is not None else freesurfer.fs_env()
+    freesurfer.run([Path(env["FREESURFER_HOME"]) / "bin" / "segment_subregions", "hippo-amygdala", "--cross", sid, "--sd", subj.parent,
+                    "--threads", threads], subj / "scripts" / "pie_subregions.log", subj, env=env, timeout=4 * 3600)
+    return mri
+
+
+def synthseg(nifti, out_dir, threads=2, env=None):
+    """FreeSurfer 7.4.1 SynthSeg-robust (Billot et al. 2023, PNAS 10.1073/pnas.2216399120) on the raw T1: contrast- and
+    resolution-agnostic volumes with per-structure QC scores (``--qc``), the robustness path for legacy 1.5 T and
+    thick-slice scans and a cross-check of FastSurfer. Writes ``synthseg.mgz``, ``volumes.csv`` and ``qc.csv``."""
+    out = Path(out_dir)
+    if (out / "qc.csv").exists():
+        return out
+    out.mkdir(parents=True, exist_ok=True)
+    env = env if env is not None else freesurfer.fs_env()
+    freesurfer.run([Path(env["FREESURFER_HOME"]) / "bin" / "mri_synthseg", "--i", nifti, "--o", out / "synthseg.mgz", "--robust",
+                    "--vol", out / "volumes.csv", "--qc", out / "qc.csv", "--threads", threads], out / "pie_synthseg.log", out, env=env,
+                   timeout=3600)
+    return out
+
+
+def parse_volume_txt(path):
+    """``segment_subregions``' ``<name> <volume>`` lines as a dict."""
+    return {ln.split()[0]: float(ln.split()[1]) for ln in Path(path).read_text().splitlines() if ln.strip()}
+
+
 def parse_aparc_stats(stats_path):
     """A FreeSurfer surface-parcellation stats file (``lh.aparc.stats``: DK atlas, written by recon-surf ``--fsaparc``)
     as {region: (ThickAvg mm, SurfArea mm2)} plus "MeanThickness" from its '# Measure Cortex' line."""

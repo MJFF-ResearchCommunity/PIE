@@ -135,3 +135,21 @@ def test_thickness_long_stream_table_and_visit_codes(tmp_path):
     assert row["cth_lh_precuneus"] == 2.31 and row["area_lh_precuneus"] == 6100 and row["cth_lh_mean"] == 2.45
     assert (tmp_path / "fastsurfer_long_idps.csv").exists()
     assert [visit_to_event(x) for x in ("V06", "Month 48", "Unscheduled Visit 02", "Screening", "Month 7")] == ["V06", "V10", "U02", "SC", None]
+
+
+def test_optional_freesurfer_stages_are_parsed_into_the_idp_row(tmp_path):
+    from pie.imaging.features import extra_t1_columns
+
+    subj = tmp_path / "I1"
+    (subj / "stats").mkdir(parents=True)
+    (subj / "mri").mkdir()
+    (subj / "synthseg").mkdir()
+    (subj / "stats" / "sclimbic.stats").write_text("# ColHeaders Index SegId NVoxels Volume_mm3 StructName\n"
+                                                   "9  865  343  359.6  Left-Basal-Forebrain\n10 866 364 369.8 Right-Basal-Forebrain\n")
+    pd.DataFrame({"case": ["x"], "Left-Basal-Forebrain": [0.8], "Right-Basal-Forebrain": [-2.5]}).to_csv(subj / "stats" / "sclimbic.zqa_scores_all.csv", index=False)
+    (subj / "mri" / "lh.hippoSfVolumes.txt").write_text("CA1 600.5\nWhole_hippocampus 3400.0\n")
+    pd.DataFrame({"subject": ["x"], "left hippocampus": [3500.0], "total intracranial": [1.5e6]}).to_csv(subj / "synthseg" / "volumes.csv", index=False)
+    pd.DataFrame({"subject": ["x"], "general white matter": [0.9], "hippocampus": [0.6]}).to_csv(subj / "synthseg" / "qc.csv", index=False)
+    row = extra_t1_columns(subj)
+    assert row["vol_sclimbic_Left_Basal_Forebrain"] == 359.6 and row["sclimbic_qa_z_max"] == 2.5
+    assert row["vol_hsf_lh_CA1"] == 600.5 and row["synthseg_left_hippocampus"] == 3500.0 and row["synthseg_qc_min"] == 0.6
