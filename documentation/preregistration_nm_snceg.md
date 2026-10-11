@@ -1,8 +1,9 @@
 # Pre-registration (draft): snceg neuromelanin contrast on PPMI 2D GRE-MT, Siemens only
 
-**Status: DRAFT, 11 October 2026. Not frozen.** It is frozen by committing this file together with the analysis
-script and recording the commit hash and the script's sha256, before any feature table of the analysis set is
-written. Counts below are aggregates from tables PIE already holds; no outcome of this test has been computed.
+**Status: FROZEN 2026-10-11T19:13:49-04:00** (user decision, 11 Oct 2026: freeze as drafted, with the R1 reuse declared). Frozen at
+commit `7fb36073764b780288225a31404aba69a60c5474`, which holds this text and `scripts/analyse_nm_snceg.py` (sha256 `52582786b455f09b707cd978c41921fb2ec8f9a79d775370241d1a3114fbc0da`), before any v7 feature table
+of the analysis set was written. Counts below are aggregates from tables PIE already holds; no outcome of this test
+has been computed. The synthetic dry run (`--synthetic`) printed only group sizes and the decision on fake data.
 
 ## Question
 
@@ -108,6 +109,12 @@ The decision rule's pass probability, by simulation: binormal data, DeLong CI, 2
 4. Run the script once, and report every number it prints, including the exclusion counts and all secondaries.
 
 Any deviation is logged here, with its date, before the script is run.
+
+## Freeze record and deviations
+
+- 2026-10-11T19:13:49-04:00: frozen as above. The analysis script was written at the freeze (the draft referred to it before it existed).
+  It implements the rule as drafted. De novo PD = PD whose NM session is PPMI's BL visit, the R1 definition
+  (`analyse_r1.py`); the age/sex adjustment uses residuals from an HC-only fit, so no PD label enters it.
 
 ## References
 
