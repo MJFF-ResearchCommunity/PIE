@@ -7,13 +7,18 @@ from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
+import warnings
 
 import nibabel as nib
 from nibabel.processing import resample_from_to
 import numpy as np
 import pandas as pd
 
-from .fmri import sha256, write_json
+from .fmri import framewise_displacement, sha256, write_json
+
+# Respiratory band stopped from the motion parameters before FD at short TRs: XCP-D's recommendation for 65-80
+# year olds (12-28 breaths/min, 0.2-0.47 Hz), PPMI's age range. xcpd.py passes the same band to XCP-D.
+RESPIRATORY_BAND_BPM = (12, 28)
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,32 @@ class ConnectivityConfig:
     minimum_parcel_coverage: float = .9
     compcor_components: int = 5
     global_signal_regression: bool = False
+    minimum_segment_frames: int = 5
+    motion_filter_max_tr: float = 1.5
+    respiratory_low_bpm: float = RESPIRATORY_BAND_BPM[0]
+    respiratory_high_bpm: float = RESPIRATORY_BAND_BPM[1]
+
+
+def filtered_fd(motion, tr, band_bpm=RESPIRATORY_BAND_BPM):
+    """Power FD from fMRIPrep motion parameters (frames x trans_x, trans_y, trans_z, rot_x, rot_y, rot_z; radians)
+    after a notch filter over the respiratory band, as XCP-D's ``--motion-filter-type notch`` (Fair et al. 2020,
+    doi:10.1016/j.neuroimage.2019.116400): at multiband TRs breathing shifts the B0 field, realignment reads it as head
+    motion and unfiltered FD censors breathing. Same filter as XCP-D 26.2.0 (``iirnotch`` at the band centre,
+    Q = centre / width, one zero-phase ``filtfilt`` pass, constant padding), band folded below Nyquist as XCP-D does.
+    First value NaN, as fMRIPrep's."""
+    from scipy.signal import filtfilt, iirnotch
+    motion = np.asarray(motion, float)
+    fs = 1 / tr
+    band = np.asarray(band_bpm, float) / 60
+    band = np.abs(band - np.floor((band + fs / 2) / fs) * fs)
+    centre, width = band.mean(), abs(band[1] - band[0])
+    if not (0 < centre < fs / 2 and width > 0) or not np.isfinite(motion).all():
+        raise ValueError('Respiratory band unusable at this TR, or nonfinite motion parameters')
+    b, a = iirnotch(centre, centre / width, fs=fs)
+    filtered = filtfilt(b, a, motion, axis=0, padtype='constant', padlen=len(motion) - 1)
+    fd = framewise_displacement(filtered[:, [3, 4, 5, 0, 1, 2]])
+    fd[0] = np.nan
+    return fd
 
 
 def nuisance_design(confounds, metadata, tr, config=ConnectivityConfig()):
@@ -40,7 +71,8 @@ def nuisance_design(confounds, metadata, tr, config=ConnectivityConfig()):
         raise ValueError('Need a finite positive TR')
     if (config.discard_seconds < 0 or config.minimum_seconds < 0 or
         min(config.censor_before, config.censor_after, config.minimum_residual_dof) < 0 or
-        not 0 <= config.minimum_parcel_coverage <= 1 or config.compcor_components < 1):
+        not 0 <= config.minimum_parcel_coverage <= 1 or config.compcor_components < 1 or
+        config.minimum_segment_frames < 1 or not 0 < config.respiratory_low_bpm < config.respiratory_high_bpm):
         raise ValueError('Invalid connectivity QC configuration')
     n = len(confounds)
     initial = np.arange(n) < math.ceil(config.discard_seconds / tr)
@@ -50,7 +82,12 @@ def nuisance_design(confounds, metadata, tr, config=ConnectivityConfig()):
         if not np.isfinite(values).all():
             raise ValueError('Nonfinite nonsteady-state indicators')
         initial |= values.any(axis=1)
-    fd, dv = (confounds[c].to_numpy(float) for c in ('framewise_displacement', 'std_dvars'))
+    raw_fd, dv = (confounds[c].to_numpy(float) for c in ('framewise_displacement', 'std_dvars'))
+    fd = raw_fd
+    motion_filtered = tr <= config.motion_filter_max_tr
+    if motion_filtered:
+        fd = filtered_fd(confounds[['trans_x', 'trans_y', 'trans_z', 'rot_x', 'rot_y', 'rot_z']], tr,
+                         (config.respiratory_low_bpm, config.respiratory_high_bpm))
     if not np.isfinite(fd[~initial]).all() or not np.isfinite(dv[~initial]).all():
         raise ValueError('Undefined motion/DVARS outside initially discarded frames')
     spikes = (fd > config.fd_threshold) | (dv > config.dvars_threshold)
@@ -60,6 +97,14 @@ def nuisance_design(confounds, metadata, tr, config=ConnectivityConfig()):
     for offset in range(1, config.censor_after + 1):
         censored[offset:] |= spikes[:-offset]
     keep = ~(initial | censored)
+    # Retained stretches shorter than minimum_segment_frames are censored too (Power et al. 2014; XCP-D
+    # --censor-between): a few frames between spikes are motion-contaminated and barely estimate anything.
+    bounds = np.flatnonzero(np.diff(np.r_[0, keep.astype(np.int8), 0]))
+    short = 0
+    for start, stop in zip(bounds[::2], bounds[1::2]):
+        if stop - start < config.minimum_segment_frames:
+            keep[start:stop] = False
+            short += stop - start
     motion = [axis + suffix for axis in ('trans_x', 'trans_y', 'trans_z', 'rot_x', 'rot_y', 'rot_z')
               for suffix in ('', '_derivative1', '_power2', '_derivative1_power2')]
     components = [c for c in confounds if c.startswith('a_comp_cor_') and
@@ -84,9 +129,11 @@ def nuisance_design(confounds, metadata, tr, config=ConnectivityConfig()):
     rank = int(np.linalg.matrix_rank(design)) if keep.any() else 0
     audit = dict(retained_frames=int(keep.sum()), retained_seconds=float(keep.sum() * tr),
                  initial_discarded=int(initial.sum()), spike_frames=int(spikes.sum()),
+                 short_segment_frames=short, motion_filtered=motion_filtered,
                  nuisance_columns=['intercept', 'linear_trend', *columns], nuisance_rank=rank,
                  residual_dof=int(keep.sum()) - rank,
-                 mean_fd=float(np.mean(fd[~initial])) if (~initial).any() else None,
+                 mean_fd=float(np.mean(raw_fd[~initial])) if (~initial).any() else None,
+                 mean_fd_filtered=float(np.mean(fd[~initial])) if motion_filtered and (~initial).any() else None,
                  retained_indices=np.flatnonzero(keep).tolist())
     audit['temporal_qc_pass'] = (audit['retained_seconds'] >= config.minimum_seconds and
                                 audit['residual_dof'] >= config.minimum_residual_dof)
@@ -159,32 +206,56 @@ def _network_names(networks):
     return networks
 
 
-def residual_connectivity(series, design, networks):
-    """OLS residualization and Fisher-z edges/network means (self-edges excluded)."""
+def network_means(edges, networks):
+    """Mean Fisher z per unordered network pair, keyed "A__B" (names sorted), of upper-triangle ``edges``
+    (``np.triu_indices`` order) between parcels labelled ``networks``. NaN edges (parcels without coverage) are left
+    out; a pair with no edge left, or none at all (a one-parcel network with itself), is NaN."""
     networks = _network_names(networks)
-    series = np.asarray(series, float)
-    if series.ndim != 2 or len(networks) != series.shape[1] or len(series) != len(design):
-        raise ValueError('Series/design/network dimensions differ')
-    if not np.isfinite(series).all():
-        raise ValueError('Nonfinite parcel signal')
-    residual = series - design @ np.linalg.lstsq(design, series, rcond=None)[0]
-    if np.any(np.std(residual, axis=0) <= np.finfo(float).eps * np.maximum(1, np.abs(series).max(axis=0))):
-        raise ValueError('Constant residual parcel signal')
-    corr = np.corrcoef(residual, rowvar=False)
-    upper = np.triu_indices(series.shape[1], 1)
-    edges = np.arctanh(np.clip(corr[upper], -1 + 1e-7, 1 - 1e-7))
-    groups = sorted(set(networks))
+    upper = np.triu_indices(len(networks), 1)
     membership = np.asarray(networks)
-    names, values = [], []
+    groups = sorted(set(networks))
+    out = {}
     for i, left in enumerate(groups):
         for right in groups[i:]:
             select = ((membership[upper[0]] == left) & (membership[upper[1]] == right)) | (
                 (membership[upper[0]] == right) & (membership[upper[1]] == left))
-            if not select.any():
-                raise ValueError('Network pair has no distinct-parcel edges')
-            names.append(left + '__' + right)
-            values.append(float(edges[select].mean()))
-    return residual, edges, dict(zip(names, values))
+            finite = edges[select][np.isfinite(edges[select])]
+            out[left + '__' + right] = float(finite.mean()) if finite.size else math.nan
+    return out
+
+
+def residual_connectivity(series, design, networks):
+    """OLS residualization and Fisher-z edges/network means (self-edges excluded). An all-NaN column is a parcel
+    without coverage: its edges are NaN and it is left out of the network means."""
+    networks = _network_names(networks)
+    series = np.asarray(series, float)
+    if series.ndim != 2 or len(networks) != series.shape[1] or len(series) != len(design):
+        raise ValueError('Series/design/network dimensions differ')
+    present = ~np.isnan(series).all(axis=0)
+    kept = series[:, present]
+    if not np.isfinite(kept).all():
+        raise ValueError('Nonfinite parcel signal')
+    residual = np.full(series.shape, np.nan)
+    residual[:, present] = kept - design @ np.linalg.lstsq(design, kept, rcond=None)[0]
+    if np.any(np.std(residual[:, present], axis=0) <= np.finfo(float).eps * np.maximum(1, np.abs(kept).max(axis=0))):
+        raise ValueError('Constant residual parcel signal')
+    corr = np.corrcoef(residual, rowvar=False)
+    edges = np.arctanh(np.clip(corr[np.triu_indices(series.shape[1], 1)], -1 + 1e-7, 1 - 1e-7))
+    return residual, edges, network_means(edges, networks)
+
+
+def header_tr(img):
+    """TR in seconds from a 4D NIfTI header."""
+    zoom, unit = float(img.header.get_zooms()[3]), img.header.get_xyzt_units()[1]
+    return zoom / 1000 if unit == 'msec' else zoom / 1e6 if unit == 'usec' else zoom
+
+
+def _check_tr(img, tr):
+    """The caller's TR must be the BOLD file's: PPMI has 2.4, 2.5 and 1.0 s protocols, and a wrong TR mis-scales
+    censoring (frames discarded, retained seconds), the motion filter and the ALFF band."""
+    seconds = header_tr(img)
+    if seconds > 0 and not np.isclose(seconds, tr, rtol=0.01):
+        raise ValueError(f'tr={tr} s but the BOLD header says {seconds:g} s')
 
 
 def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
@@ -194,6 +265,9 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
     Atlas and BOLD must already share a physical standard space; resampling only
     reconciles grids, never estimates registration. Keys are positive atlas IDs.
     Coverage is computed on the original atlas grid, including missing-FOV voxels.
+    A parcel below ``minimum_parcel_coverage`` gets NaN signal and edges and is left
+    out of the network means (null when a pair has no edge left); the scan is
+    excluded for coverage only when fewer than two parcels remain.
     Optional BOLDImageCache shares one immutable 4D read across QC variants;
     it does not alter the scientific calculation or input/output checksums.
     """
@@ -214,6 +288,7 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
                 raise ValueError('Existing connectivity output checksum mismatch')
         return saved
     img, mask, atlas_img = (nib.load(p) for p in (bold, brain_mask, atlas))
+    _check_tr(img, tr)
     if any(image.header.get_xyzt_units()[0] != 'mm' for image in (img, mask, atlas_img)):
         raise ValueError('Explicit millimeter spatial units are required')
     table = pd.read_csv(confounds_tsv, sep='\t')
@@ -240,23 +315,27 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
     valid_atlas = resample_from_to(nib.Nifti1Image(valid_mask, img.affine), atlas_img, order=0).get_fdata() > 0
     coverage = {str(label): float(np.mean(valid_atlas[raw_atlas == label])) for label in labels}
     design, keep, temporal = nuisance_design(table, json.loads(Path(confounds_json).read_text()), tr, config)
+    covered = [label for label in labels if coverage[str(label)] >= config.minimum_parcel_coverage]
     reasons = []
-    if min(coverage.values()) < config.minimum_parcel_coverage:
+    if len(covered) < 2:
         reasons.append('insufficient_parcel_coverage')
     if not temporal['temporal_qc_pass']:
         reasons.append('insufficient_retained_time_or_residual_dof')
     result = dict(identity=identity, temporal=temporal, parcel_coverage=coverage,
-                  minimum_coverage=min(coverage.values()), numerical_qc_pass=not reasons,
-                  visual_qc_required=True, exclusion_reasons=reasons, outputs={})
+                  minimum_coverage=min(coverage.values()),
+                  low_coverage_parcels=[label for label in labels if label not in covered],
+                  numerical_qc_pass=not reasons, visual_qc_required=True, exclusion_reasons=reasons, outputs={})
     if not reasons:
         values = voxel_series[valid]
         voxel_labels = atlas_bold[selected][valid]
-        if any(not np.any(voxel_labels == label) for label in labels):
+        if any(not np.any(voxel_labels == label) for label in covered):
             raise ValueError('Empty parcel on BOLD grid')
-        series = np.column_stack([values[voxel_labels == label].mean(axis=0, dtype=np.float64) for label in labels])
+        series = np.column_stack([values[voxel_labels == label].mean(axis=0, dtype=np.float64) if label in covered
+                                  else np.full(len(keep), np.nan) for label in labels])
         residual, edges, features = residual_connectivity(series[keep], design,
                                                          [label_networks[i] for i in labels])
-        result['network_features'] = features
+        # JSON has no NaN: a network pair left without covered edges is null
+        result['network_features'] = {k: (v if np.isfinite(v) else None) for k, v in features.items()}
     # Created only after every check, so a rejected call leaves nothing behind.
     out.mkdir(parents=True, exist_ok=True)
     if not reasons:
@@ -275,6 +354,7 @@ def local_measures(bold, brain_mask, confounds_tsv, confounds_json, atlas, *, tr
     only resampled (nearest) onto the BOLD grid. Returns {"alff_<id>", "falff_<id>", "reho_<id>", "temporal"}; numbers
     only, no QC verdict, so check ``temporal["temporal_qc_pass"]`` as for connectivity."""
     img, mask_img, atlas_img = (nib.load(p) for p in (bold, brain_mask, atlas))
+    _check_tr(img, tr)
     table = pd.read_csv(confounds_tsv, sep='\t')
     if img.ndim != 4 or len(table) != img.shape[3]:
         raise ValueError('BOLD/confounds length mismatch')
@@ -327,9 +407,15 @@ def local_measures(bold, brain_mask, confounds_tsv, confounds_json, atlas, *, tr
 #    template, back-projection to each subject by dual regression, and mean subject-map weight in anatomical masks.
 #
 #        group_ica(datasets, n_components)           spatial ICA maps (components x voxels), sign-fixed and z-scored
+#        load_reference_maps(path, mask)             a frozen external map set instead, with its checksum
 #        select_component(maps, template)            Dice and spatial correlation of every component with a template
-#        dual_regression(data, maps)                 subject time courses (stage 1) and subject maps (stage 2)
+#        dual_regression(data, maps)                 FSL dual regression: subject time courses and subject maps
 #        roi_means(subject_map, roi_labels, names)   mean weight per anatomical region
+#        bgn_weights(...)                            the above end to end, preferring frozen reference maps
+#
+#    Every function that takes BOLD takes ``design, keep`` from ``nuisance_design``: nuisance regression on the
+#    retained frames, all regressors together, as ``extract_connectivity``. Omit them only for input that is
+#    already denoised and censored (XCP-D's ``desc-denoised_bold``, see xcpd.py).
 #
 # CIT168 regions at its 0.25 probability threshold are generous: on the fMRIPrep 2 mm grid each caudate is about
 # 860 voxels (6.9 mL) and each putamen about 970 (7.8 mL), so the caudate borders the lateral ventricle. Erode the
@@ -344,11 +430,13 @@ def local_measures(bold, brain_mask, confounds_tsv, confounds_json, atlas, *, tr
 STRIATAL = {"caudate": "Ca", "putamen": "Pu", "accumbens": "NAC"}
 
 
-def striatal_rois(target_img=None, regions=STRIATAL):
+def striatal_rois(target_img=None, regions=STRIATAL, putamen_split_y=None):
     """Caudate, putamen and accumbens per hemisphere from CIT168 (MNI152NLin2009cAsym).
 
     CIT168 labels are bilateral; hemispheres are split at MNI x = 0 in world coordinates, which is valid only
-    because the atlas is verified to be in MNI152NLin2009cAsym. Returns (label image, {id: name}).
+    because the atlas is verified to be in MNI152NLin2009cAsym. ``putamen_split_y`` (mm) cuts each putamen at that
+    coronal plane into ``putamen_anterior_*`` and ``putamen_posterior_*``; y = 0 is close to the anterior commissure,
+    behind which lies the sensorimotor putamen, where dopamine loss in PD starts. Returns (label image, {id: name}).
     """
     from .atlases import cit168_mni2009c, cit168_metadata
 
@@ -356,16 +444,20 @@ def striatal_rois(target_img=None, regions=STRIATAL):
     names = cit168_metadata()["labels"]
     data = np.asarray(atlas.dataobj)
     ijk = np.indices(data.shape).reshape(3, -1).T
-    x = nib.affines.apply_affine(atlas.affine, ijk)[:, 0].reshape(data.shape)
+    x, y = (nib.affines.apply_affine(atlas.affine, ijk)[:, i].reshape(data.shape) for i in (0, 1))
     out = np.zeros(data.shape, np.int16)
     mapping = {}
     k = 1
     for region, code in regions.items():
         label = names.index(code) + 1
-        for side, sel in (("l", x < 0), ("r", x > 0)):
-            out[(data == label) & sel] = k
-            mapping[k] = f"{region}_{side}"
-            k += 1
+        parts = {region: True}
+        if region == "putamen" and putamen_split_y is not None:
+            parts = {"putamen_anterior": y >= putamen_split_y, "putamen_posterior": y < putamen_split_y}
+        for name, part in parts.items():
+            for side, sel in (("l", x < 0), ("r", x > 0)):
+                out[(data == label) & sel & part] = k
+                mapping[k] = f"{name}_{side}"
+                k += 1
     img = nib.Nifti1Image(out, atlas.affine)
     if target_img is not None:
         img = resample_from_to(img, (target_img.shape[:3], target_img.affine), order=0)
@@ -375,37 +467,48 @@ def striatal_rois(target_img=None, regions=STRIATAL):
 
 def roi_timeseries(bold_img, roi_img, mask_img=None, min_voxels=5):
     """Mean BOLD per region (time x regions) and the voxel count behind each; regions below ``min_voxels`` -> NaN."""
-    bold = np.asarray(bold_img.dataobj, np.float64)
+    bold = np.asanyarray(bold_img.dataobj)              # stored type: no float64 copy of the whole 4D image
     rois = np.asarray(roi_img.dataobj)
     if rois.shape != bold.shape[:3]:
         raise ValueError("region image is not on the BOLD grid")
     inside = np.ones(rois.shape, bool) if mask_img is None else np.asarray(mask_img.dataobj) > 0
-    inside &= np.isfinite(bold).all(axis=-1) & (bold.std(axis=-1) > 0)
     labels = [k for k in np.unique(rois) if k > 0]
     series, counts = np.full((bold.shape[-1], len(labels)), np.nan), {}
     for j, k in enumerate(labels):
-        sel = (rois == k) & inside
-        counts[int(k)] = int(sel.sum())
-        if sel.sum() >= min_voxels:
-            series[:, j] = bold[sel].mean(axis=0)
+        voxels = bold[(rois == k) & inside].astype(np.float64)
+        voxels = voxels[np.isfinite(voxels).all(axis=1) & (voxels.std(axis=1) > 0)]
+        counts[int(k)] = len(voxels)
+        if len(voxels) >= min_voxels:
+            series[:, j] = voxels.mean(axis=0)
     return series, labels, counts
 
 
-def _residualise(series, design):
+def _residualise(series, design=None, keep=None):
+    """Retained frames (``keep``) residualised on the retained-row nuisance ``design``, all regressors together, as
+    ``nuisance_design`` returns them. Without a design the frames are returned as they are (already denoised input).
+    All-NaN columns (empty regions) stay NaN."""
     series = np.asarray(series, float)
+    if keep is not None:
+        series = series[np.asarray(keep, bool)]
     if design is None:
-        return series - series.mean(axis=0)
-    return series - design @ np.linalg.lstsq(design, series, rcond=None)[0]
+        return series
+    if len(design) != len(series):
+        raise ValueError("design rows differ from the retained frames")
+    out = np.full(series.shape, np.nan)
+    ok = ~np.isnan(series).all(axis=0)
+    out[:, ok] = series[:, ok] - design @ np.linalg.lstsq(design, series[:, ok], rcond=None)[0]
+    return out
 
 
-def seed_network_connectivity(seed_series, seed_names, parcel_series, parcel_networks, design=None):
+def seed_network_connectivity(seed_series, seed_names, parcel_series, parcel_networks, design=None, keep=None):
     """Fisher-z correlation of each seed with each cortical parcel, averaged within network.
 
-    ``design`` is the nuisance matrix (time x regressors, with intercept) applied identically to seeds and
-    parcels, e.g. ``fmri_connectivity.nuisance_design``. Returns {"<seed>__<network>": mean z}.
+    ``design, keep`` are ``nuisance_design``'s: seeds and parcels residualised together on the retained frames.
+    Omit both only for denoised, censored input. NaN seeds or parcels give NaN and are left out of the network
+    means. Returns {"<seed>__<network>": mean z}.
     """
-    seeds = _residualise(seed_series, design)
-    parcels = _residualise(parcel_series, design)
+    seeds = _residualise(seed_series, design, keep)
+    parcels = _residualise(parcel_series, design, keep)
     if len(seed_names) != seeds.shape[1] or len(parcel_networks) != parcels.shape[1]:
         raise ValueError("names and series dimensions differ")
     zs = (seeds - seeds.mean(0)) / seeds.std(0)
@@ -416,7 +519,9 @@ def seed_network_connectivity(seed_series, seed_names, parcel_series, parcel_net
     out = {}
     for i, seed in enumerate(seed_names):
         for net in sorted(set(parcel_networks)):
-            out[f"{seed}__{net}"] = float(np.nanmean(z[i, nets == net]))
+            values = z[i, nets == net]
+            values = values[np.isfinite(values)]
+            out[f"{seed}__{net}"] = float(values.mean()) if values.size else math.nan
     return out
 
 
@@ -428,16 +533,18 @@ def _standardise(x):
     return x / sd
 
 
-def group_ica(datasets, n_components=20, seed=0, max_iter=2000):
+def group_ica(datasets, n_components=20, seed=0, max_iter=2000, designs=None, keeps=None):
     """Spatial group ICA on temporally concatenated, voxel-standardised data (the MELODIC/GIFT design).
 
-    ``datasets``: list of (time x voxels) arrays in one common mask. Data are reduced by PCA to
-    ``n_components`` and spatially independent sources are estimated with FastICA. Each map is z-scored and
-    its sign fixed so that its largest-magnitude tail is positive. Returns (maps: components x voxels, info).
+    ``datasets``: list of (time x voxels) arrays in one common mask; ``designs``/``keeps``: per-dataset
+    ``nuisance_design`` output, applied before standardising. Data are reduced by PCA to ``n_components`` and
+    spatially independent sources are estimated with FastICA. Each map is z-scored and its sign fixed so that its
+    largest-magnitude tail is positive. Returns (maps: components x voxels, info).
     """
     from sklearn.decomposition import FastICA
 
-    stacked = np.vstack([_standardise(d) for d in datasets])
+    designs, keeps = designs or [None] * len(datasets), keeps or [None] * len(datasets)
+    stacked = np.vstack([_standardise(_residualise(d, x, k)) for d, x, k in zip(datasets, designs, keeps, strict=True)])
     if n_components >= min(stacked.shape):
         raise ValueError("more components than the data support")
     # PCA of the concatenated data: V_k spans the principal spatial patterns
@@ -452,6 +559,21 @@ def group_ica(datasets, n_components=20, seed=0, max_iter=2000):
     explained = float((s[:n_components] ** 2).sum() / (s ** 2).sum())
     return maps, {"n_components": n_components, "pca_variance_retained": explained, "seed": int(seed),
                   "n_iter": int(ica.n_iter_)}
+
+
+def load_reference_maps(path, mask_img, expected_sha256=None):
+    """A frozen external group-ICA map set (4D NIfTI, one component per volume, on the analysis grid) as
+    (components x voxels in ``mask_img``, provenance). Maps from outside the analysed sample keep the network
+    definition independent of the subjects compared on it. ``expected_sha256`` pins the file: any other bytes raise.
+    """
+    digest = sha256(path)
+    if expected_sha256 and digest != expected_sha256:
+        raise ValueError("Reference map set checksum differs from the registered one")
+    img = nib.load(path)
+    if img.ndim != 4 or img.shape[:3] != mask_img.shape or not np.allclose(img.affine, mask_img.affine, atol=1e-5):
+        raise ValueError("Reference maps must be a 4D image on the mask grid")
+    return masked(img, mask_img), {"reference_maps": str(Path(path).resolve()), "sha256": digest,
+                                   "n_components": int(img.shape[3])}
 
 
 def select_component(maps, template, z_threshold=2.3):
@@ -469,21 +591,47 @@ def select_component(maps, template, z_threshold=2.3):
     return sorted(out, key=lambda d: -d["dice"])
 
 
-def dual_regression(data, maps, normalise_timecourses=True):
-    """FSL-style dual regression for one subject.
+def dual_regression(data, maps, des_norm=True, *, design=None, keep=None):
+    """Dual regression of one subject, as FSL's ``dual_regression`` v0.6 (its two ``fsl_glm`` calls).
 
-    Stage 1 regresses the group maps on each volume to give subject time courses (time x components);
-    stage 2 regresses those time courses (variance-normalised by default, FSL ``--des_norm 1``) on each
-    voxel to give subject maps (components x voxels). Returns (timecourses, subject_maps).
+    Stage 1 (``fsl_glm -d <maps> --demean``): every volume regressed on the group maps, maps and volume demeaned
+    over voxels -> subject time courses (time x components, FSL's ``dr_stage1``). Stage 2 (``--demean
+    [--des_norm]``): every voxel regressed on those time courses, both demeaned over time, the time courses scaled
+    to unit standard deviation (n - 1, as FSL) when ``des_norm`` (FSL's recommended 1) -> subject maps (components x
+    voxels, the parameter estimates of FSL's ``dr_stage2``). The data are not variance-normalised, as in FSL.
+    ``data`` is (time x voxels) inside the common mask, which the caller builds (FSL: voxels with nonzero temporal
+    SD in every subject). PIE addition: ``design, keep`` residualise the retained frames first; for stage 2 that
+    equals fitting the nuisance regressors simultaneously, since stage-1 time courses of residuals are orthogonal
+    to the design. Returns (time courses, subject maps).
     """
-    y = _standardise(data)                                  # time x voxels
-    m = np.asarray(maps, float)                             # components x voxels
-    tc = np.linalg.lstsq(m.T, y.T, rcond=None)[0].T        # time x components
-    tc = tc - tc.mean(0)
-    if normalise_timecourses:
-        tc = tc / tc.std(0)
-    subject_maps = np.linalg.lstsq(tc, y, rcond=None)[0]   # components x voxels
-    return tc, subject_maps
+    y = _residualise(data, design, keep)
+    m = np.asarray(maps, float)
+    tc = np.linalg.lstsq((m - m.mean(1, keepdims=True)).T, (y - y.mean(1, keepdims=True)).T, rcond=None)[0].T
+    x = tc - tc.mean(0)
+    if des_norm:
+        x = x / x.std(0, ddof=1)
+    return tc, np.linalg.lstsq(x, y - y.mean(0), rcond=None)[0]
+
+
+def bgn_weights(datasets, template, roi_labels, names, *, reference=None, designs=None, keeps=None,
+                n_components=20, seed=0):
+    """Basal-ganglia-network weight per region and subject: BGN chosen by ``template`` overlap, back-projected by
+    ``dual_regression``, averaged by ``roi_means``. ``reference`` is ``load_reference_maps`` output and is used
+    whenever given. Without it the maps come from group ICA of ``datasets`` themselves, which is circular (the
+    network is defined by the subjects then compared on it) and warns. Returns (per-subject dicts, provenance)."""
+    designs, keeps = designs or [None] * len(datasets), keeps or [None] * len(datasets)
+    if reference is None:
+        warnings.warn("BGN maps derived from the analysed sample are circular; pass a frozen reference map set",
+                      stacklevel=2)
+        maps, provenance = group_ica(datasets, n_components, seed, designs=designs, keeps=keeps)
+        provenance = dict(provenance, source="analysed_sample")
+    else:
+        maps, provenance = reference
+        provenance = dict(provenance, source="frozen_reference")
+    best = select_component(maps, template)[0]
+    weights = [roi_means(dual_regression(d, maps, design=x, keep=k)[1][best["component"]], roi_labels, names)
+               for d, x, k in zip(datasets, designs, keeps, strict=True)]
+    return weights, dict(provenance, component=best["component"], template_dice=best["dice"])
 
 
 def roi_means(subject_map, roi_labels, names):
@@ -495,7 +643,48 @@ def roi_means(subject_map, roi_labels, names):
 
 def masked(img, mask_img):
     """(time x voxels) array of a 4D image inside a mask on the same grid."""
-    data, mask = np.asarray(img.dataobj, float), np.asarray(mask_img.dataobj) > 0
+    data, mask = np.asanyarray(img.dataobj), np.asarray(mask_img.dataobj) > 0
     if data.shape[:3] != mask.shape:
         raise ValueError("image and mask grids differ")
-    return data[mask].T
+    return data[mask].T.astype(float)
+
+
+def parcel_centroids(atlas_img, labels):
+    """World (mm) centre of mass of each label, in the given order, for ``qc_fc``'s distance dependence."""
+    data = np.asarray(atlas_img.dataobj)
+    return np.array([nib.affines.apply_affine(atlas_img.affine, np.argwhere(data == k).mean(axis=0)) for k in labels])
+
+
+def qc_fc(edges, mean_fd, *, covariates=None, centroids=None, alpha=0.05):
+    """QC-FC motion benchmark (Ciric et al. 2017, doi:10.1016/j.neuroimage.2017.03.020; Parkes et al. 2018): across
+    scans, the correlation of mean FD with every edge, partial on ``covariates`` (scans x k, e.g. age and sex).
+
+    ``edges``: scans x edges (Fisher z, ``np.triu_indices(P, 1)`` order). ``centroids`` (P x 3 mm,
+    ``parcel_centroids``) adds the distance dependence: Spearman rho of QC-FC with inter-parcel distance, negative
+    when motion inflates short-range coupling (Power et al. 2012). Edges with a NaN in any scan are left out
+    (``n_edges_excluded``). Returns the summary and the per-edge ``qcfc`` (NaN where left out).
+    """
+    from scipy import stats
+    from scipy.spatial.distance import pdist
+
+    edges, fd = np.asarray(edges, float), np.asarray(mean_fd, float)
+    if edges.ndim != 2 or len(edges) != len(fd) or not np.isfinite(fd).all():
+        raise ValueError("Need scans x edges and one finite mean FD per scan")
+    design = np.column_stack([np.ones(len(fd))] + ([] if covariates is None else [np.asarray(covariates, float)]))
+    usable = np.isfinite(edges).all(axis=0)
+    e, f = (a - design @ np.linalg.lstsq(design, a, rcond=None)[0] for a in (edges[:, usable], fd))
+    r = e.T @ f / (np.linalg.norm(e, axis=0) * np.linalg.norm(f))
+    dof = len(fd) - design.shape[1] - 1
+    p = 2 * stats.t.sf(np.abs(r) * np.sqrt(dof / (1 - r ** 2)), dof)
+    qcfc = np.full(edges.shape[1], np.nan)
+    qcfc[usable] = r
+    out = dict(n_scans=len(fd), n_edges=int(usable.sum()), n_edges_excluded=int((~usable).sum()),
+               median_abs_qcfc=float(np.median(np.abs(r))), percent_significant=float(100 * np.mean(p < alpha)),
+               percent_significant_fdr=float(100 * np.mean(stats.false_discovery_control(p) < alpha)),
+               distance_dependence_rho=None, qcfc=qcfc)
+    if centroids is not None:
+        distance = pdist(np.asarray(centroids, float))
+        if len(distance) != edges.shape[1]:
+            raise ValueError("centroids do not match the edges")
+        out["distance_dependence_rho"] = float(stats.spearmanr(r, distance[usable]).statistic)
+    return out

@@ -20,6 +20,7 @@ DTI zip(s) ──index/convert (dcm2niix)──► assemble runs ──[denoise]
 | `freewater_qc.py` | Multi-shell free water with solver-status and raw-tensor rejection | opt-in API |
 | `dwi_acquisition.py` | Acquisition-aware run grouping/regridding, instrumented DIPY NLS | development only |
 | `dwi_correction.py` | Single-acquisition selection, eddy command builder, geometry checks | opt-in API |
+| `dwi_qsiprep.py` | BIDS export for QSIPrep, pinned QSIPrep/QSIRecon runs, `dwiq_*` reference comparator | opt-in |
 
 External tools: `dcm2niix` (installed into `venv_imaging`; `PIE_DCM2NIIX` overrides), SimpleITK, DIPY (the MNI152NLin2009cAsym target is bundled with PIE, so nothing is downloaded). Optional:
 FSL `topup`/`applytopup` for `--fsl` (found via `$FSLDIR`, else `~/fsl` if `~/fsl/bin/topup` exists); MRtrix3
@@ -38,10 +39,14 @@ and PPMI-2 Siemens Prisma three-shell (b = 700/1000/2000, 64 directions each, re
    `(nii, bval, bvec, json)` tuples, dropping vendor-derived maps (dcm2niix suffixes `_ADC _FA _TRACEW _ColFA
    _TENSOR _EXP`) and anything without a `.bval`. The series index (`index_dwi` / the CLI's `dwi_index.csv`)
    already deselects descriptions containing `ADC` or starting `Reg_`, `dReg`, `eReg` (`_flag_dwi`).
-2. **`assemble(runs)`** — runs with >= 6 volumes at b > 50 are grouped by shape, full affine (rounded to 1e-4)
-   and `acquisition_metadata_key(meta)` = (PE direction, PE axis, readout, TE, TR, `PixelBandwidth`); the group
-   with the most diffusion-weighted volumes is concatenated (the PPMI-2 shells). The full affine is in the key
-   because shifted or oblique grids cannot be concatenated voxel-wise. Readout uses `TotalReadoutTime`, else
+2. **`assemble(runs)`** — runs with >= 6 volumes at b > 50 are grouped by shape, voxel axes (rounded to 1e-4),
+   `acquisition_metadata_key(meta)` = (PE direction, PE axis, readout, TE, TR, `PixelBandwidth`) and an origin within
+   one voxel of the group's first run; the group with the most diffusion-weighted volumes is concatenated (the PPMI-2
+   shells). A run whose origin alone differs is resampled onto the first run's grid at the same physical points
+   (`n_runs_regridded`; until 11 Oct 2026 the rounded origin was part of the key, so a sub-voxel shift demoted a
+   multi-shell session to one shell). Each run is then scaled to the first run's b0 (median over its b0 brain;
+   `b0_scales`), as QSIPrep does: scanners rescale every series, and unscaled shells from separate runs bias
+   multi-shell free water, MD-t and kurtosis. A run without b0s stays unscaled (factor NaN). Readout uses `TotalReadoutTime`, else
    dcm2niix's `EstimatedTotalReadoutTime` rounded to 1 µs so sub-microsecond JSON rounding does not split a
    protocol; an estimate only guards against mixing protocols, it never supplies PE polarity or qualifies a
    scan for topup/eddy. One reverse-PE acquisition on the same grid (a b0-only series or a full opposite-PE run,
@@ -57,9 +62,9 @@ and PPMI-2 Siemens Prisma three-shell (b = 700/1000/2000, 64 directions each, re
    in the study's September 2026 DTI download, snapshot; GE "Ax DWI B-0 A/P"), ~3-7 min per subject; otherwise
    returns the data unchanged with
    `topup=False`. Odd-sized axes are cropped by one voxel first (`_crop_even`: `b02b0.cnf` subsamples by 2).
-   eddy is not run in this path (eddy_cuda measured ~26 min per three-shell subject on an RTX 2080); see
-   `dwi_correction` for the opt-in eddy command.
-5. **`preprocess(ds, sampling_seed=0)`** — median-Otsu brain mask on the mean b0 and rigid Mattes-MI
+   eddy is not run in this path; `--eddy` runs it instead (eddy_cuda ~26 min per three-shell subject on an RTX 2080;
+   with a reverse-PE b0 it follows topup, without one it runs alone, tier `eddy_no_reverse_PE`).
+5. **`preprocess(ds, sampling_seed=ITK_SEED)`** — median-Otsu brain mask on the mean b0 and rigid Mattes-MI
    registration of every volume to the mean b0 (SimpleITK, 2-level pyramid, ~0.7 s/volume). Each DW gradient is
    reoriented with `rotate_bvec(bvec, affine, fixed_to_moving_lps)`, which converts the FSL voxel-frame bvec
    through physical LPS and back (FSL flips x for positive-determinant affines) and uses the inverse of ITK's
@@ -132,16 +137,19 @@ venv_imaging/bin/python -m pie.imaging.dwi --zips <DTI zips> --sessions <derived
 | `--priority` | none | Text file of PATNOs to run first |
 | `--eddy` | off | topup + FSL eddy (outlier replacement, eddy-rotated gradients) for scans with a reverse-PE b0 whose PE direction and readout time are recorded; replaces the rigid motion correction for those scans (`dwi.correct`, `dwi.eddy_correct`). Rows record `eddy` and `eddy_outlier_fraction`; `dwi_batch` gains `_eddy` |
 | `--eddy-cpu` | off | `eddy_cpu` instead of `eddy_cuda` (hours per three-shell scan instead of ~26 min on the GPU) |
+| `--study` | off | Add the study's nigral tensor measure (`dwis_*`, below) on the study's single b ≈ 1000 acquisition, and the pre-registered multi-shell free-water endpoint (`dwisf_*`) |
 
-One session per subject: among selected series, the acquisition date with the most DICOM files
-(`batch.session_rows`). The run is resumable: rows are appended as subjects finish and finished PATNOs are
+One session per subject: among selected series, the acquisition date nearest the subject's FastSurfer T1 session,
+then the one with the most DICOM files (`batch.session_rows`). The run is resumable: rows are appended as subjects finish and finished PATNOs are
 skipped. Failures are rows with an `error` string, not crashes.
 
 ## Output columns (`dwi_features.csv`)
 
 ROI names: FastSurfer `thalamus caudate putamen pallidum cerebellum_wm cerebral_wm` (`_l`/`_r`) and `brainstem`;
 CIT168 `snc snr sn`(=SNc+SNr) `red_nucleus stn vta gpe gpi nac` (`_l`/`_r`); `sn_posterior_{l,r}`,
-`sn_anterior_{l,r}`. Tissue-restricted variants `<roi>_t_<side>` (voxels with FA < 0.5 and FW < 0.7) exist for
+`sn_anterior_{l,r}`. CIT168 hemispheres and the SN's anterior/posterior halves use each voxel's MNI x and y
+(`mni_xy_on_grid`), so they follow the anatomy rather than the head's pitch and yaw in the scanner (before 11 Oct 2026:
+scanner y and a voxel half-space between the putamina). Tissue-restricted variants `<roi>_t_<side>` (voxels with FA < 0.5 and FW < 0.7) exist for
 every ROI starting `sn`, `stn`, `vta`, `red_nucleus`: the affine-mapped 2 mm atlas SN takes in cerebral-peduncle
 fibres and interpeduncular CSF.
 
@@ -155,10 +163,13 @@ fibres and interpeduncular CSF.
 | `reg_b0_t1_mi`, `reg_t1_mni_mi` | Registration metrics (negative MI; more negative is better; NaN when the MNI affine came from cache) |
 | `fa_wm_median`, `fw_brain_median`, `fw_fit_valid_fraction` | Global sanity checks |
 | `fw_method`, `shells`, `n_volumes`, `n_series`, `n_runs_used`, `n_rev_b0`, `topup`, `denoised`, `voxel_mm` | Acquisition / processing |
-| `manufacturer`, `model`, `pe_direction`, `readout_s`, `series_desc` | Scanner metadata |
+| `manufacturer`, `model`, `pe_direction`, `readout_s`, `series_desc`, `DeviceSerialNumber`, `StationName`, `SoftwareVersions` | Scanner metadata (serial and software for same-scanner rules and longitudinal harmonisation) |
+| `b0_scales`, `n_runs_regridded` | Per-run b0 scale factors (`;`-separated) and runs resampled onto the first run's grid |
 | `patno`, `acquisition_date`, `fs_image_id`, `source_image_ids`, `processing_version`, `error` | Lineage; `fs_image_id` lets `manifest` flag a T1 mismatch |
 
-`processing_version` for new complete runs is `2026-09-09-acquisition-metadata-v3`.
+`processing_version` for new complete runs is `2026-10-11-b0-scaling-anatomical-split-v4` (b0 scaling, origin
+regridding and the anatomical split change values from `2026-09-09-acquisition-metadata-v3`; `dwis_*` are unchanged,
+since the study's measure uses one run).
 
 The manifest's QC rule (`manifest.QC["dwi"]`) is the study's nigral diffusion rule; under it, split-half ICC was FA 0.88 and MD 0.97 on 204 pairs. It requires:
 - `n_sn_l + n_sn_r >= 20`;
@@ -173,6 +184,36 @@ Rows also carry:
 - `eddy_slice_timing`.
 
 Tables written before 26 September 2026 lack the new columns and fail the rule; re-run them.
+
+### The study's nigral measure (`--study`, `dwis_*`)
+
+A WLS tensor on the single b ≈ 1000 acquisition with its own b0s, in the CIT168 SNc + SNr voxels behind each side's
+median (hemisphere from the atlas, the anterior/posterior split on the DWI's scanner-frame y, as the study did), with the study's QC (`dwis_qc_pass`: ≥ 95 % of the SN in the brain mask,
+≥ 80 % physical fits, motion, both posterior halves). Primary column `dwis_md_sn_posterior_mean`; `dwis_tier`
+records the correction (`topup_eddy`, `eddy_no_reverse_PE`, `topup_rigid`, `rigid`). `assemble_features` carries
+the `dwis_{fa,md,ad,rd}_*` columns under their own QC, as it does `nmt_*`.
+
+Validation: equivalent to the study's implementation on 51 scans (r 0.968, QC agreement 1.00), but it **failed** its
+pre-registered PPMI 2.0 PD-vs-HC gate (AUROC 0.574 [0.495, 0.652], 218 PD / 82 HC; 29 Sep 2026). That is about the
+meta-analytic nigral MD effect (Schwarz et al. 2013, doi:10.1016/j.nicl.2013.10.006, d ≈ 0.26), so nigral MD is
+exploratory (`manifest.DWI_NIGRAL_VALIDATED = False`, column `dwi_nigral_validated`). The PPMI-supported nigral marker
+is posterior-SN free water (Burciu et al. 2017, doi:10.1093/brain/awx146; PPMI-1 d ≈ 0.4–0.5), measurable on PPMI 2.0's
+multi-shell scans.
+
+### The pre-registered endpoint: multi-shell posterior-SN free water (`--study`, `dwisf_*`)
+
+User decision (11 Oct 2026): PIE's nigral DWI endpoint is **posterior-SN free water from the multi-shell fit**, the
+marker PPMI's literature supports (Ofori et al. 2015; Burciu et al. 2017, doi:10.1093/brain/awx146: PPMI-1 PD > HC,
+d ≈ 0.4–0.5, and rising over 4 years). `study_fw_features` reads DIPY's multi-shell NLS free water (`fit_models`,
+non-physical fits missing) in the study's CIT168 SNc + SNr (`study_nigra_labels(..., posterior=True)`: SyN T1 → MNI,
+rigid b0 → T1 of the full dataset, nearest neighbour), with each side's posterior half split at its median **MNI** y.
+Columns `dwisf_{fw,fat,mdt}_{sn,sn_posterior,sn_anterior}_{l,r,mean}`; primary `dwisf_fw_sn_posterior_mean`
+(`dwi.FW_ENDPOINT`); `dwisf_tier` records the correction. Own QC (`dwisf_qc_pass`, `dwisf_qc_failed_checks`):
+multi-shell fit, ≥ 20 nigral voxels, ≥ 95 % in the brain mask, ≥ 80 % physical free-water fits, motion ≤ 2 mm, both
+posterior halves measured. Single-shell rows fail `multishell` (single-shell free water stays quarantined, below).
+`assemble_features` carries the columns under that QC. The test is pre-registered in
+[preregistration_dwi_fw.md](preregistration_dwi_fw.md); until it runs the endpoint is exploratory
+(`dwi_nigral_validated` False). The free-water change is only comparable within one correction tier across visits.
 
 ### Single-shell free water is not assembled by default
 
@@ -248,6 +289,64 @@ It is not yet in the default path: the evaluation against PPMI's hand-drawn nigr
 `labels.ppmi_dti_roi_table(ppmi_dir)` reads that reference (`DTI_Regions_of_Interest_*.csv`, CIND, Schuff et al. 2015;
 263 scans on the September 2026 download): `sn_fa`, `sn_rostral_fa`, `sn_caudal_fa`, `sn_md`, `peduncle_fa` per PATNO
 and scan month. Use it to check any change to nigral ROI placement.
+
+## QSIPrep / QSIRecon reference comparator (`dwi_qsiprep.py`, opt-in)
+
+QSIPrep (Cieslak et al. 2021, doi:10.1038/s41592-021-01185-5) is the community-standard diffusion preprocessing. PIE
+lacks several of its steps: b0 scaling per run before the shells are concatenated, MP-PCA denoising with Gibbs
+unringing, eddy with outlier replacement on every scan, and TOPUP or SyN-SDC. It is an opt-in comparator, not a
+replacement, for two reasons. QSIPrep does none of PPMI's conversion or series selection. It also resamples each scan
+onto the T1w (ACPC) grid, an extra interpolation that matters for 2 mm nuclei, so PIE keeps measuring nigral values in
+native DWI space.
+
+| Stage | What it does |
+|---|---|
+| `export` | PIE's session and runs (`batch.session_rows`, `dwi.assemble`) → BIDS `sub-<PATNO>/ses-<date>`. The main runs are copied unchanged as `dwi/*_run-<k>_dwi`. The reverse-PE b0s go to `fmap/*_dir-reverse_epi`, exactly as PIE passes them to topup, with `IntendedFor`. The T1 is PIE's T1 nearest the DWI date, `t1_gap_days` 0 being the same session. Sidecars carry `PhaseEncodingDirection`/`TotalReadoutTime` only when PIE knows both; otherwise these fields, and the ones QSIPrep would derive a readout time from, are removed (`bids_sidecar`), so QSIPrep's eddy stops instead of guessing. Provenance goes to `sourcedata/sub-<PATNO>.json` |
+| `run` | QSIPrep 26.0.0, pinned by digest, one participant at a time: `--output-resolution` set to the finest native voxel size, `dwidenoise`, `mrdegibbs` (`rpg` when the sidecar records `PartialFourier` < 1), `--hmc-model eddy` with QSIPrep's default eddy settings written to the work dir (`--cuda` for eddy_cuda), `--pepolar-method TOPUP` when a reverse-PE fmap exists, otherwise `--use-syn-sdc warn`. MNI normalisation is skipped |
+| `recon` | QSIRecon 26.0.1, pinned, with `RECON_SPEC`: the built-in TORTOISE tensor node (b ≤ 1200, which includes PPMI 2.0's b = 700 shell) and AMICO NODDI |
+| `compare` | `dwiq_*` per participant (below); with `--pie-features`, `dwiq_agreement.csv` against `dwis_*` |
+
+No built-in QSIRecon spec fits the bi-tensor free-water model used in the PPMI nigral literature. AMICO NODDI's ISOVF
+is an isotropic fraction from a different model. `compare` therefore fits PIE's own models to QSIPrep's preprocessed
+DWI, so the paired values differ only in preprocessing.
+
+`compare` maps the nigral labels by rigidly registering QSIPrep's brain-masked T1w to the FastSurfer T1, then pulling
+PIE's study labels (`dwi.study_nigra_labels`) onto QSIPrep's DWI grid in one nearest-neighbour step. QSIPrep's own
+b0 → T1w coregistration is therefore part of what is compared. The columns:
+
+- `dwiq_{fa,md,ad,rd}_<roi>` and `dwiq_qc_pass`: `dwi.study_features` on the b = 1000 run with its own b0s. Run bounds
+  come from QSIPrep's confounds `original_file` column. The motion check uses QSIPrep's mean framewise displacement
+  (`dwiq_motion_metric`).
+- `dwiq_fw_<roi>`: multi-shell free water from `freewater_qc.fit_multishell_checked`.
+- `dwiq_tensor_{fa,md,ad,rd}_<roi>` and `dwiq_noddi_isovf_<roi>`: the QSIRecon maps.
+
+The ROIs are `sn`, `snc`, `snr` and the `sn_posterior`/`sn_anterior` halves, each for `_l`, `_r` and `_mean`, under the
+study's region rule. `agreement(pie, qsi)` pairs every `dwiq_[tensor_]<metric>_<roi>` with `dwis_<metric>_<roi>` over
+participants where both pass QC. It reports Lin's CCC, ICC(2,1), the Bland–Altman bias and 95 % limits of
+QSIPrep − PIE, and Pearson's r. For the closest pairing, run PIE with `--study --eddy`.
+
+```bash
+docker pull pennlinc/qsiprep:26.0.0@sha256:b578687c4667ae43f4229212b3ae91c2ff842d49a29d42e64c013aaae9600373     # ~10.6 GB compressed
+docker pull pennlinc/qsirecon:26.0.1@sha256:5f95877eeea494c5fd82be4b8dca657be63d132f0425f71d82b0448d20ff5d69    # ~6.3 GB compressed
+M="venv_imaging/bin/python -m pie.imaging.dwi_qsiprep"; Q=<derived>/qsiprep
+$M export --zips <DTI zips> --sessions <derived>/sessions.csv --fastsurfer-dir <derived>/fastsurfer \
+    --work-dir <derived>/dwi --bids-dir $Q/bids --patnos pilot.txt          # PIE's dwi work dir: its cached series index
+$M run --bids-dir $Q/bids --output-dir $Q/out --work-dir $Q/work [--cuda] [--dry-run]     # FS license: $PIE_FS_LICENSE or --fs-license
+$M recon --qsiprep-dir $Q/out --output-dir $Q/recon --work-dir $Q/recon_work [--dry-run]
+$M compare --qsiprep-dir $Q/out --recon-dir $Q/recon --sessions <derived>/sessions.csv \
+    --fastsurfer-dir <derived>/fastsurfer --work-dir $Q --pie-features <PIE --study dwi_features.csv>
+```
+
+`run` and `recon` never pull images. Before starting they record the local image's ID and repo digests, its
+`--version` output and the full argv under `<output>/pie_provenance/<sha256>/`, mirroring `fmriprep.run_fmriprep`. A
+finished identical call is reused, and a work dir that was used with other settings is refused. A zero exit code means
+the run completed; it is not a scientific QC pass. QSIPrep's docker image needs a FreeSurfer license, and the docker
+group (`sudo adduser $USER docker`) to run without sudo.
+
+Not validated on PPMI data yet. Limits:
+- Sessions without a known phase encoding fail in QSIPrep by design.
+- The handling of origin-shifted PPMI-1 GE reverse pairs is QSIPrep's own.
+- The QSIRecon tensor pools b = 700 and b = 1000.
 
 ## JHU tract measures (`dwi.fetch_jhu`, `dwi.tract_features`)
 
@@ -364,14 +463,14 @@ not run the instrumentation concurrently with another optimizer in the same Pyth
 | `choose_tensor_acquisition(runs)` | One complete acquisition nearest b = 1000 (shells 500-1500, >= 12 DW volumes, own b0); ties → more volumes, then filename. Returns `(run, selected_mask, shell)`; never borrows b0s from another acquisition |
 | `slice_options(metadata, n_slices)` | `['--json=metadata.json']` only when `SliceTiming` is complete and its simultaneous-slice groups match `MultibandAccelerationFactor`; otherwise `[]` plus the reason. Unverified grouping must not enable `mporder>0` |
 | `topup_config(shape)` | `b02b0.cnf` for even grids, `b02b0_1.cnf` for any odd dimension; never crops |
-| `build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False, raw_is_uncorrected, cuda=True)` | `eddy_cuda`/`eddy_cpu` (explicit, no fallback) with `--repol --ol_type=sw --mporder=0 --niter=5 --cnr_maps …`; `raw_is_uncorrected` must be `True` (no correction applied twice); needs verified PE/readout (`pe_row`) |
+| `build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False, raw_is_uncorrected, cuda=True, nthr=1, n_directions=None)` | `eddy_cuda`/`eddy_cpu` (explicit, no fallback) with `--repol --ol_type=sw --mporder=0 --niter=5 --cnr_maps …`, plus `--slm=linear` below 60 distinct directions (FSL's advice; `eddy_slm` on the row, from 11 Oct 2026); `raw_is_uncorrected` must be `True` (no correction applied twice); needs verified PE/readout (`pe_row`) |
 | `validate_corrected_geometry(raw_image, corrected_image, bvals, rotated_bvecs)` | Rejects changed shape/affine, bad b-values, missing b0 or DW volumes, non-unit rotated bvecs. Headers only |
 
 `build_eddy_command` expects `raw.nii.gz`, `eddy_mask.nii.gz`, `acqparams.txt`, `index.txt`, `bvals`, `bvecs`
 (and `topup_*` with `use_topup`) in the working directory. Feed raw images, not ones already through
 applytopup or rigid motion correction; consume eddy's rotated bvecs once. The command and slice decisions
 reproduced all 114 saved study attempts available at integration time. Scheduling, logs, timeouts and memory
-admission stay with the caller: PIE has no end-to-end eddy cohort CLI.
+admission stay with the caller of these helpers; the cohort CLI for eddy is `dwi --eddy` (above).
 
 ```python
 from pie.imaging import dwi_correction as dc
@@ -412,6 +511,7 @@ Full subject: `dwi.process_subject(1, series_rows, "<derived>/fastsurfer/<IMAGE_
 ## Tests
 
 `tests/test_dwi.py` (run assembly, ROI construction and averaging, label-resampling direction, single-shell
-free-water phantom, denoising and even cropping), `tests/test_dwi_correction.py`, `tests/test_freewater_qc.py`,
+free-water phantom, denoising and even cropping), `tests/test_dwi_qsiprep.py` (BIDS export, container commands and
+provenance, QSIPrep/QSIRecon output parsing, `dwiq_*`, agreement statistics), `tests/test_dwi_correction.py`, `tests/test_freewater_qc.py`,
 `tests/test_atlas_space.py`, and the gradient-rotation / failed-fit / reverse-b0 cases in
 `tests/test_imaging_audit.py`; `test_dwi_refine_uses_the_earliest_finished_t1` in `tests/test_imaging_regressions.py`.

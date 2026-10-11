@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import pie.imaging
-from pie.imaging import (cnn, datscan, dwi, dwi_refine, embed, fba, features, flair, labels, manifest, nm, nm_template, qc,
+from pie.imaging import (cnn, datscan, dwi, dwi_refine, embed, fba, features, flair, labels, manifest, nm, nm_native, nm_template, qc,
                          run)
 
 
@@ -120,7 +120,7 @@ def test_flair_rows_record_acquisition_date_and_t1(tmp_path, monkeypatch):
     monkeypatch.setattr(flair, "register_flair_to_t1", lambda f, t1, m: (sitk.Transform(), -0.5))
     monkeypatch.setattr(flair, "wmh", lambda a, b, vox_mm=1.0: (np.zeros(a.shape, bool), {"wmh_mm3": 0.0}))
     rows = [{"zip": "z", "prefix": "p/", "desc": "3D FLAIR", "flair_3d": True, "n_files": 176, "date": "2000-01-01"}]
-    row = flair.process_subject(1, rows, str(mri.parent), str(tmp_path / "work"))
+    row = flair.process_subject(1, rows, str(mri.parent), str(tmp_path / "work"), method="threshold")
     assert row["acquisition_date"] == "2000-01-01" and row["fs_image_id"] == "I000001"
 
 
@@ -280,7 +280,7 @@ def test_module_docstrings_only_mention_real_cli_flags(monkeypatch):
         raise _Parsed(set(self._option_string_actions))
 
     monkeypatch.setattr(argparse.ArgumentParser, "parse_args", grab)
-    mods = [run, dwi, nm, flair, datscan, qc, fba, dwi_refine, nm_template, cnn, embed]
+    mods = [run, dwi, nm, nm_native, flair, datscan, qc, fba, dwi_refine, nm_template, cnn, embed]
     flags = set()
     for m in mods:
         with pytest.raises(_Parsed) as e:
@@ -1113,17 +1113,18 @@ def test_dwi_qc_is_the_study_rule(tmp_path):
     assert manifest.QC["dwi"](d).tolist() == [True, False, False, False, False, False]
 
 
-def test_dat_calibration_is_per_vendor_with_a_pooled_fallback():
+def test_dat_calibration_is_per_model_with_a_pooled_fallback():
     from pie.imaging import datscan
     rng = np.random.default_rng(0)
     true = rng.uniform(0.5, 3.0, 40)
     d = pd.DataFrame({"vendor": ["GE"] * 30 + ["PHILIPS"] * 10, "published": true})
     d["sbrwm_putamen_l"] = np.where(d.vendor == "GE", 0.5 * true + 0.2, 0.8 * true)
     d.loc[[5, 35], "published"] = np.nan                                       # e.g. prodromal: PPMI withholds the value
-    out = datscan.calibrate(d, {"sbrwm_putamen_l": "published"}, min_ref=15)
-    ge = out.vendor == "GE"
-    assert np.allclose(out.loc[ge, "sbrwm_putamen_l_cal"], true[ge.to_numpy()])  # includes the row without a published value
-    assert (out.loc[ge, "calibration"] == "GE").all() and (out.loc[~ge, "calibration"] == "POOLED").all()   # 9 < 15 reference scans
+    for method in ("deming", "equipercentile"):
+        out = datscan.calibrate(d, {"sbrwm_putamen_l": "published"}, min_ref=15, by="vendor", method=method)
+        ge = out.vendor == "GE"
+        assert np.allclose(out.loc[ge, "sbrwm_putamen_l_cal"], true[ge.to_numpy()])  # includes the row without a published value
+        assert (out.loc[ge, "calibration"] == "GE").all() and (out.loc[~ge, "calibration"] == "POOLED").all()   # 9 < 15 reference scans
 
 
 def test_dat_labels_fall_back_to_invicro_for_scans_xing_never_analysed(tmp_path):
@@ -1134,6 +1135,39 @@ def test_dat_labels_fall_back_to_invicro_for_scans_xing_never_analysed(tmp_path)
     d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
     assert d.loc[21, "sbr_source"] == "invicro_occipital" and d.loc[21, "dat_deficit_sbr"] == 1 and d.loc[21, "dat_visual"] == 1
     assert d.loc[1, "sbr_source"] == "xing_cwm" and d.index.is_unique  # Xing stays primary; one row per session
+
+
+def test_xing_deficit_threshold_matches_the_invicro_rate_and_defaults_do_not_change(tmp_path):
+    ppmi, sessions = _ppmi(tmp_path)
+    r = labels.xing_deficit_threshold(ppmi)
+    # overlap: 20 controls at 100 % of expected on both scales and PD 21 (Xing 0.9 / 2.8, Invicro 1.9 / 3.8); TRODAT out
+    assert r["n_overlap"] == 21 and r["n_deficit"] == 1 and 0.9 / 2.8 < r["threshold"] < 1.0 and r["kappa"] == 1.0
+    d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
+    assert d.loc[21, "dat_deficit_threshold"] == 0.65 and d.loc[21, "dat_deficit_sbr"] == 1     # exported default unchanged
+    d = labels.dat_labels(ppmi, sessions, xing_threshold=0.2).set_index("PATNO")
+    assert d.loc[21, "dat_deficit_threshold"] == 0.2 and d.loc[21, "dat_deficit_sbr"] == 0
+
+
+def test_validate_datscan_script_cross_fits_and_reports_agreement(tmp_path):
+    """End to end on synthetic tables: PIE = an affine map of Xing's SBRs, so calibrated agreement is near perfect."""
+    from scripts import validate_datscan
+
+    ppmi, _ = _ppmi(tmp_path)
+    x = pd.read_csv(ppmi / "Imaging" / "Xing_Core_Lab_-_Quant_SBR_01Jan2020.csv").iloc[:21]          # 22 is a TRODAT scan
+    rng = np.random.default_rng(0)
+    pie = pd.DataFrame({"patno": x.PATNO, "image_id": [f"I{p:06d}" for p in x.PATNO], "error": "", "hdr_model": "CAM",
+                        "reg_metric": -0.7, "n_label_voxels": 500, "shift_vox": np.where(x.PATNO % 2, 1.0, 2.24)})
+    for r in ("PUTAMEN", "CAUDATE"):
+        for s in "LR":
+            pie[f"sbrwm_{r.lower()}_{s.lower()}"] = 0.1 + 0.7 * x[f"{r}_{s}_REF_CWM"] + rng.normal(0, 1e-3, len(x))
+    pie.to_csv(tmp_path / "sbr.csv", index=False)
+    pd.DataFrame({"image_id": pie.image_id, "member": [f"PPMI/{p}/DaTSCAN/2011-01-20_10_00_00.0/I{p:06d}/x.dcm" for p in x.PATNO]})\
+        .to_csv(tmp_path / "idx.csv", index=False)
+    out = validate_datscan.main(["--sbr", str(tmp_path / "sbr.csv"), "--index", str(tmp_path / "idx.csv"), "--ppmi-dir", str(ppmi),
+                                 "--folds", "2"]).set_index("region")
+    assert out.loc["putamen_l", "n"] == 21 and out.loc["putamen_l", "ccc"] > 0.99 and out.loc["putamen_min", "icc21"] > 0.99
+    assert abs(out.loc["putamen_l", "bias"]) < 0.01 and out.loc["putamen_l", "n_inside"] == 11
+    assert out.attrs["kappa_all"] == 1.0                                                   # PD 21 is a deficit on both
 
 
 def test_dat_labels_keep_every_participant_even_when_image_ids_repeat(tmp_path):
@@ -1235,3 +1269,49 @@ def test_eddy_mask_is_the_studys_mask_on_the_topup_b0(tmp_path, monkeypatch):
     assert np.array_equal(seen(), dwi._b0_brain(big.mean(axis=3)))
     dwi.eddy_correct({**ds, "rev_b0": None}, tmp_path / "work", cuda=True)
     assert np.array_equal(seen(), dwi._b0_brain(raw[..., :2].mean(axis=3)))
+
+
+def test_index_cache_takes_in_a_zip_added_later(tmp_path):
+    # a follow-up download added to an existing work dir was silently ignored by the cached index
+    import zipfile
+
+    from pie.imaging import index
+
+    a, b = tmp_path / "bl.zip", tmp_path / "v04.zip"
+    with zipfile.ZipFile(a, "w") as z:
+        z.writestr("PPMI/1/MPRAGE/2000-01-01_09_00_00.0/I000001/a.dcm", b"x")
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("PPMI/1/MPRAGE/2002-01-01_09_00_00.0/I000002/a.dcm", b"x")
+    cache = tmp_path / "index.csv"
+    assert index.index_zips([a], cache_csv=cache)["image_id"].tolist() == ["I000001"]
+    assert index.index_zips([a, b], cache_csv=cache)["image_id"].tolist() == ["I000001", "I000002"]
+    assert index.index_zips([b], cache_csv=cache)["image_id"].tolist() == ["I000002"]
+
+
+def test_field_strength_in_gauss_reads_as_tesla():
+    from pie.imaging.convert import field_tesla
+
+    assert field_tesla(15000) == 1.5 and field_tesla("7000") == 0.7 and field_tesla(3) == 3 and field_tesla(None) is None
+
+
+def test_itk_registrations_are_seeded_not_wall_clock():
+    # SimpleITK seed 0 is sitkWallClock: DaT transforms (and so SBRs) differed between identical runs
+    import inspect
+
+    from pie.imaging import datscan, dwi, flair, nm
+
+    assert datscan.ITK_SEED != 0
+    for f in (dwi._register_volume, dwi.preprocess, dwi.register_b0_to_t1, dwi.register_t1_to_mni, nm.average_repeats,
+              nm.register_nm_to_t1, nm.register_slab, nm.process_subject):
+        assert inspect.signature(f).parameters["sampling_seed"].default == datscan.ITK_SEED, f.__name__
+    for mod in (datscan, flair):
+        assert "seed=0)" not in inspect.getsource(mod)
+
+
+def test_dat_labels_record_whether_the_datscan_came_after_the_mri(tmp_path):
+    # the +/-18-month window can attach a later DaTscan (a converter's later state); the sign lets callers exclude it
+    ppmi, sessions = _ppmi(tmp_path)
+    d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
+    assert d.loc[1, "days_datscan_after_mri"] == -14 and d.loc[1, "months_to_datscan"] == 0.5    # DaTscan month 01/2011
+    later = labels.dat_labels(ppmi, sessions.assign(session_date="2010-12-01")).set_index("PATNO")
+    assert later.loc[1, "days_datscan_after_mri"] == 31

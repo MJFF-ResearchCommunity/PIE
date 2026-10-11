@@ -88,6 +88,8 @@ def test_extraction_and_coverage_rejection(tmp_path):
     for path, array in [(paths[0], data), (paths[1], mask), (paths[4], atlas)]:
         image = nib.Nifti1Image(array, np.eye(4))
         image.header.set_xyzt_units('mm', 'sec')
+        if image.ndim == 4:
+            image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
         nib.save(image, path)
     table.to_csv(paths[2], sep='\t', index=False)
     paths[3].write_text(json.dumps(meta))
@@ -119,6 +121,8 @@ def test_extraction_and_coverage_rejection(tmp_path):
     mask[:2] = 0
     image = nib.Nifti1Image(mask, np.eye(4))
     image.header.set_xyzt_units('mm', 'sec')
+    if image.ndim == 4:
+        image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
     nib.save(image, paths[1])
     result = extract_connectivity(*paths, {1: 'network', 2: 'network'}, tmp_path / 'rejected', tr=2.5)
     assert not result['numerical_qc_pass']
@@ -136,6 +140,8 @@ def synthetic_inputs(tmp_path):
                         (paths[1], np.ones(atlas.shape, np.uint8)), (paths[4], atlas)]:
         image = nib.Nifti1Image(array, np.eye(4))
         image.header.set_xyzt_units('mm', 'sec')
+        if image.ndim == 4:
+            image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
         nib.save(image, path)
     table.to_csv(paths[2], sep='\t', index=False)
     paths[3].write_text(json.dumps(meta))
@@ -194,6 +200,8 @@ def test_local_measures_use_the_same_censoring_and_find_the_coherent_slow_parcel
     data[:2] += 5 * np.sin(2 * np.pi * 0.03 * t).astype(np.float32)          # parcel 1: coherent, in the ALFF band
     image = nib.Nifti1Image(data, np.eye(4))
     image.header.set_xyzt_units('mm', 'sec')
+    if image.ndim == 4:
+        image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
     nib.save(image, paths[0])
     out = local_measures(*paths, tr=2.5)
     ref = extract_connectivity(*paths, {1: 'network', 2: 'network'}, tmp_path / 'fc', tr=2.5)
@@ -207,7 +215,7 @@ def test_local_alff_is_normalised_to_the_brain_mean_so_intensity_scale_does_not_
     paths = synthetic_inputs(tmp_path)
     a = local_measures(*paths, tr=2.5)
     img = nib.load(paths[0])
-    scaled = nib.Nifti1Image(np.asarray(img.dataobj) * 10, img.affine)
+    scaled = nib.Nifti1Image(np.asarray(img.dataobj) * 10, img.affine, img.header)
     scaled.header.set_xyzt_units('mm', 'sec')
     nib.save(scaled, paths[0])
     b = local_measures(*paths, tr=2.5)
@@ -240,3 +248,92 @@ def test_local_measures_blank_parcels_the_brain_mask_mostly_misses(tmp_path):
     out = local_measures(*paths, tr=2.5)
     assert np.isfinite(out['alff_1']) and np.isfinite(out['reho_1'])
     assert np.isnan(out['alff_2']) and np.isnan(out['falff_2']) and np.isnan(out['reho_2'])   # 50 % < minimum_parcel_coverage
+
+
+def test_a_tr_that_contradicts_the_bold_header_is_refused(tmp_path):
+    # PPMI 2.0 multiband BOLD (TR 1 s) analysed with the legacy tr=2.5 would mis-scale censoring and the ALFF band
+    from pie.imaging.fmri_connectivity import local_measures
+    paths = synthetic_inputs(tmp_path)
+    img = nib.load(paths[0])
+    img.header.set_zooms((1, 1, 1, 1.0))
+    nib.save(nib.Nifti1Image(np.asarray(img.dataobj), img.affine, img.header), paths[0])
+    with pytest.raises(ValueError, match='BOLD header'):
+        local_measures(*paths, tr=2.5)
+
+
+def test_one_uncovered_parcel_is_nan_not_a_scan_exclusion(tmp_path):
+    paths = synthetic_inputs(tmp_path)
+    atlas = np.zeros((4, 4, 4), np.int16)
+    atlas[0], atlas[1], atlas[2], atlas[3] = 1, 2, 3, 4
+    mask = np.ones(atlas.shape, np.uint8)
+    mask[0] = 0                                                       # parcel 1 outside the brain mask
+    for path, array in [(paths[1], mask), (paths[4], atlas)]:
+        image = nib.Nifti1Image(array, np.eye(4))
+        image.header.set_xyzt_units('mm', 'sec')
+        nib.save(image, path)
+    result = extract_connectivity(*paths, {1: 'A', 2: 'A', 3: 'B', 4: 'B'}, tmp_path / 'result', tr=2.5)
+    assert result['numerical_qc_pass'] and result['low_coverage_parcels'] == [1]
+    assert result['parcel_coverage']['1'] == 0 and result['minimum_coverage'] == 0
+    features = result['network_features']
+    assert features['A__A'] is None                                   # its only edge touches parcel 1
+    saved = np.load(tmp_path / 'result/connectivity.npz')
+    upper = np.triu_indices(4, 1)
+    edges = dict(zip(zip(*upper), saved['edges']))
+    assert features['A__B'] == pytest.approx(np.mean([edges[1, 2], edges[1, 3]]))
+    assert features['B__B'] == pytest.approx(edges[2, 3])
+    assert np.isnan(saved['parcel_timeseries'][:, 0]).all() and np.isfinite(saved['parcel_timeseries'][:, 1:]).all()
+
+
+def breathing_confounds(n=600, tr=1.0):
+    """PPMI 2.0-like: realignment reads 0.3 Hz breathing as 0.3 mm of y translation, plus a slow real drift."""
+    table, meta = confounds(n)
+    t = np.arange(n) * tr
+    motion = {c: np.zeros(n) for c in ('trans_x', 'trans_z', 'rot_x', 'rot_y', 'rot_z')}
+    motion['trans_y'] = 0.3 * np.sin(2 * np.pi * 0.3 * t) + 0.5 * np.sin(2 * np.pi * 0.005 * t)
+    for column, values in motion.items():
+        table[column] = values
+    raw = np.abs(np.diff(table[['trans_x', 'trans_y', 'trans_z']].to_numpy(), axis=0)).sum(axis=1)
+    table['framewise_displacement'] = np.r_[np.nan, raw]
+    return table, meta
+
+
+def test_breathing_is_filtered_out_of_fd_at_multiband_tr():
+    from pie.imaging.fmri_connectivity import filtered_fd
+    table, meta = breathing_confounds()
+    fd = filtered_fd(table[['trans_x', 'trans_y', 'trans_z', 'rot_x', 'rot_y', 'rot_z']], 1.0)
+    assert np.isnan(fd[0]) and np.nanmax(fd[20:-20]) < 0.05 < np.nanmean(table['framewise_displacement'])
+    _, keep, audit = nuisance_design(table, meta, 1.0)
+    assert audit['motion_filtered'] and audit['retained_frames'] > 550
+    assert audit['mean_fd_filtered'] < 0.05 < audit['mean_fd']
+    _, unfiltered, audit = nuisance_design(table, meta, 1.0, ConnectivityConfig(motion_filter_max_tr=0))
+    assert not audit['motion_filtered'] and unfiltered.sum() < 300   # breathing would censor most of the scan
+    _, _, audit = nuisance_design(*confounds(), 2.5)
+    assert not audit['motion_filtered'] and audit['mean_fd_filtered'] is None
+
+
+def test_retained_stretches_shorter_than_five_frames_are_censored():
+    table, meta = confounds()
+    table.loc[[20, 26], 'framewise_displacement'] = .31               # windows 19-22 and 25-28 leave 23-24
+    _, keep, audit = nuisance_design(table, meta, 2.5)
+    assert not keep[23:25].any() and audit['short_segment_frames'] == 2
+    _, keep, audit = nuisance_design(table, meta, 2.5, ConnectivityConfig(minimum_segment_frames=1))
+    assert keep[23:25].all() and audit['short_segment_frames'] == 0
+
+
+def test_qc_fc_finds_motion_contaminated_short_edges():
+    from pie.imaging.fmri_connectivity import qc_fc
+    rng = np.random.default_rng(5)
+    scans, parcels = 200, 12
+    centroids = np.column_stack([np.arange(parcels) * 10.0, np.zeros(parcels), np.zeros(parcels)])
+    upper = np.triu_indices(parcels, 1)
+    distance = np.abs(upper[0] - upper[1]) * 10.0
+    fd = rng.gamma(2, 0.1, scans)
+    age = rng.normal(65, 8, scans)
+    clean = rng.normal(size=(scans, len(distance)))
+    null = qc_fc(clean, fd, covariates=age[:, None], centroids=centroids)
+    assert null['percent_significant'] < 10 and abs(null['distance_dependence_rho']) < 0.3
+    dirty = clean + np.outer(fd - fd.mean(), 30 / distance)            # motion inflates short-range edges most
+    dirty[0, 5] = np.nan
+    report = qc_fc(dirty, fd, covariates=age[:, None], centroids=centroids)
+    assert report['percent_significant'] > 30 and report['distance_dependence_rho'] < -0.5
+    assert report['n_edges_excluded'] == 1 and np.isnan(report['qcfc'][5])

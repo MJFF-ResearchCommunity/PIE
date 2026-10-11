@@ -5,9 +5,9 @@ Part of the [imaging layer](imaging.md). Both read the subject's FastSurfer T1 (
 
 | Module | Output | External tools |
 |---|---|---|
-| `nm.py` | `nm_features.csv`: nigral contrast ratios on the native NM slab | dcm2niix, SimpleITK (the MNI target is bundled with PIE) |
+| `nm.py` | `nm_features.csv`: the averaged slab, its QC, and the atlas-ROI ring contrast (a diagnostic since 11 Oct 2026) | dcm2niix, SimpleITK (the MNI target is bundled with PIE) |
 | `nm_template.py` | `nm_template_features.csv`: contrast in a study NM template | + ANTsPy (`ants`), scikit-image, nilearn; the 1 mm MNI152NLin2009cAsym target is fetched from TemplateFlow once |
-| `nm_native.py` | `nm_native_features.csv`: published measures on the native slab (Langley SNc volume, snceg segmentation) | + ANTsPy; snceg in its own environment (`PIE_SNCEG_PYTHON`) |
+| `nm_native.py` | `nm_native_features.csv`: published measures on the native slab (Langley SNc volume; snceg segmentation, **PIE's default NM measure**) | + ANTsPy; snceg in its own environment (`PIE_SNCEG_PYTHON`) |
 | `datscan.py` | `datscan_sbr.csv`: striatal binding ratios from raw projections | pydicom, scikit-image, SimpleITK |
 
 ## Neuromelanin MRI in PIE: methods, evidence and status
@@ -33,6 +33,12 @@ Neuromelanin-sensitive MRI shows the pigmented dopaminergic neurons of the subst
 - PIE's download held NM for 48 HC and 170 PD, where PPMI's acquisition metadata lists 112 HC and 631 PD. The missing scans, mostly baseline, are the main limit on precision.
 
 **PIE's position.**
+- **Default measure (11 Oct 2026): snceg** (`nm_native --snceg`): the SN contrast ratio against each side's crus on the
+  slices holding that side's segmented SN (`nms_sn_mean_cr`), and the segmented SN volume (`nms_sn_volume_mm3`),
+  assembled as `nm_primary_cr` and `nm_primary_volume_mm3`. It is the only NM measure that reproduced a published PPMI
+  result (R2). On PPMI's 2D GRE-MT it is not validated (`NM_VALIDATED` stays False); a Siemens-only re-test is
+  pre-registered in [preregistration_nm_snceg.md](preregistration_nm_snceg.md). `nm.py`'s ring contrast
+  (`nm_sn_*_cnr`) is kept, under its old names, as a diagnostic.
 - **Native-space threshold volume (`nm_native`, Langley method).** It did not reproduce (R1, R1-v2 and R1b below), so it is exploratory until the authors' regions are available.
 - **snceg segmentation.** This is the state-of-the-art alternative, and it reproduced its published PPMI TSE-FS result (R2).
 - **The study's contrast ratio** (`nm_native --study`, `nm_bion_*`). It was tested in a pre-registered out-of-sample replication (27 September 2026) on 369 HC/PD that no NM test had used, 298 of them usable (251 PD, 47 HC; 293 Siemens).
@@ -77,7 +83,9 @@ descriptions matching `NM_PATTERN` and not `EXCLUDE` (`MTC-NO|B0|Map|TRACEW|ADC|
    timestamps are counted (`n_missing_acquisition_identity`) and must be resolved before an
    independent-acquisition reliability study.
 2. **`average_repeats(niis, sampling_seed=0, transforms_dir=None)`** — rigid MI alignment of each repeat to the
-   first, then the mean. Returns `(image, meta, n_repeats, max_motion_mm, support)`: `support` is, per voxel, the
+   first, then the coverage-weighted mean: each voxel over the repeats whose field of view reaches it. Until 11 Oct
+   2026 the sum was divided by the number of repeats, which darkened a moved repeat's missing edge slices by 1/n per
+   missing repeat. Returns `(image, meta, n_repeats, max_motion_mm, support)`: `support` is, per voxel, the
    share of repeats whose field of view reaches it (1 = every repeat; a repeat that moved leaves the slab's edge
    slices averaged over fewer images). `meta["PIERepeatSelection"]` holds the selection record (written to
    `<work>/<patno>/repeat_selection.json`). With `transforms_dir` it also saves `repeat_<i>_to_anchor.tfm` and
@@ -103,7 +111,8 @@ descriptions matching `NM_PATTERN` and not `EXCLUDE` (`MTC-NO|B0|Map|TRACEW|ADC|
    brainstem / ventral DC / cerebral WM / thalamus labels. Hemispheres come from `atlas_left_mask(tgt, chain)`
    (the MNI left half-space mapped onto the slab), because the slab's voxel x direction is not an anatomical
    label; without it, bilateral putamen landmarks are required or it raises.
-5. **`features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None, support=None)`** — each side's
+5. **`features(nm, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), smooth_fwhm_mm=1.0, mask_out=None, support=None, refine=False)`** —
+   the atlas SN is read where the SyN puts it. With `refine=True` (the default until 11 Oct 2026) each side's
    atlas SN is refined by the translation (<= `REFINE_MM` = 2 mm along each in-plane axis, +-1 slice; the
    Euclidean shift can exceed 2 mm) that maximises the ROI mean on a 1 mm-smoothed copy while keeping >= 95 % of
    the ROI in brainstem labels (the cistern lateral to the peduncle is bright). Masks are shifted with zero
@@ -115,8 +124,9 @@ The same-side ring part anterior to the SN (nominally crus cerebri) is kept as `
 approximation, not an expert-drawn crus-cerebri reference, and it is not the primary reference: it lies next to
 the neuromelanin band and is contaminated by it. Same-image intensity refinement can introduce selection bias;
 independent-repeat agreement and native anatomical review are needed, and neither conditional repeatability nor
-an atlas overlay establishes anatomical accuracy. A 20-person replication did not establish that independently
-anchor-refined ROIs beat same-image-refined ones, so the default ROI method was not changed. Order statistics on
+an atlas overlay establishes anatomical accuracy. Selecting the position on the image it then measures added about
++0.023 to the contrast on PPMI slabs, more than the HC–PD gap, so since 11 Oct 2026 refinement is off by default
+(`nm_sn_shift_mm_*` = 0, `*_cnr` = `*_cnr_atlas`); `features(refine=True)` keeps it for comparison. Order statistics on
 single voxels (brightest-fraction contrast, fixed-threshold volumes) were removed after the 2026-09 audit: they
 tracked the slab noise level (per-voxel CV ~0.13 in PPMI's 5-average 1.5 mm protocol; Spearman 0.65-0.71 with the
 reference CV) and showed no PD-vs-HC difference, whereas the refined ROI mean was ~9-10 % lower in de novo PD (AUROC
@@ -153,12 +163,12 @@ the [DWI flag table](imaging_dwi.md#cli)) plus:
 
 | Column | Meaning |
 |---|---|
-| `nm_sn_{l,r}_cnr` | Refined SN vs the whole ring (primary) |
+| `nm_sn_{l,r}_cnr` | Atlas SN vs the whole ring (diagnostic; refined position only with `features(refine=True)`) |
 | `nm_sn_{posterior,anterior}_{l,r}_cnr` | Halves of the refined SN, split at its median A-P coordinate |
 | `nm_sn_{l,r}_cnr_crus`, `nm_sn_{l,r}_cnr_atlas` | Same-side anterior reference; unrefined atlas SN vs ring |
 | `nm_sn_mean_cnr`, `nm_sn_posterior_mean_cnr`, `nm_sn_anterior_mean_cnr`, `nm_sn_min_cnr`, `nm_sn_asym_cnr`, `nm_sn_mean_cnr_atlas` | Bilateral mean, min, \|L−R\| |
 | `nm_sn_{l,r}_mean`, `nm_ring_mean`, `nm_ring_sd`, `n_ring`, `nm_ref_{l,r}_mean`, `nm_ref_{l,r}_sd`, `n_ref_{l,r}`, `n_sn_{l,r}` | Raw intensities and voxel counts |
-| `nm_sn_shift_mm_{l,r}` | Refinement displacement (mm) |
+| `nm_sn_shift_mm_{l,r}` | Refinement displacement (mm); 0 unless `refine=True` |
 | `n_repeats`, `repeat_motion_mm_max`, `nm_clipped_fraction`, `reg_nm_t1_mi`, `reg_t1_mni_mi` (affine-era rows only), `reg_init`, `sn_slab_coverage_{l,r}`, `nm_valid_{l,r,ref}`, `nm_support_{l,r,ref}` | QC |
 | `shape`, `voxel_mm`, `manufacturer`, `model`, `tr_s`, `te_s`, `flip_angle`, `mt_flag`, `series_desc`, `n_series` | Acquisition |
 | `patno`, `acquisition_date`, `fs_image_id`, `processing_version`, `atlas_space`, `atlas_version`, `atlas_sha256`, `atlas_probability_threshold`, `registration_reference_space`, `registration_reference_sha256`, `error` | Lineage |
@@ -168,19 +178,24 @@ inside the slab (voxel centres ± half a voxel): a bounded geometric fraction. T
 `sn_slab_coverage` instead, (SN voxels on the slab x voxel volume) / atlas SN voxels in T1 space, a resampled-volume
 ratio that exceeds 1 on fine slabs and can pass a slab that misses one side. `nm_valid_{l,r,ref}` is the share of
 the measured masks (refined SN per side, ring) with signal (finite, > 0); `nm_support_{l,r,ref}` the share that every
-repeat reaches (support ≥ 0.99). New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-09-27-study-syn-slab-qc-v6`
-(`…-v5` before the study's slab checks were ported); `--refeature` rows get that string plus `-refeatured`.
+repeat reaches (support ≥ 0.99). New complete runs are labelled `nm.PROCESSING_VERSION` = `2026-10-11-coverage-weighted-unrefined-v7`
+(`2026-09-27-study-syn-slab-qc-v6` before coverage-weighted averaging and unrefined ROIs, `…-v5` before the study's slab
+checks were ported); `--refeature` rows get that string plus `-refeatured`. `--refeature` applies the unrefined ROIs
+but not the averaging, which needs the raw repeats: re-run `nm`.
 `manifest.QC["nm"]`: `n_sn_l >= 20`, `n_sn_r >= 20`, `min(sn_slab_coverage_l, sn_slab_coverage_r) >= 0.9` (older
 rows: `sn_slab_coverage >= 0.5`), `repeat_motion_mm_max < 3`, and
 `nm_ref_{l,r}_sd < 0.4 x nm_ref_{l,r}_mean` (a reference partly outside the slab has CV near 1 and meaningless
 CNR; this rejected 7 of 646 Philips scans in the September 2026 snapshot), `nm_clipped_fraction <= 0.01`, and every
-`nm_valid_*` and `nm_support_*` ≥ 0.95 (the study's voxel checks; tables without these columns pass them).
+`nm_valid_*` and `nm_support_*` ≥ 0.95 (the study's voxel checks; tables without these columns pass them), and
+`n_repeats >= 3` (the study's acquisition check; 11 Oct 2026: four single-repeat slabs, three GE and one Siemens, passed
+before; tables without the column pass).
 `nm_clipped_fraction` is the largest fraction, over the raw repeats, of voxels at that repeat's maximum value.
 - A clean slab reaches its maximum in a handful of voxels (about 3 × 10⁻⁷ of the slab).
 - A scanner-clipped one saturates the brain. On a PPMI Siemens Prisma_fit scan, 37 % of voxels sat at the 12-bit ceiling of 4095, and snceg found 2 mm³ of nigra.
 - Tables written before 26 September 2026 lack the column, and their rows pass this criterion.
 
-The assembled table keeps `nm_*` columns ending `_cnr` (so not `_cnr_crus` / `_cnr_atlas`).
+The assembled table keeps `nm_*` columns ending `_cnr` (so not `_cnr_crus` / `_cnr_atlas`), plus `nm_vendor` and
+`nm_slab_mm` (the slab's thin-axis extent, from `shape` × `voxel_mm`) on every row, QC-failed or not.
 
 Tests: `tests/test_nm.py` (planted contrast, independent noise, band-offset refinement, reference excludes both
 refined masks) and the hemisphere / no-wrap cases in `tests/test_imaging_audit.py`; refeature versioning and stale-atlas handling
@@ -202,7 +217,8 @@ Neither method passes, so `manifest.NM_VALIDATED` is False and assembled NM colu
 treat them as exploratory. Published single-site NM-MRI studies report larger effects; possible reasons here are
 PPMI's multi-site 2D GRE-MT protocol, the affine atlas placement of `nm.py`, and a defect found in the template's crus
 reference, which lies mostly above the SN (median 7 mm; about 10 % of it at SN levels). Fixing that mask is an
-anatomical, outcome-blind change; its effect must then be tested on patients not in this sample.
+anatomical, outcome-blind change; its effect must then be tested on patients not in this sample. Fixed on 11 Oct 2026
+(`template_masks` takes the crus on the SN prior's axial levels); not re-tested.
 
 ### Re-test with published nigral territories (26 September 2026): not validated
 
@@ -248,7 +264,10 @@ This matches the lateral-to-medial gradient of nigral cell loss.
 | Siemens | 0.70 | 21 / 69 |
 | Toshiba | 0.97 | 6 / 5 |
 
-The PD–HC difference is small next to between-subject and between-scanner spread.
+The PD–HC difference is small next to between-subject and between-scanner spread. GE is 41 % of PIE's NM (264 of 649
+error-free rows in the September 2026 table), and 189 GE slabs are 20 mm thick against the protocol's 24 mm. The
+assembled `nm_vendor` and `nm_slab_mm` columns let an analysis restrict to Siemens or full coverage; no row is dropped
+for vendor.
 
 **Status.** NM columns stay exploratory (`manifest.NM_VALIDATED = False`). The held-out patients have now been used, so any further NM hypothesis, for example Siemens-only, needs new data.
 
@@ -317,8 +336,11 @@ Every averaged slab goes into a 0.5 mm MNI midbrain box (`BOX_ORIGIN_RAS=(-30, -
 
 Template: each normalised slab divided by its median inside the SN prior (bundled CIT168 SNc + SNr, `sn_prior()`)
 dilated 10 mm, averaged; voxels with data in fewer than `min_frac` of subjects are zero. Crus = darker half of the
-sector 4-9 mm anterior-lateral to the prior; SN = voxels within 3 mm of the prior with template CNR >=
-max(0.06, Otsu). Per subject, CNR = I / mode(crus) − 1. No threshold volume is reported (noise-driven).
+sector 4-9 mm anterior-lateral to the prior, on the prior's own axial levels (since 11 Oct 2026; the 3D shell before
+reached the darker peduncle above the SN, median 7 mm, so a through-slab gradient did not cancel). The crus *mode*
+still weights those levels by voxel count and noise, so a gradient within the SN's own levels cancels only
+approximately (the native snceg reference is a per-side mean on the SN's slices). SN = voxels within 3 mm of the prior
+with template CNR >= max(0.06, Otsu). Per subject, CNR = I / mode(crus) − 1. No threshold volume is reported (noise-driven).
 
 ```bash
 for stage in syn normalize template features; do
@@ -407,7 +429,7 @@ Every measure is read on the subject's own averaged slab (`nm_mean.nii.gz`). The
 | Measure | Function | Columns |
 |---|---|---|
 | **Langley SNc volume** [Langley 2025; Hwang 2023]: search region (nigra + 1 mm) voxels above the crus mean + 2.8 SD (`nm.hyperintense_volume`); run `nm --denoise` first. That is MP-PCA over the repeats before averaging [Veraart 2016], as published, on the slab's central in-plane half, which equals whole-slab MP-PCA in the midbrain at about 2 CPU-min per subject. On a phantom it cut the error of the average about threefold in uniform tissue, by about 20 % around a nigra-like block, and kept that block's contrast within 10 % | `langley_features(nm_img, codes, k=2.8)` | `nml_sn_volume_mm3`, `nml_sn_volume_{l,r}_mm3`, `nml_threshold`, `nml_ref_mean`, `nml_ref_sd`, `nml_n_ref`, `nml_k` |
-| **snceg** [Lillebostad 2025]: model output on the native slab; crus reference excludes segmented voxels | `snceg_mask(nm_path, out_path)`, `snceg_features(nm_img, sn, codes)` | `nms_sn_volume_mm3`, `nms_sn_volume_{l,r}_mm3`, `nms_sn_{l,r,mean}_cr` (I_SN / I_crus − 1), `nms_sn_{l,r,mean}_cnr` ((I_SN − I_crus) / SD_crus), `nms_crus_mean`, `nms_crus_sd` |
+| **snceg** [Lillebostad 2025], **PIE's default NM measure**: model output on the native slab. Each side's reference is that side's crus on the slices holding that side's segmented SN (the slab's thin axis), excluding segmented voxels, ≥ 20 voxels; a through-slab intensity gradient then cancels. Before 11 Oct 2026 one crus over all slices and both sides was used; it is kept as `*_cr_allslices` and `nms_crus_mean` / `nms_crus_sd` (diagnostics, not assembled) | `snceg_mask(nm_path, out_path)`, `snceg_features(nm_img, sn, codes)` | `nms_sn_volume_mm3`, `nms_sn_volume_{l,r}_mm3`, `nms_sn_{l,r,mean}_cr` (I_SN / I_crus − 1), `nms_sn_{l,r,mean}_cnr` ((I_SN − I_crus) / SD_crus), `nms_crus_{l,r}_mean`, `nms_crus_{l,r}_sd`, `nms_sn_{l,r,mean}_cr_allslices`, `nms_crus_mean`, `nms_crus_sd` |
 | QC | `process_subject` | `native_cov_search_{l,r}`, `native_cov_crus_{l,r}` |
 
 **Departures from the publications.**
@@ -466,7 +488,7 @@ A region's contrasts are NaN on both sides unless every one of these holds:
 
 Run `nm --keep-nifti` *without* `--denoise` for the study's quantity, then `nm_native … --study`.
 
-`manifest.assemble_features` keeps `nml_sn_volume*_mm3`, `nms_sn*_{mm3,cr,cnr}` and `nm_bion_*_cr`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`. Tests are in `tests/test_nm_native.py`:
+`manifest.assemble_features` keeps `nml_sn_volume*_mm3`, `nms_sn*_{mm3,cr,cnr}` and `nm_bion_*_cr`, blanked where the slab fails `QC["nm"]`, like `nmt_*` and `nmb_*`, and copies the default measure to `nm_primary_cr` (`nms_sn_mean_cr`) and `nm_primary_volume_mm3` (`nms_sn_volume_mm3`). Tests are in `tests/test_nm_native.py`:
 - a real ANTs SyN between synthetic volumes;
 - an oblique thin slab;
 - coverage;
@@ -507,9 +529,13 @@ segmentation as the ROI atlas.
    established against PPMI's SBRs and the striatum position across 19 scanner configurations:
    DICOM angles run opposite to scikit-image's (`angle = -start + direction * step * (view - 1)`); dual-head systems
    without per-detector start angles are H-mode (heads 180° apart); no vendor needs a left/right mirror. Broken
-   headers (no angular step) are inferred from the frame count. Raises `ValueError` for non-TOMO series;
-   `read_volume(dcm)` handles series stored as a reconstructed stack. Returns `proj`, `angles_deg`, `spacing_mm`,
-   `meta` (the `hdr_*` columns).
+   headers (no angular step) are inferred from the frame count. Raises `ValueError` for non-TOMO series. Returns
+   `proj`, `angles_deg`, `spacing_mm`, `meta` (the `hdr_*` columns). No PPMI scan is stored reconstructed, but
+   consortium sites send such stacks: `read_volume(dcm)` places them by their DICOM geometry
+   (`ImageOrientationPatient` / `ImagePositionPatient` at top level or in the first `DetectorInformationSequence`
+   item, `PixelSpacing`, signed `SpacingBetweenSlices`), resamples them onto an axis-aligned RAS grid and returns
+   `(NIfTI, spacing_mm)`. A stack without that geometry is refused (`ValueError`); until October 2026 this path
+   guessed the orientation with the projection flips, which can mirror left and right.
 2. **`reconstruct(proj, angles_deg, spacing_mm, fwhm_mm=6.0, filter_name="hann", attenuation=False,
    point_sources=True)`** — filtered back-projection per transaxial slice (scikit-image `iradon`);
    `subtract_point_sources(vol, angles_deg, spacing_mm, filter_name="hann", factor=6.0, max_voxels=200)` removes
@@ -519,17 +545,38 @@ segmentation as the ROI atlas.
    the CLI (until September 2026 this function alone defaulted to on), so a direct call reproduces the pipeline.
    `to_nifti(vol, spacing_mm)` writes patient axes (+y anterior, +z superior), centred at the origin.
 3. **`register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc_img=None,
-   scale_fit=False)`** — normalised correlation against `synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0)` (striatum
-   1.0, brain 0.25, head 0.12, smoothed), with the SPECT cleaned by `_clean_spect` (largest component of the
-   brightest 4 L of a 20 mm-smoothed copy, winsorised). Centre-of-moments initialisation, 3-level refinement,
-   `ScaleVersor3DTransform`: rigid for parallel-hole cameras, rigid + per-axis scale when `scale_fit` (fan-beam
-   collimators, or no collimator/zoom recorded: Marconi and Picker Prism data reconstructed as parallel-beam come
-   out ~1.5 x magnified transaxially). A striatum-masked second stage was tried and removed: it drifted on faint striata
-   (side-wise putamen agreement with PPMI fell from 0.84 to 0.78 pooled, 0.64 to 0.27 on ADAC).
+   scale_fit=False)`** — normalised correlation against the brain-only `synthetic_spect(t1_img, aparc_img,
+   fwhm_mm=10.0)` (striatum 1.0, rest of brain 0.25, nothing outside the brain, smoothed), sampled only inside the
+   brain and a ~7 mm rim, with the SPECT cleaned by `_clean_spect` (largest component of the brightest 4 L of a
+   20 mm-smoothed copy, winsorised). Centre-of-moments initialisation, 3-level refinement, `ScaleVersor3DTransform`:
+   rigid for parallel-hole cameras, rigid + per-axis scale when `scale_fit` (fan-beam collimators, or no
+   collimator/zoom recorded: Marconi and Picker Prism data reconstructed as parallel-beam come out magnified
+   transaxially). Scales are bounded by `SCALE_BOUNDS`: 0.85–1.8 transaxially (a fan-beam collimator magnifies by
+   F / (F − R), focal length F, radius of rotation R) and 0.85–1.15 axially (the fan converges in the transaxial
+   plane only). A fit that leaves them is clamped, refitted rigidly at the bound and flagged (`reg_scale_at_bound`).
+   Returns `(transform, metric, moving, {"t0", "scale_at_bound"})`. A striatum-masked second stage was tried and
+   removed: it drifted on faint striata (side-wise putamen agreement with PPMI fell from 0.84 to 0.78 pooled, 0.64 to
+   0.27 on ADAC).
+
+   **Why it changed (October 2026).** On the 8 September 2026 run the placement search below hit its ±2-voxel edge
+   in 81 % of scans, and in 91 % of the lowest putamen-SBR tertile. Putamen agreement with Invicro was r 0.925 inside
+   the window and 0.77 on its edge, so the search was correcting real misregistration. The template also held scalp
+   and neck (0.12 from the T1 intensity). Its smoothing came out near 30 mm FWHM, not 10, because the voxel size was
+   read off the diagonal of FastSurfer's LIA affine, which gives 1/3 mm. The unbounded fan-beam scales had an axial
+   median of 0.72, and within each collimator group agreement with Xing fell as the axial scale moved away from 1.
+   Putamen r went from 0.96/0.95 to 0.93/0.90 for FANB, and from 0.87/0.81 to 0.74/0.62 where no collimator was
+   recorded, comparing the half of scans nearest 1 with the other half. Fits rotated by more than 30° (19 % of scans)
+   agreed at r 0.49–0.72, against 0.83–0.85 for the rest.
+
+   On a synthetic head with scalp uptake beyond the skull and a hot neck, the old template reproduced the axial
+   shrinkage (0.73). The brain-only fit gave 0.91, and 1.00–1.02 without the hot neck, and it recovered a 1.2 or
+   1.4 transaxial magnification to within 1 %. None of this has been re-run on PPMI yet: see "Validation" below.
 4. **`quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0,
-   search_vox=2, scale_fit=False)`** → `sbr_with_transform` → **`sbr_from_arrays(S, L, dilate=0,
-   ref_dilate=0, search_vox=2, ap=None, spacing_mm=None)`**: DKT labels resampled onto the SPECT grid, a ±2-voxel
-   translation search maximising striatal counts (mimics hottest-region ROI placement), SBR = target / occipital
+   search_vox=None, scale_fit=False)`** → `sbr_with_transform` → **`sbr_from_arrays(S, L, dilate=0,
+   ref_dilate=0, search_vox=None, ap=None, spacing_mm=None)`**: DKT labels resampled onto the SPECT grid (through
+   the stored, rounded transform, so `--requantify` reproduces a run exactly), a ±`SEARCH_MM` (12 mm; `search_vox`
+   overrides it in voxels) translation search maximising striatal counts (mimics hottest-region ROI placement;
+   `shift_edge` flags placements that reach the window's edge), SBR = target / occipital
    − 1 with occipital = cuneus, lateral occipital, lingual, pericalcarine (`OCCIPITAL`). Each striatal ROI is also
    split into anterior/posterior halves along the T1 anterior axis (the posterior putamen loses dopamine
    transporter first), and `sbrwm_*` uses cerebral WM >= `WM_MARGIN_MM` (15 mm) from the striatum as reference
@@ -558,20 +605,25 @@ scans, and 0.946 against 0.992 for Invicro (654 / 176). The caudate is PIE's wea
 and reference standard wherever they exist; PIE's reconstruction is for scans PPMI has not quantified and for
 analyses that need the subject's own anatomy. Never apply PPMI's percentage cut-offs to PIE SBRs.
 
-The ±2-voxel placement search earns its place: re-quantifying 300 of those scans from the saved reconstructions and
+The placement search earns its place: re-quantifying 300 of those scans from the saved reconstructions and
 transforms with fixed placement (`search_vox=0`) lowered agreement with Xing from r 0.80 to 0.70–0.72 on the putamen
 and from 0.60–0.64 to 0.51–0.55 on the caudate, because the search absorbs residual registration error. It also raises
 every SBR (putamen by ~0.15 on the WM scale), part of which is the upward bias of taking a maximum over noisy positions,
-largest on low-count scans.
+largest on low-count scans. With perfect registration a noisy synthetic phantom moves it by under half a voxel on
+average. Since October 2026 the window is ±12 mm (it was ±2 voxels, 6–10 mm by camera, and 81 % of scans hit its
+edge), and a placement on the edge fails QC.
 
 No attenuation correction by default: a Chang implementation exists (`--attenuation`) but lowered agreement with
-PPMI's values. Absolute SBRs therefore sit below PPMI's. `datscan.calibrate(d, {pie_column: published_column}, min_ref=15)` maps them onto a published scale.
-- It fits a linear map per camera vendor on the scans that have both values. A vendor with fewer than 15 such scans uses all vendors pooled.
+PPMI's values. Absolute SBRs therefore sit below PPMI's. `datscan.calibrate(d, {pie_column: published_column},
+min_ref=15, by="hdr_model", method="deming", delta=1.0)` maps them onto a published scale.
+- It fits per camera model on the scans that have both values. A model with fewer than 15 such scans uses all models pooled.
+- `method="deming"` is a linear map with errors in both variables (`datscan.deming(x, y, delta)`; `delta` is the y/x error-variance ratio). `method="equipercentile"` sends each value to the published value at the same percentile, so the mapped reference scans reproduce the published distribution exactly; values outside the reference range go to its ends.
+- Both keep the published spread. The OLS fit used until October 2026, which the pipeline never called, regressed towards the mean: the mapped putamen SD was 0.82 of the published SD.
 - The map is applied to every scan, so prodromal scans without published SBRs are calibrated too.
 - Match the reference regions: `sbrwm_*` to Xing's `*_REF_CWM`, and `sbr_*` to Invicro's occipital-referenced SBRs.
-- It is ported from `study1_virtual_biomarkers/calibrate_datscan.py`, where calibrated putamen SBRs correlated with PPMI's at r 0.85 on 880 reference scans. `reg_params` / `reg_center` store the fitted fixed → moving transform so ROI
-variants can be recomputed without re-registering: `transform_from_row(row)`, `requantify_row(row,
-fastsurfer_subject_dir)`.
+
+`reg_params` / `reg_center` store the fitted fixed → moving transform so ROI variants can be recomputed without
+re-registering: `transform_from_row(row)`, `requantify_row(row, fastsurfer_subject_dir)`.
 
 ```python
 import numpy as np
@@ -627,7 +679,7 @@ venv_imaging/bin/python -m pie.imaging.datscan --index <derived>/spect_index.csv
 | `--patnos` | none | Text file of PATNOs |
 | `--flip-lr` | `false` | `true` mirrors the reconstruction left/right (no vendor needed it) |
 | `--attenuation` | off | Chang attenuation correction (experimental; file suffix `_ac`) |
-| `--requantify` | off | Recompute SBR columns of finished rows from the saved NIfTI and stored transform (`requantify_row`, ~2 s/scan) against the row's `fs_image_id` (older rows: the earliest finished FastSurfer session); the previous table is kept once as `datscan_sbr.pre_requant.csv` |
+| `--requantify` | off | Recompute SBR columns of finished rows from the saved NIfTI and stored transform (`requantify_row`, ~2 s/scan) against the row's `fs_image_id` (older rows: the earliest finished FastSurfer session), with the current placement window; the previous table is kept once as `datscan_sbr.pre_requant.csv`. It does not re-register: rows from before October 2026 keep their old transforms, so re-run them instead |
 
 Resumable: image IDs already in `datscan_sbr.csv` are skipped. Subjects without a FastSurfer T1 are reconstructed
 but not quantified. Rows are appended through `batch.run_batch`, so the header widens to every column seen even when
@@ -643,13 +695,38 @@ the first series to finish fails.
 | `mean_<roi>`, `mean_occipital`, `mean_wm` | ROI mean counts |
 | `reg_metric` | Negative normalised correlation (more negative is better) |
 | `reg_scale_{x,y,z}`, `reg_params`, `reg_center`, `flip_lr` | Transform (ScaleVersor3D: versor xyz, translation xyz, scale xyz) |
-| `shift_vox`, `n_label_voxels`, `n_ref_voxels`, `n_wm_voxels`, `point_source_voxels` | QC |
+| `reg_rot_deg`, `reg_rot_{x,y,z}_deg`, `reg_t{x,y,z}_mm`, `reg_scale_at_bound` | Total rotation and xyz Euler angles about the T1's LPS axes, translation beyond the centre-of-mass start (LPS mm), scale clamped at `SCALE_BOUNDS` |
+| `shift_vox`, `shift_{x,y,z}_mm`, `shift_edge` | Hottest-placement shift (norm in voxels; per axis in mm, right / anterior / superior) and whether it reached the window's edge |
+| `n_label_voxels`, `n_ref_voxels`, `n_wm_voxels`, `point_source_voxels` | QC |
 | `hdr_manufacturer`, `hdr_model`, `hdr_collimator`, `hdr_zoom`, `hdr_scale_fit`, `hdr_n_frames`, `hdr_n_detectors`, `hdr_n_angles`, `hdr_angular_step`, `hdr_scan_arc`, `hdr_rotation_direction`, `hdr_start_angle`, `hdr_energy_window`, `hdr_rows`, `hdr_cols`, `hdr_spacing_mm`, `hdr_counts_total` | Acquisition header |
 | `image_id`, `patno`, `series_desc`, `kind` (`projections` / `stored_volume`), `nifti`, `fs_image_id`, `error` | Lineage |
 
-`manifest.QC["dat"]`: `|reg_metric| >= 0.4` and `n_label_voxels >= 100`. The manifest's `dat_batch` is vendor +
-first 12 characters of `hdr_model`; assembled features keep `dat_sbr_{caudate,putamen}_{l,r}`.
+`manifest.QC["dat"]`: `|reg_metric| >= 0.4`, `n_label_voxels >= 100`, `reg_rot_deg <= 30`, translation beyond the
+centre-of-mass start <= 50 mm, no clamped scale and no placement on the window's edge. Tables written before October
+2026 lack the last four columns and pass those gates, so re-run them. The correlation is now computed inside the brain
+only, so its values are not comparable with older tables: check the 0.4 bar on the re-run. The manifest's
+`dat_batch` is vendor + first 12 characters of `hdr_model`; assembled features keep `dat_sbr_{caudate,putamen}_{l,r}`.
+
+### Validation
+
+`scripts/validate_datscan.py --sbr <derived>/datscan_full/datscan_sbr.csv --index <derived>/spect_index.csv
+--ppmi-dir PPMI [--source xing|invicro] [--method deming|equipercentile] [--folds 5] [--threshold 0.65] [--patnos
+file]` (`--patnos` compares two runs on the same participants) matches
+QC-passing scans to the core lab on PATNO and month and calibrates per camera model on the other folds (split by
+PATNO). Per region it prints r of the raw values (overall, and inside versus at or past the old ±2-voxel edge), and
+CCC, ICC(2,1) and Bland–Altman bias and limits of the calibrated values. It then prints Cohen's kappa of the deficit
+call in prodromals and overall, and the run's edge, rotation and scale diagnostics. The agreement table above comes
+from the 8 September 2026 run, before the October 2026 registration changes; re-measure it with this script.
+
+Baseline from the script on that run against Xing (1,160 QC-passing scans, Deming, 5 folds):
+- Putamen: CCC 0.81 / 0.82 (L / R), with ICC(2,1) the same. Bland–Altman limits are ±0.50 on Xing's scale.
+- Putamen r of the raw values was 0.91 / 0.88 inside the old window (225 scans) and 0.76 / 0.77 on its edge.
+- Caudate: CCC 0.69 / 0.67.
+- Deficit call at 0.65: κ 0.54 in 560 prodromal scans and 0.75 overall.
+- Equipercentile calibration gives the same figures. Against Invicro (880 scans) putamen CCC is 0.83, and r is 0.925 inside the window and 0.77 on its edge.
 
 Tests: `tests/test_datscan.py` (photopeak units, FBP hot spots, NIfTI geometry, SBR arithmetic, left/right
-ordering through registration, anterior/posterior split and WM reference); table header, T1 choice, attenuation
-default and signature in `tests/test_imaging_regressions.py`.
+ordering through registration, anterior/posterior split and WM reference, fan-beam scale recovery and bounds with
+scalp and neck uptake, the mm placement window and its edge flag, the QC gates, reconstructed-stack geometry and
+refusal, calibration spread); table header, T1 choice, attenuation default, signature, per-model calibration and the
+validation script end to end in `tests/test_imaging_regressions.py`.

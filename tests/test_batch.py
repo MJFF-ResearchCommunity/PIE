@@ -26,3 +26,54 @@ def test_run_batch_widens_header(tmp_path):
     run_batch([(4, True)], _job, out, workers=1)                      # resume appends with the widened header
     d = pd.read_csv(out)
     assert len(d) == 4 and d.loc[d.patno == 4, "nst_afd_l"].item() == 1.0
+
+
+def test_modality_session_is_the_one_nearest_the_t1_session():
+    # a later, larger 3D FLAIR must not be measured on the baseline T1's anatomy
+    import pandas as pd
+
+    from pie.imaging.batch import session_rows
+
+    g = pd.DataFrame({"date": ["2010-01-05", "2012-03-01", "9999-01-01"], "n_files": [40, 176, 500], "image_id": ["a", "b", "c"]})
+    assert [r["image_id"] for r in session_rows(g)] == ["c"]                       # no T1 date: most files, as before
+    assert [r["image_id"] for r in session_rows(g, "2010-01-01")] == ["a"]
+    assert [r["image_id"] for r in session_rows(g, "2012-02-20")] == ["b"]
+
+
+def test_convert_series_returns_only_this_conversion_and_keeps_a_failure_log(tmp_path, monkeypatch):
+    import zipfile
+
+    from pie.imaging import batch
+
+    zp = tmp_path / "loni.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("PPMI/1/DTI/2000-01-01_09_00_00.0/I000001/a.dcm", b"x")
+    fake = tmp_path / "dcm2niix"
+    fake.write_text('#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\n'
+                    '[ -n "$FAIL" ] && { echo "no gradient tags" >&2; exit 2; }\ntouch "$2/I000001_5.nii.gz" "$2/I000001_5.bval"\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(batch, "DCM2NIIX", str(fake))
+    out = tmp_path / "nii"
+    out.mkdir()
+    (out / "I000001_5a.nii.gz").touch()                       # an earlier attempt's dcm2niix-suffixed duplicate
+    got = batch.convert_series(zp, "PPMI/1/DTI/2000-01-01_09_00_00.0/I000001/", out)
+    assert [p.rsplit("/", 1)[1] for p in got] == ["I000001_5.nii.gz"] and (out / "I000001_5.bval").exists()
+    monkeypatch.setenv("FAIL", "1")
+    assert batch.convert_series(zp, "PPMI/1/DTI/2000-01-01_09_00_00.0/I000001/", tmp_path / "nii2") == []
+    assert "no gradient tags" in (tmp_path / "nii2" / "I000001_dcm2niix.log").read_text()
+
+
+def test_per_visit_jobs_pair_each_session_with_its_own_t1(tmp_path):
+    from pie.imaging.batch import visit_jobs
+
+    fs = tmp_path / "fs"
+    for img in ("T_BL", "T_V06", "T_NOFS"):
+        if img != "T_NOFS":
+            (fs / img / "stats").mkdir(parents=True)
+            (fs / img / "stats" / "aseg+DKT.stats").write_text("")
+    pd.DataFrame({"patno": [1, 1, 1], "image_id": ["T_BL", "T_V06", "T_NOFS"],
+                  "session_date": ["2020-01-01", "2022-01-05", "2023-06-01"]}).to_csv(tmp_path / "sessions.csv", index=False)
+    idx = pd.DataFrame({"patno": [1] * 5, "date": ["2020-01-03", "2020-01-03", "2022-01-01", "2022-02-20", "2023-06-01"],
+                        "prefix": ["a", "b", "c", "d", "e"], "n_files": [10] * 5})
+    jobs = visit_jobs(idx, tmp_path / "sessions.csv", fs, window_days=90)
+    assert [(p, Path(d).name, sorted(r["prefix"] for r in rows)) for p, rows, d in jobs] == [(1, "T_BL", ["a", "b"]), (1, "T_V06", ["c"])]

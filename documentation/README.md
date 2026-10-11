@@ -48,7 +48,9 @@ Python ≥ 3.10 is the floor because `endgame-ml` requires it. `setup.py` still 
 that isn't enough to run the classifier.
 
 `pie.stats` pulls in `pingouin`, `scikit-posthocs` and `lifelines` only in the functions that
-use them. They are in `requirements.txt`, but if you install PIE any other way, the posthoc,
+use them. lifelines 0.30 requires pandas < 3, so it lives in the general environment (`venv_py311`), never in
+`venv_imaging`, whose pandas 3.0.3 produced the validated imaging values; installing it there would downgrade pandas.
+Run survival analyses (and `tests/test_stats_survive.py`) in `venv_py311`. They are in `requirements.txt`, but if you install PIE any other way, the posthoc,
 partial-correlation and survival functions raise `ModuleNotFoundError` until you install them.
 
 ## Tests

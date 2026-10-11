@@ -16,12 +16,13 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from pie.imaging.fastsurfer import STATS_FILE, parse_stats, valid_etiv
+from pie.imaging.convert import field_tesla
+from pie.imaging.fastsurfer import STATS_FILE, parse_aparc_stats, parse_stats, parse_volume_txt, valid_etiv
 
 BILATERAL = ["Putamen", "Caudate", "Pallidum", "Thalamus", "Hippocampus", "Amygdala", "Accumbens-area",
              "Lateral-Ventricle", "Cerebellum-Cortex", "Cerebellum-White-Matter", "VentralDC"]
 META_COLS = ["Manufacturer", "ManufacturersModelName", "MagneticFieldStrength", "SoftwareVersions",
-             "InstitutionName", "RepetitionTime", "EchoTime", "InversionTime", "FlipAngle", "SliceThickness"]
+             "InstitutionName", "StationName", "DeviceSerialNumber", "ConversionSoftwareVersion", "RepetitionTime", "EchoTime", "InversionTime", "FlipAngle", "SliceThickness"]
 
 
 def _clean(name):
@@ -39,9 +40,13 @@ def build_idp_table(sessions, subjects_dir):
         row = {"PATNO": s.patno, "EVENT_ID": s.EVENT_ID, "IMAGEID": s.image_id, "SCAN_DATE": s.session_date,
                "protocol_phase": s.protocol_phase}
         row.update({c: getattr(s, c, None) for c in META_COLS})
+        row["MagneticFieldStrength"] = field_tesla(row["MagneticFieldStrength"])   # sessions.csv written before the fix
         measures = {k: v for k, v in d.items() if k.endswith("Vol")}
         row.update(measures)
         row["eTIV"] = valid_etiv(Path(subjects_dir) / s.image_id / "mri")     # FreeSurfer eTIV, see fastsurfer.talairach_etiv
+        # per-row provenance: segmentation versions differ in PD-vs-HC effects (Sokolowski 2024), so never pool blindly
+        row["fastsurfer_version"] = next((ln.split(None, 2)[2].strip() for ln in stats.read_text().splitlines()
+                                          if ln.startswith("# FastSurfer_version")), None)
         for k, v in d.items():
             if k not in measures:
                 row[f"vol_{_clean(k)}"] = v
@@ -53,8 +58,51 @@ def build_idp_table(sessions, subjects_dir):
         vent = [d.get(k, 0.0) for k in ["Left-Lateral-Ventricle", "Right-Lateral-Ventricle", "3rd-Ventricle",
                                         "4th-Ventricle", "Left-Inf-Lat-Vent", "Right-Inf-Lat-Vent"]]
         row["sum_Ventricles"] = sum(vent)
+        row.update(thickness_columns(Path(subjects_dir) / s.image_id / "stats"))
+        row.update(extra_t1_columns(Path(subjects_dir) / s.image_id))
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def thickness_columns(stats_dir):
+    """PIE's own cortical thickness and area (DK atlas, FastSurfer surfaces at the pinned version; ``run --surfaces``):
+    ``cth_{lh,rh}_<region>``, ``area_{lh,rh}_<region>``, ``cth_{lh,rh}_mean``; empty when surfaces were not run. The DK
+    regions match PPMI's FS7 tables (``fs7_cth_*``), so agreement can be checked region by region."""
+    out = {}
+    for h in ("lh", "rh"):
+        p = Path(stats_dir) / f"{h}.aparc.stats"
+        if p.exists():
+            a = parse_aparc_stats(p)
+            out[f"cth_{h}_mean"] = a.pop("MeanThickness", None)
+            for region, (thick, area) in a.items():
+                out[f"cth_{h}_{_clean(region)}"], out[f"area_{h}_{_clean(region)}"] = thick, area
+    return out
+
+
+def extra_t1_columns(subj):
+    """The optional FreeSurfer 7.4.1 stages when they have run (``run --sclimbic / --subfields / --synthseg``):
+    ``vol_sclimbic_<structure>`` (basal forebrain, the nucleus basalis region, and the other limbic nuclei) with
+    ``sclimbic_qa_z_max`` (largest |z| of the tool's volume QA against its population); ``vol_hsf_{lh,rh}_<subfield>`` and
+    ``vol_amyg_{lh,rh}_<nucleus>``; ``synthseg_<structure>`` volumes with ``synthseg_qc_min`` (lowest per-structure QC
+    score; below ~0.65 is suspect, Billot 2023)."""
+    subj, out = Path(subj), {}
+    stats = subj / "stats" / "sclimbic.stats"
+    if stats.exists():
+        out.update({f"vol_sclimbic_{_clean(k)}": v for k, v in parse_stats(stats).items()})
+        qa = subj / "stats" / "sclimbic.zqa_scores_all.csv"
+        if qa.exists():
+            out["sclimbic_qa_z_max"] = float(pd.read_csv(qa).drop(columns="case", errors="ignore").abs().max(axis=1).iloc[0])
+    for h in ("lh", "rh"):
+        for kind, prefix in (("hippoSfVolumes", "hsf"), ("amygNucVolumes", "amyg")):
+            f = subj / "mri" / f"{h}.{kind}.txt"
+            if f.exists():
+                out.update({f"vol_{prefix}_{h}_{_clean(k)}": v for k, v in parse_volume_txt(f).items()})
+    ss = subj / "synthseg"
+    if (ss / "volumes.csv").exists():
+        out.update({f"synthseg_{_clean(k)}": float(v) for k, v in pd.read_csv(ss / "volumes.csv").iloc[0, 1:].items()})
+    if (ss / "qc.csv").exists():
+        out["synthseg_qc_min"] = float(pd.read_csv(ss / "qc.csv").iloc[0, 1:].astype(float).min())
+    return out
 
 
 FS7_TABLES = {"FS7_APARC_CTH": "fs7_cth_", "FS7_APARC_SA": "fs7_sa_", "FS7_ASEG_VOL": "fs7_", "MRIQC": "mriqc_"}

@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fast:
+    # The CI subset: no slow tests (tests/conftest.py), no real PPMI data. Tests needing FastSurfer, FSL, FreeSurfer or
+    # weights skip or fake them; dcm2niix comes with the lock.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.19"
+          enable-cache: true
+          cache-dependency-glob: requirements-imaging-cpu.lock
+      - name: Install the locked imaging environment (CPU torch)
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip sync --python .venv/bin/python --torch-backend cpu requirements-imaging-cpu.lock
+      - name: pytest -m "not slow and not ppmi"
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          PIE_DCM2NIIX: ${{ github.workspace }}/.venv/bin/dcm2niix
+        run: .venv/bin/python -m pytest -m "not slow and not ppmi" -rs

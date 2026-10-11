@@ -91,9 +91,12 @@ class FMRIPrepConfig:
                                      'and writable output/work/cache')
 
 
-def build_command(config: FMRIPrepConfig, *, version_only=False):
-    """Return argv/environment without writes or shell interpolation."""
-    config.validate()
+def container_runtime(config, input_dir, app, *, ro_binds=(), templateflow="/cache/templateflow"):
+    """Command prefix, environment, (input, output, work) paths and license path for a pinned BIDS app.
+
+    Shared by fMRIPrep and XCP-D. ``ro_binds``: extra read-only (host, container) mounts. ``templateflow`` is
+    the container's TemplateFlow home.
+    """
     p = config.paths()
     env = dict(os.environ, OMP_NUM_THREADS=str(config.omp_nthreads),
                OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
@@ -102,28 +105,35 @@ def build_command(config: FMRIPrepConfig, *, version_only=False):
                TEMPLATEFLOW_HOME=str(p["cache_dir"] / "templateflow"),
                XDG_CACHE_HOME=str(p["cache_dir"] / "xdg"))
     if config.backend == "native":
-        prefix = [config.executable]
-        bids, output, work = map(str, (p["bids_dir"], p["output_dir"], p["work_dir"]))
-        license_path = config.fs_license_file
-    else:
-        env.update(APPTAINER_CACHEDIR=str(p["cache_dir"] / "apptainer"),
-                   APPTAINER_TMPDIR=str(p["work_dir"] / "tmp"))
-        prefix = [config.executable, "exec", "--cleanenv", "--containall",
-                  "--home", str(p["cache_dir"] / "home") + ":/home/pie",
-                  "--bind", str(p["bids_dir"]) + ":/data:ro",
-                  "--bind", str(p["output_dir"]) + ":/out",
-                  "--bind", str(p["work_dir"]) + ":/work",
-                  "--bind", str(p["work_dir"] / "tmp") + ":/tmp",
-                  "--bind", str(p["cache_dir"]) + ":/cache",
-                  "--env", "TEMPLATEFLOW_HOME=/cache/templateflow,XDG_CACHE_HOME=/cache/xdg,TMPDIR=/tmp",
-                  "--env", f"OMP_NUM_THREADS={config.omp_nthreads},OPENBLAS_NUM_THREADS=1,MKL_NUM_THREADS=1,ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS={config.omp_nthreads}"]
-        license_path = "/license.txt" if config.fs_license_file else None
-        if license_path:
-            prefix += ["--bind", str(Path(config.fs_license_file).resolve()) + ":/license.txt:ro"]
-        for name, folder in sorted(config.derivatives.items()):
-            prefix += ['--bind', str(Path(folder).expanduser().resolve()) + f':/derivatives/{name}:ro']
-        prefix += [str(Path(config.container_image).resolve()), "fmriprep"]
-        bids, output, work = "/data", "/out", "/work"
+        return ([config.executable], env, tuple(map(str, (input_dir, p["output_dir"], p["work_dir"]))),
+                config.fs_license_file)
+    env.update(APPTAINER_CACHEDIR=str(p["cache_dir"] / "apptainer"),
+               APPTAINER_TMPDIR=str(p["work_dir"] / "tmp"))
+    prefix = [config.executable, "exec", "--cleanenv", "--containall",
+              "--home", str(p["cache_dir"] / "home") + ":/home/pie",
+              "--bind", str(input_dir) + ":/data:ro",
+              "--bind", str(p["output_dir"]) + ":/out",
+              "--bind", str(p["work_dir"]) + ":/work",
+              "--bind", str(p["work_dir"] / "tmp") + ":/tmp",
+              "--bind", str(p["cache_dir"]) + ":/cache",
+              "--env", f"TEMPLATEFLOW_HOME={templateflow},XDG_CACHE_HOME=/cache/xdg,TMPDIR=/tmp",
+              "--env", f"OMP_NUM_THREADS={config.omp_nthreads},OPENBLAS_NUM_THREADS=1,MKL_NUM_THREADS=1,ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS={config.omp_nthreads}"]
+    license_path = "/license.txt" if config.fs_license_file else None
+    if license_path:
+        prefix += ["--bind", str(Path(config.fs_license_file).resolve()) + ":/license.txt:ro"]
+    for host, inside in ro_binds:
+        prefix += ["--bind", f"{host}:{inside}:ro"]
+    return prefix + [str(Path(config.container_image).resolve()), app], env, ("/data", "/out", "/work"), license_path
+
+
+def build_command(config: FMRIPrepConfig, *, version_only=False):
+    """Return argv/environment without writes or shell interpolation."""
+    config.validate()
+    p = config.paths()
+    prefix, env, (bids, output, work), license_path = container_runtime(
+        config, p["bids_dir"], "fmriprep",
+        ro_binds=[(str(Path(folder).expanduser().resolve()), f"/derivatives/{name}")
+                  for name, folder in sorted(config.derivatives.items())])
     if version_only:
         return prefix + ["--version"], env
     args = [bids, output, "participant", "--participant-label", *config.participants,
@@ -142,39 +152,50 @@ def build_command(config: FMRIPrepConfig, *, version_only=False):
     return prefix + args + config.extra_args, env
 
 
+def tree_hashes(folder):
+    """{relative path: sha256} of every file under ``folder``."""
+    from .fmri import sha256
+    root = Path(folder).expanduser().resolve()
+    return {str(p.relative_to(root)): sha256(p) for p in sorted(root.rglob('*')) if p.is_file()}
+
+
 def run_fmriprep(config: FMRIPrepConfig):
     """Execute/resume fMRIPrep with stable configuration and append-only attempts.
 
     A successful process return is execution completion, not a scientific QC pass.
     Interrupted attempts retain fMRIPrep's work directory for its native resume.
     """
-    from .fmri import sha256, write_json
     command, env = build_command(config)
-    paths = config.paths()
-    for path in [paths["output_dir"], paths["work_dir"], paths["work_dir"] / "tmp",
-                 *[paths["cache_dir"] / name for name in ("home", "templateflow", "xdg", "apptainer")]]:
-        path.mkdir(parents=True, exist_ok=True)
-    version_command, _ = build_command(config, version_only=True)
-    version = subprocess.check_output(version_command, env=env, text=True, stderr=subprocess.STDOUT).strip()
-    if config.expected_version and not re.search(r"(?<![\d.])" + re.escape(config.expected_version) + r"(?![\d.])", version):
-        raise RuntimeError(f"Unexpected fMRIPrep version: {version}")
     serialized = asdict(config)
     # Preserve identities/checkpoints created before optional reuse was added.
     if not config.derivatives:
         serialized.pop('derivatives')
-    identity = {"config": serialized, "version": version,
-                "container_sha256": sha256(config.container_image) if config.container_image else None}
+    identity = {"config": serialized}
     if config.derivatives:
-        identity['derivative_hashes'] = {
-            name: {str(p.relative_to(Path(folder).expanduser().resolve())): sha256(p)
-                   for p in sorted(Path(folder).expanduser().resolve().rglob('*')) if p.is_file()}
-            for name, folder in sorted(config.derivatives.items())}
+        identity['derivative_hashes'] = {name: tree_hashes(folder) for name, folder in sorted(config.derivatives.items())}
+    return execute_recorded(config, command, build_command(config, version_only=True)[0], env, identity,
+                            tool="fMRIPrep", identity_file="pie_fmriprep_identity.json")
+
+
+def execute_recorded(config, command, version_command, env, identity, *, tool, identity_file):
+    """Run a pinned BIDS app once per identity (``identity`` + version + container SHA-256), with append-only
+    attempt logs, and require ``<output>/sub-<label>.html`` for every participant before recording completion."""
+    from .fmri import sha256, write_json
+    paths = config.paths()
+    for path in [paths["output_dir"], paths["work_dir"], paths["work_dir"] / "tmp",
+                 *[paths["cache_dir"] / name for name in ("home", "templateflow", "xdg", "apptainer")]]:
+        path.mkdir(parents=True, exist_ok=True)
+    version = subprocess.check_output(version_command, env=env, text=True, stderr=subprocess.STDOUT).strip()
+    if config.expected_version and not re.search(r"(?<![\d.])" + re.escape(config.expected_version) + r"(?![\d.])", version):
+        raise RuntimeError(f"Unexpected {tool} version: {version}")
+    identity = dict(identity, version=version,
+                    container_sha256=sha256(config.container_image) if config.container_image else None)
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     record_dir = paths["output_dir"] / "pie_provenance" / digest
     record_dir.mkdir(parents=True, exist_ok=True)
-    settings = paths["work_dir"] / "pie_fmriprep_identity.json"
+    settings = paths["work_dir"] / identity_file
     if settings.exists() and json.loads(settings.read_text()) != identity:
-        raise ValueError("Work directory belongs to different fMRIPrep settings; use a separate work directory")
+        raise ValueError(f"Work directory belongs to different {tool} settings; use a separate work directory")
     if not settings.exists():
         write_json(settings, identity)
     finished = record_dir / "execution_completed.json"
@@ -190,10 +211,10 @@ def run_fmriprep(config: FMRIPrepConfig):
               "scientific_qc_pass": False, "output_dir": str(paths["output_dir"])}
     write_json(attempt.with_suffix(".json"), record)
     if result.returncode:
-        raise RuntimeError(f"fMRIPrep failed ({result.returncode}); inspect {attempt}")
+        raise RuntimeError(f"{tool} failed ({result.returncode}); inspect {attempt}")
     reports = [paths["output_dir"] / ("sub-" + label + ".html") for label in config.participants]
     if not all(path.is_file() for path in reports):
-        raise RuntimeError("fMRIPrep exited successfully but expected participant reports are missing")
+        raise RuntimeError(f"{tool} exited successfully but expected participant reports are missing")
     record["reports"] = [str(path) for path in reports]
     write_json(finished, record)
     return record

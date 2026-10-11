@@ -132,6 +132,21 @@ def test_multishell_free_water_is_nan_where_the_fit_is_not_physical():
     assert np.isnan(maps["fw"][1, 0, 0]) and np.isnan(maps["fat"][1, 0, 0]) and np.isnan(maps["mdt"][1, 0, 0])
 
 
+def test_tensor_maps_are_missing_outside_the_brain_mask():
+    # an ROI partly outside the mask must average only measured voxels (zeros there once halved nigral MD)
+    rng = np.random.default_rng(5)
+    g = rng.normal(size=(3, 30))
+    g /= np.linalg.norm(g, axis=0)
+    bvals, bvecs = np.r_[0, 0, np.full(30, 1000.)], np.c_[np.zeros((3, 2)), g]
+    D = np.diag([1.2e-3, 0.6e-3, 0.6e-3])
+    data = np.tile(1000 * np.exp(-bvals * np.einsum("in,ij,jn->n", bvecs, D, bvecs)), (2, 1, 1, 1)).astype(np.float32)
+    mask = np.array([True, False]).reshape(2, 1, 1)
+    maps = dwi.fit_models({"bvals": bvals, "bvecs": bvecs, "data": data, "mask": mask})
+    assert np.isnan(maps["md"][1, 0, 0]) and not maps["tensor_physical"][1, 0, 0]
+    out = dwi.features(maps, {"roi": np.ones((2, 1, 1), bool)}, min_voxels=1)
+    assert abs(out["roi_md"] - 0.8e-3) < 1e-5
+
+
 def test_scan_without_a_tensor_shell_is_an_explicit_error():
     # e.g. Philips PPMI-2 sessions whose three "b700/b1000/b2000" series were all acquired at b = 2000 (the header
     # and the attenuation agree; only the names differ): no b <= 1050 shell, so no tensor, never a silent FA of 0
@@ -313,3 +328,88 @@ def test_study_nigra_labels_are_sampled_nearest_neighbour(tmp_path):
     grid = nib.Nifti1Image(np.zeros((40, 40, 30), np.float32), np.array([[1, 0, 0, -19.6], [0, 1, 0, -37.6], [0, 0, 1, -24.6], [0, 0, 0, 1.0]]))
     codes = dwi.study_nigra_labels(grid, fs, sitk.Euler3DTransform(), atlas=nib.Nifti1Image(a, aff))
     assert (codes == 71).sum() == 1
+
+
+# ------------------------------------------------------------------------------------------ 11 Oct 2026 readiness fixes
+def _shell_run(tmp, name, scale, origin=(10.0, 0.0, 0.0), bval=1000, n_dirs=6):
+    """b0 = 1000 x ``scale`` in a centred 'brain', diffusion volumes 500 x ``scale``: a series the scanner rescaled."""
+    shape = (12, 12, 8)
+    aff = np.diag([2.0, 2.0, 2.0, 1.0])
+    aff[:3, 3] = origin
+    brain = np.zeros(shape, bool)
+    brain[3:9, 3:9, 2:6] = True
+    b = np.r_[0, np.full(n_dirs, bval)].astype(float)
+    data = np.zeros(shape + (len(b),), np.float32)
+    data[brain, 0], data[brain, 1:] = 1000 * scale, 500 * scale
+    nib.save(nib.Nifti1Image(data, aff), tmp / f"{name}.nii.gz")
+    np.savetxt(tmp / f"{name}.bval", b[None])
+    v = np.random.default_rng(2).normal(size=(3, len(b)))
+    v[:, 0] = 0
+    np.savetxt(tmp / f"{name}.bvec", v / np.maximum(np.linalg.norm(v, axis=0), 1e-9))
+    json.dump({"PhaseEncodingDirection": "j", "TotalReadoutTime": 0.05, "EchoTime": 0.08, "RepetitionTime": 9.0}, open(tmp / f"{name}.json", "w"))
+    return tuple(str(tmp / f"{name}{e}") for e in (".nii.gz", ".bval", ".bvec", ".json"))
+
+
+def test_runs_are_scaled_to_the_first_runs_b0_before_concatenation(tmp_path):
+    ds = dwi.assemble([_shell_run(tmp_path, "b1000", 1.0), _shell_run(tmp_path, "b2000", 0.5, bval=2000)])
+    assert ds["n_runs"] == 2 and ds["b0_scales"] == [1.0, 2.0]
+    centre = ds["data"][6, 6, 4]
+    assert np.allclose(centre[ds["bvals"] <= 50], 1000) and np.allclose(centre[ds["bvals"] > 50], 500)
+
+
+def test_a_sub_voxel_origin_shift_keeps_the_runs_together_on_the_first_grid(tmp_path):
+    main, shifted = _shell_run(tmp_path, "a", 1.0), _shell_run(tmp_path, "b", 1.0, origin=(10.0003, 0.0, 0.0), bval=2000)
+    ds = dwi.assemble([main, shifted])
+    assert ds["n_runs"] == 2 and ds["n_runs_regridded"] == 1 and ds["shells"] == [1000, 2000]   # was one shell
+    assert np.allclose(ds["data"][6, 6, 4, ds["bvals"] > 50], 500, atol=1)
+
+
+def test_fw_endpoint_uses_the_anatomical_posterior_half_and_needs_multishell():
+    codes = np.zeros((10, 10, 4), np.int16)
+    codes[1:4, 1:9, 1:3] = 71                    # left SNc
+    codes[6:9, 1:9, 1:3] = 92                    # right SNr
+    codes[:, 1:5][codes[:, 1:5] > 0] += 100      # posterior halves (study_nigra_labels(..., posterior=True))
+    fw = np.where(codes >= 100, 0.3, 0.1).astype(np.float32)
+    maps = {"fw": fw, "fat": np.full(codes.shape, 0.5, np.float32), "mdt": np.full(codes.shape, 7e-4, np.float32)}
+    brain = np.ones(codes.shape, bool)
+    row = dwi.study_fw_features(maps, codes, brain, 0.5, "multishell_nls")
+    assert abs(row[dwi.FW_ENDPOINT] - 0.3) < 1e-6 and abs(row["dwisf_fw_sn_anterior_mean"] - 0.1) < 1e-6
+    assert row["dwisf_n_sn"] == 96 and row["dwisf_qc_pass"], row["dwisf_qc_failed_checks"]
+    maps["fw"][1:3, 1:5, 1:3] = np.nan           # 12 of the 24 left posterior voxels without a physical fit
+    row = dwi.study_fw_features(maps, codes, brain, 0.5, "multishell_nls")
+    assert np.isnan(row["dwisf_fw_sn_posterior_l"]) and np.isnan(row[dwi.FW_ENDPOINT])
+    assert set(row["dwisf_qc_failed_checks"].split(";")) == {"bilateral_posterior"}
+    row = dwi.study_fw_features(maps, codes, brain, 0.5, "singleshell_prior")
+    assert np.isnan(row["dwisf_fw_sn_anterior_mean"]) and "multishell" in row["dwisf_qc_failed_checks"]
+
+
+def test_study_nigra_posterior_half_is_split_in_atlas_space_per_side(tmp_path):
+    import SimpleITK as sitk
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_nm import _zero_syn_cache
+
+    fs = tmp_path / "fs"
+    _zero_syn_cache(fs)
+    a = np.zeros((40, 40, 30), np.int16)
+    aff = np.eye(4)
+    aff[:3, 3] = (-20, -38, -25)
+    a[10:13, 14:22, 12:14] = 7                   # left SNc, RAS y -24..-17
+    a[27:30, 16:20, 12:14] = 9                   # right SNr, RAS y -22..-19
+    grid = nib.Nifti1Image(np.zeros((40, 40, 30), np.float32), aff)
+    codes = dwi.study_nigra_labels(grid, fs, sitk.Euler3DTransform(), atlas=nib.Nifti1Image(a, aff), posterior=True)
+    assert set(np.unique(codes)) == {0, 71, 171, 92, 192}
+    assert (np.argwhere(codes == 171)[:, 1] < 18).all() and (np.argwhere(codes == 71)[:, 1] >= 18).all()
+    assert (np.argwhere(codes == 192)[:, 1] < 18).all() and (codes == 192).sum() == (codes == 92).sum()
+
+
+def test_mni_coordinates_on_the_grid_follow_the_transforms():
+    import SimpleITK as sitk
+
+    tgt = dwi._sitk_native(np.zeros((6, 5, 4), np.float32), np.array([[2, 0, 0, -6], [0, 2, 0, -20], [0, 0, 2, 0], [0, 0, 0, 1.0]]))
+    shift = sitk.TranslationTransform(3, (0.0, 3.0, 0.0))       # MNI point -> T1 point: T1 = MNI + 3 mm LPS y (posterior)
+    where = np.zeros((4, 5, 6), bool)
+    where[1, 2, 3] = True                                        # (z, y, x) = (1, 2, 3): RAS (0, -16, 2)
+    x, y = dwi.mni_xy_on_grid(tgt, [shift, sitk.Euler3DTransform()], where)
+    assert np.isclose(x[1, 2, 3], 0.0) and np.isclose(y[1, 2, 3], -13.0) and np.isnan(x[0, 0, 0])
+    rois = dwi._roi_masks(np.zeros((4, 5, 6), int), np.zeros((4, 5, 6), int), -y, left=x < 0)
+    assert not rois["sn_l"].any()

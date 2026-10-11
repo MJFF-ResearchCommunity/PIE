@@ -23,42 +23,64 @@ from pathlib import Path
 import pandas as pd
 
 from pie.imaging.convert import convert_series
-from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, longitudinal, run_fastsurfer, segment_batch,
-                                    talairach_etiv)
+from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, hippocampal_subfields, longitudinal, run_fastsurfer,
+                                    sclimbic, segment_batch, surfaces, synthseg, talairach_etiv)
 from pie.imaging.features import build_idp_table
-from pie.imaging.index import IDA_VISIT_TO_EVENT, LONI_VISIT_TO_EVENT, index_zips, read_ida_metadata, read_loni_collection_csv, select_t1_series
-from pie.imaging.link import link_sessions_to_events
+from pie.imaging.index import (T1_HEADER_FIELDS, visit_to_event, index_zips, probe_headers, protocol_phase,
+                               read_ida_metadata, read_loni_collection_csv, select_t1_series, t1_candidates)
+from pie.imaging.link import link_adni, link_sessions_to_events
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("PIE.imaging")
 
 
-def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=()):
+def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=(), adnimerge=None):
     """Index zips, choose one T1 per session, link to EVENT_ID. Cached in sessions.csv.
     IDA metadata zips (LONI 'Advanced Download'), when given, override the date-based visit link
     and add scanner/protocol columns."""
     sessions_csv = work / "sessions.csv"
     if sessions_csv.exists():
-        return pd.read_csv(sessions_csv, dtype={"image_id": str}, parse_dates=["session_date"])
+        cached = pd.read_csv(sessions_csv, dtype={"image_id": str}, parse_dates=["session_date"])
+        if not all(Path(z).exists() for z in zips):   # e.g. a backfill stage with the download drive unmounted
+            log.warning("some zips are not on disk: using sessions.csv as it is")
+            return cached
     index = index_zips(zips, cache_csv=work / "index.csv")
-    sessions = select_t1_series(index)
-    sessions["protocol_phase"] = sessions["zip"].map({z: i + 1 for i, z in enumerate(map(str, zips))})
+    sessions = select_t1_series(index, t1_headers(index, work / "t1_headers.csv"))
+    if sessions_csv.exists():
+        if set(cached["image_id"]) == set(sessions["image_id"]):
+            return cached
+        log.info("sessions.csv does not match the zips' T1 selection (new download or selection fix): rebuilding")
+    sessions["protocol_phase"] = protocol_phase(sessions["session_date"])
     sessions = link_sessions_to_events(sessions, ppmi_dir)
+    if adnimerge:      # ADNI sessions: ADNIMERGE's VISCODE by exam date
+        sessions = link_adni(sessions, adnimerge)
     if loni_csv:  # the collection CSV: visit label for every series, group, age at scan
         loni = read_loni_collection_csv(loni_csv)
         sessions = sessions.merge(loni, on="image_id", how="left")
-        ev = sessions["loni_visit"].map(LONI_VISIT_TO_EVENT)
+        ev = sessions["loni_visit"].map(visit_to_event, na_action="ignore")
         sessions["EVENT_ID"] = ev.where(ev.notna(), sessions["EVENT_ID"])
         log.info("LONI collection CSV: %d of %d sessions covered", int(sessions["loni_visit"].notna().sum()), len(sessions))
     if ida_metadata:
         ida = read_ida_metadata(ida_metadata).drop(columns=["patno"])
         sessions = sessions.merge(ida, on="image_id", how="left")
-        ida_event = sessions["ida_visit"].map(IDA_VISIT_TO_EVENT)
+        ida_event = sessions["ida_visit"].map(visit_to_event, na_action="ignore")
         sessions["EVENT_ID"] = ida_event.where(ida_event.notna(), sessions["EVENT_ID"])
         log.info("IDA metadata: %d of %d sessions covered", int(sessions["ida_visit"].notna().sum()), len(sessions))
     sessions.to_csv(sessions_csv, index=False)
     log.info("sessions: %d (from %d series, %d subjects)", len(sessions), len(index), sessions["patno"].nunique())
     return sessions
+
+
+def t1_headers(index, cache_csv):
+    """DICOM headers (``T1_HEADER_FIELDS``) of the T1 candidates in visits with more than one, one file per series read
+    from the zips; cached and extended incrementally."""
+    cand = t1_candidates(index)
+    cached = pd.read_csv(cache_csv, dtype={"image_id": str}) if Path(cache_csv).exists() else pd.DataFrame({"image_id": []})
+    todo = cand[~cand["image_id"].astype(str).isin(set(cached["image_id"]))]
+    if len(todo):
+        cached = pd.concat([cached, probe_headers(todo, fields=T1_HEADER_FIELDS)], ignore_index=True)
+        cached.to_csv(cache_csv, index=False)
+    return cached
 
 
 def convert_one(row, work):
@@ -202,9 +224,46 @@ def _etiv_job(args):
         return sid, float("nan"), f"{type(e).__name__}: {str(e)[:200]}"
 
 
+STAGES = {   # optional per-subject stages on finished FastSurfer subjects: (subjects dir, sid, threads, raw T1 NIfTI)
+    "surfaces": lambda fs, sid, t, nii: surfaces(fs, sid, threads=t),
+    "sclimbic": lambda fs, sid, t, nii: sclimbic(fs, sid, threads=t),
+    "subfields": lambda fs, sid, t, nii: hippocampal_subfields(fs, sid, threads=t),
+    "synthseg": lambda fs, sid, t, nii: synthseg(nii, Path(fs) / sid / "synthseg", threads=t),
+}
+
+
+def _stage_job(args):
+    """One optional stage for one finished subject; a failure is reported, not raised (module level: pickled by name)."""
+    stage, fs_dir, sid, threads, nii = args
+    try:
+        STAGES[stage](fs_dir, sid, threads, nii)
+        return sid, ""
+    except Exception as e:
+        return sid, f"{type(e).__name__}: {str(e)[:200]}"
+
+
+def _with_metadata(sessions, work):
+    meta_csv = work / "scan_metadata.csv"
+    if not meta_csv.exists():
+        return sessions
+    meta = pd.read_csv(meta_csv, dtype={"image_id": str}).drop_duplicates("image_id", keep="last")
+    return sessions.merge(meta, on="image_id", how="left")
+
+
+def write_long_idps(sessions, work, timepoints):
+    """``fastsurfer_long_idps.csv``: the IDP table of the longitudinal stream's time points (``stream`` = long,
+    ``long_template`` = the participant), same columns as ``fastsurfer_idps.csv``; read with ``manifest.t1_visits``."""
+    ids = {i for tps in timepoints.values() for i in tps}
+    idps = build_idp_table(_with_metadata(sessions[sessions["image_id"].astype(str).isin(ids)], work), work / "fastsurfer_long")
+    if len(idps):
+        idps = idps.assign(stream="long", long_template=idps["PATNO"].astype(str))
+    idps.to_csv(work / "fastsurfer_long_idps.csv", index=False)
+    return idps
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--zips", nargs="+", required=True)
+    ap.add_argument("--zips", nargs="+", required=True, help="LONI zips (PPMI, ADNI or any LONI project) and/or BIDS dataset folders")
     ap.add_argument("--ppmi-dir", default="PPMI")
     ap.add_argument("--work-dir", default="Imaging/derived")
     ap.add_argument("--workers", type=int, default=4)
@@ -213,31 +272,55 @@ def main(argv=None):
     ap.add_argument("--device", default="cuda", help="FastSurfer inference device, passed to its --device (e.g. cuda, cuda:1, cpu; cpu is far slower)")
     ap.add_argument("--ida-metadata", nargs="*", default=(), help="LONI 'Advanced Download' metadata zip(s) (idaxs XML)")
     ap.add_argument("--loni-csv", nargs="*", default=(), help="LONI collection CSV(s) downloaded with the images (visit, group, age)")
+    ap.add_argument("--adnimerge", help="ADNIMERGE.csv: visit codes for ADNI sessions (zips whose top folder is ADNI)")
     ap.add_argument("--priority", help="text file of PATNOs to process first")
     ap.add_argument("--limit", type=int, help="process at most N sessions this call")
     ap.add_argument("--features-only", action="store_true", help="only rebuild fastsurfer_idps.csv")
     ap.add_argument("--long", action="store_true", help="FastSurfer longitudinal stream for every subject with >= 2 finished sessions "
                     "into <work-dir>/fastsurfer_long (needs PIE_FREESURFER_HOME = FreeSurfer 7.4.1 and PIE_FS_LICENSE; hours per subject)")
+    ap.add_argument("--surfaces", action="store_true", help="FastSurfer surfaces (cortical thickness, DK aparc) for every finished "
+                    "subject, then rebuild the table with cth_*/area_* columns; needs PIE_FREESURFER_HOME and PIE_FS_LICENSE; ~1 h per scan")
+    ap.add_argument("--sclimbic", action="store_true", help="FreeSurfer ScLimbic (basal forebrain / nucleus basalis region, hypothalamus, "
+                    "fornix, septal nuclei) for every finished subject, then rebuild the table; ~1 min and ~3.3 GB per scan")
+    ap.add_argument("--subfields", action="store_true", help="hippocampal subfields and amygdala nuclei (segment_subregions) for every "
+                    "subject that has run --surfaces, then rebuild the table")
+    ap.add_argument("--synthseg", action="store_true", help="SynthSeg-robust volumes and QC on the raw T1 of every finished subject "
+                    "(legacy 1.5 T / thick-slice robustness, FastSurfer cross-check), then rebuild the table")
     ap.add_argument("--etiv", action="store_true", help="add FreeSurfer eTIV (talairach registration) to every finished subject, then "
                     "rebuild the table; needs PIE_FREESURFER_HOME, PIE_FS_LICENSE and /bin/tcsh")
     a = ap.parse_args(argv)
 
     work = Path(a.work_dir).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    sessions = prepare_sessions(a.zips, a.ppmi_dir, work, a.ida_metadata, a.loni_csv)
+    sessions = prepare_sessions(a.zips, a.ppmi_dir, work, a.ida_metadata, a.loni_csv, a.adnimerge)
     meta_csv = work / "scan_metadata.csv"
     done = {p.parent.parent.name for p in (work / "fastsurfer").glob(f"*/{STATS_FILE}")}
 
     if a.long:
         _freesurfer_ready()
-        for patno, ids in sorted(long_timepoints(sessions, work / "fastsurfer").items())[:a.limit]:
+        tps = dict(sorted(long_timepoints(sessions, work / "fastsurfer").items())[:a.limit])
+        for patno, ids in tps.items():
             t1s = [work / "nifti" / str(patno) / f"{i}_T1w.nii.gz" for i in ids]
             try:
                 longitudinal(str(patno), t1s, ids, work / "fastsurfer_long", device=a.device, threads=a.threads)
                 log.info("longitudinal %s: %d time points", patno, len(ids))
             except Exception as e:
                 log.error("longitudinal %s failed: %s", patno, str(e)[:300])
+        log.info("long IDP table: %s", write_long_idps(sessions, work, tps).shape)
         return
+
+    stages = [st for st in STAGES if getattr(a, st)]     # surfaces before subfields, which need them
+    if stages:
+        _freesurfer_ready()
+        sids = sorted(done)[:a.limit] if a.limit else sorted(done)
+        nii = dict(zip(sessions["image_id"].astype(str), (work / "nifti" / str(p) / f"{i}_T1w.nii.gz" for p, i in zip(sessions["patno"], sessions["image_id"]))))
+        for st in stages:
+            with ProcessPoolExecutor(max_workers=a.workers) as ex:
+                jobs = [(st, work / "fastsurfer", s, a.threads, nii.get(s)) for s in sids]
+                for i, (sid, err) in enumerate(ex.map(_stage_job, jobs), start=1):
+                    if err or i % 20 == 0:
+                        log.info("%s %d/%d %s %s", st, i, len(sids), sid, err)
+        a.features_only = True                     # rebuild fastsurfer_idps.csv with the new columns
 
     if a.etiv:
         _freesurfer_ready(tcsh=True)
@@ -271,10 +354,7 @@ def main(argv=None):
         process_all(todo, work, a.workers, a.threads, a.chunk, meta_csv, log_ok, log_fail, device=a.device)
         fail_fh.close()
 
-    if meta_csv.exists():
-        meta = pd.read_csv(meta_csv, dtype={"image_id": str}).drop_duplicates("image_id", keep="last")
-        sessions = sessions.merge(meta, on="image_id", how="left")
-    idps = build_idp_table(sessions, work / "fastsurfer")
+    idps = build_idp_table(_with_metadata(sessions, work), work / "fastsurfer")
     tmp = work / "fastsurfer_idps.csv.partial"
     try:
         idps.to_csv(tmp, index=False)

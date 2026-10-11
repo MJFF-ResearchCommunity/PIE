@@ -19,7 +19,7 @@ from pie.stats import welch_ttest, adjust_pvalues
 | `correlate.py` | `correlate_pair`, `partial_correlation`, `correlation_matrix` |
 | `regress.py` | `linear_regression`, `logistic_regression`, `ancova` |
 | `longitudinal.py` | `linear_mixed_model`, `change_from_baseline` |
-| `survive.py` | `kaplan_meier`, `logrank_test`, `cox_regression` |
+| `survive.py` | `kaplan_meier`, `logrank_test`, `cox_regression`. Not re-exported, import from `pie.stats.survive`: `turnbull`, `interval_censored_regression`, `visit_intervals`, `cumulative_incidence`, `cause_specific_cox`, `fine_gray`, `illness_death` |
 | `multitest.py` | `adjust_pvalues` |
 | `pd_helpers.py` | `compute_ledd`, `aggregate_updrs`, `hoehn_yahr_summary`, `LEDD_FACTORS`, `COMT_FACTORS`, `FLAT_LEDD_MG` |
 | `small_sample.py` | `bootstrap_partial_correlation`, `naive_subset_search`, `nested_subset_search`, `subset_search_null`. Not re-exported by `pie.stats`: import from `pie.stats.small_sample` |
@@ -35,8 +35,8 @@ from pie.stats import welch_ttest, adjust_pvalues
   independent. Stacking visits into a t-test counts each participant several times and
   makes p-values too small. Reduce to one row per `PATNO` first, or use the mixed model.
 - **Optional dependencies are imported inside the function.** `partial_correlation`
-  needs `pingouin`, `dunn_posthoc` needs `scikit-posthocs`, and the three survival functions
-  need `lifelines`. All three are in `requirements.txt`. Without them, `import pie.stats`
+  needs `pingouin`, `dunn_posthoc` needs `scikit-posthocs`, and the survival functions that
+  fit KM, Cox or AFT models need `lifelines`. All three are in `requirements.txt`. Without them, `import pie.stats`
   still works and only those calls raise `ModuleNotFoundError`.
 - **Fixed thresholds.** The `reject` flags in `tukey_hsd`, `dunn_posthoc`, the
   `violates_ph` flag in `cox_regression` and the `missingness_report` interpretation all use
@@ -59,6 +59,9 @@ from pie.stats import welch_ttest, adjust_pvalues
 | What predicts a binary outcome? | 0/1 | `logistic_regression` | — |
 | How does a score evolve across visits? | repeated visits per participant | `linear_mixed_model` | `change_from_baseline` for descriptive change |
 | Time to an event (conversion, H&Y ≥ 3)? | time + event flag | `kaplan_meier` + `logrank_test` | `cox_regression` to adjust for covariates |
+| Same, but the event is only seen at visits? | last visit without, first visit with | `turnbull`, `interval_censored_regression` | build the intervals with `visit_intervals` |
+| Other outcomes (death, DLB, MSA) compete with it? | time + cause code | `cumulative_incidence`, `fine_gray` | `cause_specific_cox` for effects on the rate |
+| Visit-detected conversion, and people die between visits? | intervals + death time | `illness_death` | — |
 | I ran many tests | list of p-values | `adjust_pvalues(method="fdr_bh")` | `"holm"` when any false positive is costly |
 
 Don't choose between a t-test and a rank test by looking at `normality_test` on the same data.
@@ -422,6 +425,90 @@ cox["coefficients"][0]["hazard_ratio"], cox["concordance"], cox["ph_test"]
   runs, `ph_test_error` is `None`.
 - Time zero must mean the same thing for everyone (for example baseline visit date). Mixing
   enrolment and diagnosis origins creates immortal-time bias that no test here detects.
+
+### Visit-detected conversion, competing risks and death
+
+Conversion to PD is only seen at visits, and death, DLB or MSA can come first. Using the
+diagnosis visit as an exact event time and censoring deaths biases both the risk and the
+hazard ratios (Leffondré et al. 2013, Int J Epidemiol 42:1177). These functions are in
+`pie.stats.survive` and are not re-exported by `pie.stats`.
+
+Interval conventions: `left` is the last visit without the event, `right` the first visit
+with it. `right` = inf or NaN means never seen (right-censored at `left`), and `left == right`
+is an exactly known date. Competing-risk conventions: `event_type` is 0 for censored and an
+integer cause code otherwise (for example 1 = PD, 2 = death, 3 = DLB/MSA).
+
+| Function | Returns |
+|---|---|
+| `visit_intervals(visits, subject, time, diagnosed, time_upper=None)` | `DataFrame`, one row per subject: `left, right, last_visit, n_visits, prevalent, reverted, undated_diagnosis` |
+| `turnbull(df, left, right, tol=1e-6)` | `{lower, upper, mass, survival, n, iterations, converged}` |
+| `interval_censored_regression(df, left, right, covariates, dist="weibull")` | `{model, n, n_right_censored, n_exact, coefficients, log_likelihood, aic}` |
+| `cumulative_incidence(df, time, event_type, group=None)` | `{timeline, causes, cif, ci_lower, ci_upper}` |
+| `cause_specific_cox(df, time, event_type, cause, covariates)` | `cox_regression` output with `model: "cause_specific_cox"`, `cause` |
+| `fine_gray(df, time, event_type, cause, covariates)` | `{model: "fine_gray", cause, n, n_events, n_competing, coefficients}` |
+| `illness_death(df, left, right, time, death, covariates=(), death_covariates=(), hazard="weibull", breaks=None, profile=None)` | `{model, hazard, n, n_diagnosed, n_deaths, n_deaths_after_diagnosis, coefficients, baseline, timeline, absolute_risk, risk_ci_lower, risk_ci_upper, log_likelihood, aic, converged}` |
+
+```python
+from pie.stats.survive import visit_intervals, illness_death, fine_gray
+
+iv = visit_intervals(visits, "PATNO", "visit_date", "pd_dx")       # datetimes -> years
+df = iv.merge(vital, on="PATNO")              # vital: PATNO, years_to_death_or_last_contact, died
+df = df[~df.prevalent].merge(baseline_imaging, on="PATNO")
+fit = illness_death(df, "left", "right", "years_to_death_or_last_contact", "died",
+                    covariates=["putamen_sbr_z"], death_covariates=["age_z"])
+fit["coefficients"]                    # transitions "01" healthy->PD, "02" healthy->dead, "12" PD->dead
+fit["absolute_risk"]                   # P(PD by t) for covariates at 0, with death accounted for
+```
+
+- `visit_intervals` treats diagnosis as absorbing. Undiagnosed visits after the first
+  diagnosed one are ignored and flagged `reverted`. For a masked date (say month only), give
+  the window as `time` (earliest) and `time_upper` (latest). Undiagnosed visits use the
+  earliest and diagnosed visits the latest time, so the interval always contains the true
+  onset. Undated rows are dropped. A subject whose only diagnosed rows are undated would look
+  undiagnosed, so it is flagged `undated_diagnosis`.
+- `turnbull` is its own EM on the (L, R] convention. lifelines' `fit_interval_censoring`
+  treats intervals as closed [L, R]. On a shared visit grid that lets mass sit on visit dates
+  shared by neighbouring intervals. On simulated visit-grid data it returned S(1) = 1.0 where
+  the correct NPMLE is 0.80. The NPMLE only fixes the mass in each Turnbull interval (`lower`, `upper`], so
+  `survival[j]` holds from `upper[j]` to the next `lower`. There are no CIs (they would need a
+  bootstrap).
+- `interval_censored_regression` uses lifelines' AFT fitters (`"weibull"`, `"lognormal"`,
+  `"loglogistic"`). Rows have `time_ratio` with CIs. Weibull is also a PH model, so its rows
+  add `hazard_ratio` = exp(−coef × shape) with a delta-method CI.
+- `cumulative_incidence` is Aalen–Johansen with exact tie handling. lifelines'
+  `AalenJohansenFitter` randomly jitters ties, and visit dates are full of ties. CIs use the
+  delta-method variance on the log(−log) scale. Curves share a 100-point timeline like
+  `kaplan_meier`, keyed `cif[group][cause]`.
+- `fine_gray` is the IPCW-weighted Cox model (Geskus 2011). After a competing event a subject
+  stays at risk with weight G(t−)/G(Tᵢ−), where G is the censoring KM, with Breslow ties. That
+  gives the same estimating equation as `cmprsk::crr`. SEs are the robust sandwich, which
+  ignores the uncertainty in estimating G. Geskus found that negligible, but crr adds it, so
+  crr's SEs will differ slightly. Use Fine–Gray HRs to predict who ends up with PD, and
+  `cause_specific_cox` for effects on the rate of conversion.
+- `illness_death` has the healthy → PD → dead structure (Touraine et al. 2017, SmoothHazard)
+  and fits Markov intensities on time since baseline by maximum likelihood. A subject who
+  dies undiagnosed after last being seen healthy at L may have converted in (L, death), and
+  the likelihood integrates over that (40-point Gauss–Legendre). Intensities are Weibull, or
+  piecewise-constant on `breaks` (starting at 0, last piece open-ended). `covariates` act on
+  healthy → PD. `death_covariates` get separate HRs on healthy → dead and PD → dead. Include
+  anything that affects mortality after PD: if a predictor speeds death after conversion and
+  is left out, missed conversions bias its healthy → PD HR. SEs come from the inverse
+  numerical Hessian. The `absolute_risk` CI comes from 500 parameter draws from their
+  asymptotic normal distribution. Everyone must be disease-free at time 0, because prevalent
+  cases have no `left` and are dropped. There is no delayed entry, so age as the time scale
+  isn't supported. With Weibull hazards, n = 1500 fits in about 3 s. Piecewise hazards are
+  several times slower.
+- Validation, all on simulated data in `tests/test_stats_survive.py`:
+  - In 30 replicates of an illness-death cohort (n = 1500, visits every 3 years, true
+    healthy → PD HR 2, PD → dead HR 3), the mean log HR was 0.698 against a true 0.693.
+    The empirical SD was 0.112 against a mean SE of 0.105.
+  - In the same replicates, the absolute risk at 10 years was off by −0.001 on average
+    (SD 0.018).
+  - Naive Cox on visit-dated diagnoses with deaths censored gave a mean HR of 1.16 against
+    the true 2.
+  - In 300 Fine–Gray replicates the robust SE was 0.097 against an empirical SD of 0.098,
+    with 95% CI coverage of 0.947.
+  - The Aalen–Johansen 95% CI covered the true value in 0.95 of 1000 replicates.
 
 ## multitest
 

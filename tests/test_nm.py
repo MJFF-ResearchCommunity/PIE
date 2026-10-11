@@ -77,7 +77,9 @@ def test_refined_position_recovers_a_band_offset_from_the_atlas():
     img[band_l] = 120.0
     img[band_r] = 120.0
     phys_y = np.broadcast_to(np.arange(shape[1])[None, :, None].astype(float), shape)
-    out = nm.features(img, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5))
+    plain = nm.features(img, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5))     # the default: no same-image selection
+    assert plain["nm_sn_shift_mm_l"] == 0 and plain["nm_sn_l_cnr"] == plain["nm_sn_l_cnr_atlas"]
+    out = nm.features(img, rois, phys_y, spacing_zyx=(1.5, 0.5, 0.5), refine=True)
     assert abs(out["nm_sn_l_cnr"] - 0.20) < 0.04 and abs(out["nm_sn_r_cnr"] - 0.20) < 0.04, (out["nm_sn_l_cnr"], out["nm_sn_r_cnr"])
     assert out["nm_sn_l_cnr_atlas"] < 0.12 and out["nm_sn_r_cnr_atlas"] < 0.12
     assert abs(out["nm_sn_shift_mm_l"] - 1.5) < 0.6 and abs(out["nm_sn_shift_mm_r"] - 1.5) < 0.6
@@ -91,7 +93,7 @@ def test_reference_excludes_both_final_refined_masks():
     img[np.roll(rois['sn_r'], 3, axis=2)] = 115.
     masks = {}
     y = np.broadcast_to(np.arange(shape[1])[None,:,None], shape)
-    values = nm.features(img, rois, y, mask_out=masks)
+    values = nm.features(img, rois, y, mask_out=masks, refine=True)
     sn = masks['sn_l'] | masks['sn_r']
     assert (rois['ref'] & sn).any(), 'fixture must expose the previous overlap bug'
     assert not (masks['ref'] & sn).any()
@@ -284,6 +286,8 @@ def test_average_repeats_reports_where_every_repeat_contributes(tmp_path):
     assert support.shape == img.shape and n == 3 and 1.5 < motion < 2.5
     assert (support[5:35] > 0.99).all()                    # every repeat holds the centre
     assert (support[36:] < 0.99).all()                     # the displaced repeat's field of view ends 4 voxels early
+    edge = np.asarray(img.dataobj)[37:39].mean() / big[41:43].mean()   # averaged over the two repeats that reach it, not
+    assert abs(edge - 1) < 0.02                                       # darkened by a third (2/3 before 11 Oct 2026)
 
 
 def test_nm_voxels_missing_a_repeat_or_signal_fail_nm_qc():
@@ -324,6 +328,17 @@ def test_nm_qc_requires_each_side_inside_the_slab_and_keeps_the_old_bar_for_old_
     assert QC["nm"](new).tolist() == [True, False]
     assert QC["nm"](old).tolist() == [True, False]
     assert QC["nm"](pd.concat([new, old], ignore_index=True)).tolist() == [True, False, True, False]   # a resumed table
+
+
+def test_nm_qc_wants_at_least_three_averaged_repeats():
+    import pandas as pd
+
+    from pie.imaging.manifest import QC
+
+    base = {"n_sn_l": 50, "n_sn_r": 50, "sn_slab_coverage_l": 1.0, "sn_slab_coverage_r": 1.0, "repeat_motion_mm_max": 0.5,
+            "nm_ref_l_sd": 10, "nm_ref_l_mean": 100, "nm_ref_r_sd": 10, "nm_ref_r_mean": 100}
+    assert QC["nm"](pd.DataFrame([{**base, "n_repeats": n} for n in (1, 2, 3, 5)])).tolist() == [False, False, True, True]
+    assert QC["nm"](pd.DataFrame([base])).tolist() == [True]          # tables without the column pass, as before
 
 
 def _zero_syn_cache(fs, shift_lps=(0.0, 0.0, 0.0)):
