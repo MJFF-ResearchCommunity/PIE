@@ -308,7 +308,7 @@ from pie.imaging.manifest import QC, build_manifest, assemble_features, feature_
 
 man = build_manifest("<derived>")        # one row per subject: which session of each modality, dates, batch, QC
 df = assemble_features("<derived>")      # manifest + FastSurfer IDPs + modality features, QC-failed values blanked
-blocks = feature_blocks(df.columns)      # {"dat": [...], "dwi": [...], "nm": [...], "flair": [...]}
+blocks = feature_blocks(df.columns)      # {"dat": [...], "dat_core": [...], "dwi": [...], "nm": [...], "flair": [...]}
 ```
 
 `build_manifest(derived_dir, modality_dirs=None)` reads `<derived>/fastsurfer_idps.csv` (per subject the
@@ -334,7 +334,12 @@ entirely, so a failed left-side metric cannot let a valid-looking right side thr
 `assemble_features(..., ppmi_dir="PPMI")` also joins PPMI's own FreeSurfer 7 and MRIQC tables (`features.fs7_tables`:
 `fs7_cth_<DK region>`, `fs7_sa_<region>`, `fs7_<aseg volume>` including `fs7_EstimatedTotalIntraCranialVol`, and
 `mriqc_<metric>`), but only where the T1 PIE used is from the table's visit (baseline in the 2025 release; 1,080 of 1,804
-subjects on the September 2026 download). With `nm/nm_template_features.csv` present it adds the template-space NM
+subjects on the September 2026 download). It also adds **PPMI's core-lab SBRs for the DaTscan PIE reconstructed**
+(`manifest.core_lab_sbr`, matched on participant and scan month): `dat_core_{caudate,putamen}_{l,r}`, their ratios and
+asymmetry indices, and `dat_core_source` (`xing_cwm` where Xing analysed the scan, else `invicro_occipital`). These are
+PPMI's endpoint values and the ones to analyse for PPMI; they take no PIE DaT QC. PIE's own `dat_sbr_*` reconstruction
+is a screening measure for cohorts without a core lab. The two core-lab scales differ, so stratify or harmonise on
+`dat_core_source` (`feature_blocks` gives them as their own `dat_core` block). With `nm/nm_template_features.csv` present it adds the template-space NM
 contrasts `nmt_*_cnr` under their own QC (`QC["nmt"]`: SN mask >= 90 % covered on both sides, crus CV < 0.3; flag
 `nmt_qc_pass`).
 

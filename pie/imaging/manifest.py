@@ -282,13 +282,42 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
     pie_tiv, fs7_tiv = df.get("eTIV", nan), df.get("fs7_EstimatedTotalIntraCranialVol", nan)
     df["tiv_mm3"] = pie_tiv.fillna(fs7_tiv)
     df["tiv_source"] = np.where(pie_tiv.notna(), "pie_talairach", np.where(fs7_tiv.notna(), "ppmi_fs7", "none"))
+    if ppmi_dir is not None and "dat_date" in df:
+        df = df.merge(core_lab_sbr(ppmi_dir, df[["PATNO", "dat_date"]]), on=["PATNO", "dat_date"], how="left")
     return df
+
+
+def core_lab_sbr(ppmi_dir, scans):
+    """PPMI's core-lab SBRs for the DaTscans PIE reconstructed (``scans``: PATNO, dat_date), matched on participant and
+    scan month: ``dat_core_{caudate,putamen}_{l,r}``, their indices and ``dat_core_source``. Xing (cerebral-WM
+    reference) where it analysed the scan, else archived Invicro (occipital). These are PPMI's endpoint values, so
+    they take no PIE DaT QC; PIE's own ``dat_sbr_*`` stay a screening reconstruction for cohorts without a core lab.
+    The two sources' scales differ: stratify or harmonise on ``dat_core_source``, never pool raw values."""
+    from .labels import dat_sbr_table, sbr_indices
+
+    tables = []
+    for source in ("xing", "invicro"):
+        try:
+            tables.append(dat_sbr_table(ppmi_dir, source)[0])
+        except FileNotFoundError:
+            pass
+    cols = {f"DATSCAN_{r.upper()}_{s.upper()}": f"dat_core_{r}_{s}" for r in ("caudate", "putamen") for s in "lr"}
+    out = scans.dropna().drop_duplicates().assign(_month=lambda x: x["dat_date"].dt.to_period("M").dt.to_timestamp())
+    if not tables:
+        return out.drop(columns="_month")
+    core = pd.concat(tables, ignore_index=True).drop_duplicates(["PATNO", "DATSCAN_DATE"], keep="first")   # Xing first
+    core = core[["PATNO", "DATSCAN_DATE", "sbr_source", *cols]].rename(columns={**cols, "DATSCAN_DATE": "_month", "sbr_source": "dat_core_source"})
+    out = out.merge(core, on=["PATNO", "_month"], how="left").drop(columns="_month")
+    idx = sbr_indices(*(out[f"dat_core_{r}_{s}"] for r in ("caudate", "putamen") for s in "lr"))
+    out[[f"dat_core_{c}" for c in idx]] = idx.to_numpy()
+    return out
 
 
 def feature_blocks(columns):
     """Modality block -> feature columns, for block-wise harmonisation / stacking."""
     cols = list(columns)
     return {"dat": [c for c in cols if c.startswith("dat_sbr")],
+            "dat_core": [c for c in cols if c.startswith("dat_core_") and c != "dat_core_source"],
             "dwi": [c for c in cols if (c.startswith("dwi_") and is_dwi_feature(c)) or re.fullmatch(r"dwis_(?:fa|md|ad|rd)_\w+", c)],
             "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_voxels", "_cr", "_mm3"))],
             "flair": [c for c in cols if c.startswith("flair_wmh")]}

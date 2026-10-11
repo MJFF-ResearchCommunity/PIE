@@ -56,3 +56,29 @@ def test_dat_qc_rejects_failed_and_anticorrelated_registrations():
 
     d = pd.DataFrame({"reg_metric": [-0.8, np.inf, 0.6, -0.2], "n_label_voxels": [500] * 4})
     assert QC["dat"](d).tolist() == [True, False, False, False]
+
+
+def test_core_lab_sbr_is_assembled_for_the_scan_pie_reconstructed_xing_first(tmp_path):
+    d, ppmi = tmp_path / "derived", tmp_path / "ppmi"
+    (d / "datscan_full").mkdir(parents=True)
+    (ppmi / "Imaging").mkdir(parents=True)
+    pd.DataFrame({"PATNO": [1, 2, 3], "IMAGEID": ["I1", "I2", "I3"], "SCAN_DATE": ["2022-01-01"] * 3,
+                  "vol_Left_Putamen": [5000.0] * 3}).to_csv(d / "fastsurfer_idps.csv", index=False)
+    pd.DataFrame({"patno": [1, 2, 3], "image_id": ["S1", "S2", "S3"], "reg_metric": [-0.8, -0.8, -0.1], "n_label_voxels": [500] * 3,
+                  "hdr_manufacturer": ["GE"] * 3, "hdr_model": ["Infinia"] * 3, "sbr_putamen_l": [1.0, 2.0, 3.0]}).to_csv(d / "datscan_full" / "datscan_sbr.csv", index=False)
+    pd.DataFrame({"image_id": ["S1", "S2", "S3"], "member": [f"PPMI/{p}/DaTSCAN/2022-0{p}-15_10_00_00.0/S{p}/x.dcm" for p in (1, 2, 3)]}).to_csv(d / "spect_index.csv", index=False)
+    sbr = lambda patnos, months, v: {"PATNO": patnos, "DATSCAN_DATE": months, "DATSCAN_ANALYZED": ["Yes"] * len(patnos),
+                                     **{f"DATSCAN_{r}_{s}": [v] * len(patnos) for r in ("CAUDATE", "PUTAMEN") for s in "RL"}}
+    x = sbr([1], ["01/2022"], 1.5)
+    x.update({f"{r}_{s}_REF_CWM": x[f"DATSCAN_{r}_{s}"] for r in ("CAUDATE", "PUTAMEN") for s in "RL"})
+    pd.DataFrame(x).to_csv(ppmi / "Imaging" / "Xing_Core_Lab_-_Quant_SBR_08Sep2026.csv", index=False)
+    pd.DataFrame(sbr([1, 2, 3], ["01/2022", "02/2022", "07/2022"], 2.5)).to_csv(ppmi / "Imaging" / "DaTScan_SBR_Analysis_18Mar2025.csv", index=False)
+    for stem in ("Xing_Core_Lab_-_Visual_Read_08Sep2026", "DaTScan_Visual_Interpretation_Results_18Mar2025"):
+        pd.DataFrame({"PATNO": [1], "DATSCAN_DATE": ["01/2022"], "DATSCAN_VISINTRP": ["Positive"]}).to_csv(ppmi / "Imaging" / f"{stem}.csv", index=False)
+    f = assemble_features(d, ppmi_dir=ppmi).set_index("PATNO")
+    assert f.loc[1, "dat_core_source"] == "xing_cwm" and f.loc[1, "dat_core_putamen_l"] == 1.5       # Xing wins
+    assert f.loc[2, "dat_core_source"] == "invicro_occipital" and f.loc[2, "dat_core_putamen_l"] == 2.5
+    assert pd.isna(f.loc[3, "dat_core_putamen_l"])          # the core lab's scan is from another month
+    assert np.isnan(f.loc[3, "dat_sbr_putamen_l"])          # PIE's failed registration is blanked, the core lab never is
+    assert f.loc[1, "dat_core_pc_ratio_l"] == 1.0
+    assert "dat_core_putamen_l" in feature_blocks(f.columns)["dat_core"] and "dat_core_source" not in feature_blocks(f.columns)["dat_core"]
