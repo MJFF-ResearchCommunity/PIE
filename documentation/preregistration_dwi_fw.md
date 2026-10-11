@@ -1,9 +1,11 @@
 # Pre-registration: multi-shell posterior-SN free water in PPMI 2.0 (PD vs HC)
 
-**Status: DRAFT, 11 Oct 2026.** It is frozen, with a timestamp and the commit hash of the code, after three things:
+**Status: DRAFT, 11 Oct 2026.** It is frozen, with a timestamp and the commit hash of the code, after two things:
 - the user has reviewed it;
-- the participant counts below are filled in from QC flags and cohort labels only;
-- and before any `dwisf_*` value exists for the sample.
+- the candidate counts below are filled in from the DWI series index, `sessions.csv` and cohort labels only.
+
+It must be frozen before `dwi --eddy --study` produces any `dwisf_*` value for the sample. QC exclusions are reported
+in the participant flow after the run.
 
 This is a **post hoc** analysis of a measure chosen after related measures were seen (disclosure below), and it will be labelled that way.
 
@@ -40,12 +42,12 @@ Free water needs a second shell to be well-posed (Golub 2021, MRM 10.1002/mrm.28
 
 All PPMI 2.0 baseline PD and HC multi-shell DWI sessions available locally (acquired 2020 or later) that have a finished FastSurfer T1. This is the 29 Sep gate's candidate set restricted to multi-shell sessions, plus any later downloads. Diagnosis comes from PPMI's cohort labels. Philips sessions use the name-derived PE polarity.
 
-Counts are filled in at freeze, from QC flags only:
+Candidate counts are filled in at freeze, from the index and cohort labels only. QC counts come after the run:
 
 | | HC | PD |
 |---|---|---|
-| Multi-shell candidates | _ | _ |
-| Passing `dwisf_qc_pass` | _ | _ |
+| Multi-shell candidates with a FastSurfer T1 (at freeze) | _ | _ |
+| Passing `dwisf_qc_pass` (after the run, in the flow) | _ | _ |
 
 The 28 Siemens sessions with stripped gradient tags are excluded from the primary analysis; if recovered, they enter only the sensitivity analysis.
 
