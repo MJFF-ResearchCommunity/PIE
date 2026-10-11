@@ -74,14 +74,26 @@ def index_dwi(zips):
     return idx
 
 
-def convert(zip_path, prefix, out_dir, archive_cache=None):
-    """dcm2niix on one series; returns (nii, bval, bvec, json) tuples, vendor-derived maps dropped."""
+def convert(zip_path, prefix, out_dir, archive_cache=None, rebuilt_gradients=None):
+    """dcm2niix on one series; returns (nii, bval, bvec, json) tuples, vendor-derived maps dropped. A series whose export
+    stripped its diffusion tags gets the gradients ``dwi_gradients`` rebuilt for it (``<rebuilt_gradients>/<image_id>
+    .bval/.bvec``, only for protocols that passed the pre-registered check) when their length matches; its sidecar then
+    says ``PIEGradientsRebuilt``."""
     from .batch import convert_series
 
-    runs = []
+    runs, tag = [], prefix.rstrip("/").split("/")[-1]
     for nii in convert_series(zip_path, prefix, out_dir, archive_cache=archive_cache):
         base = nii[:-7]
-        if base.endswith(DERIVED_SUFFIXES) or not Path(base + ".bval").exists():
+        if base.endswith(DERIVED_SUFFIXES):
+            continue
+        rb = Path(rebuilt_gradients) / tag if rebuilt_gradients else None
+        if not Path(base + ".bval").exists() and rb is not None and rb.with_suffix(".bval").exists():
+            if len(np.loadtxt(rb.with_suffix(".bval")).ravel()) == nib.load(nii).shape[-1]:
+                shutil.copy(rb.with_suffix(".bval"), base + ".bval")
+                shutil.copy(rb.with_suffix(".bvec"), base + ".bvec")
+                meta = json.load(open(base + ".json")) if Path(base + ".json").exists() else {}
+                json.dump(dict(meta, PIEGradientsRebuilt=True), open(base + ".json", "w"))
+        if not Path(base + ".bval").exists():
             continue
         runs.append((nii, base + ".bval", base + ".bvec", base + ".json"))
     return runs
@@ -1043,7 +1055,7 @@ def _tier(ds):
 
 
 def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False, fba=False, keep_preproc=False,
-                    eddy=False, cuda=True, study=False):
+                    eddy=False, cuda=True, study=False, rebuilt_gradients=None):
     """All steps for one subject. ``study`` adds the study's nigral tensor measure (``study_features``, ``dwis_*``) on the study's tensor acquisition (``study_dataset``), corrected on its own when it is not the whole dataset. Returns a flat dict (features + QC). ``fba`` adds the MRtrix3 nigrostriatal fixel measures
     (pie.imaging.fba); ``keep_preproc`` keeps the preprocessed DWI + gradients under <work>/<patno>/fba/."""
     import SimpleITK as sitk
@@ -1056,7 +1068,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     runs = []
     with ZipArchiveCache() as zips:     # a session's DWI runs usually share a zip: index it once
         for r in series_rows:
-            runs += convert(r["zip"], r["prefix"], work / "nii", archive_cache=zips)
+            runs += convert(r["zip"], r["prefix"], work / "nii", archive_cache=zips, rebuilt_gradients=rebuilt_gradients)
     ds = assemble(runs)
     if denoise:
         ds = denoise_dwi(ds, work)
@@ -1067,7 +1079,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
            "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows))),
            # scanner identity for same-scanner rules and longitudinal harmonisation
            **{k: str(ds["meta"].get(k, "")) for k in ("DeviceSerialNumber", "StationName", "SoftwareVersions")},
-           "b0_scales": ";".join(f"{f:.4f}" for f in ds.get("b0_scales", [])), "n_runs_regridded": ds.get("n_runs_regridded", 0)}
+           "b0_scales": ";".join(f"{f:.4f}" for f in ds.get("b0_scales", [])), "n_runs_regridded": ds.get("n_runs_regridded", 0),
+           # gradients rebuilt from SequenceName (dwi_gradients): pre-registered as a sensitivity analysis only
+           "gradients_rebuilt": any(json.load(open(j)).get("PIEGradientsRebuilt", False) for j in
+                                    {str(Path(p[:-7] + ".json")) for p in ds["source_nifti"]} if Path(j).exists())}
     row["n_rev_b0"] = int(ds["rev_b0"].shape[3]) if ds.get("rev_b0") is not None else 0
     ds = correct(ds, work, fsl=fsl, eddy=eddy, cuda=cuda)
     row["topup"], row["eddy"] = bool(ds.get("topup", False)), bool(ds.get("eddy", False))
@@ -1155,10 +1170,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep, fsl, denoise, fba, keep_preproc, eddy, cuda, study = args
+    patno, rows, fs_dir, work_dir, keep, fsl, denoise, fba, keep_preproc, eddy, cuda, study, rebuilt = args
     try:
         out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, fsl=fsl, denoise=denoise, fba=fba, keep_preproc=keep_preproc,
-                              eddy=eddy, cuda=cuda, study=study)
+                              eddy=eddy, cuda=cuda, study=study, rebuilt_gradients=rebuilt)
         out["error"] = ""
     except Exception as e:  # keep the batch going
         out = {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -1183,6 +1198,8 @@ def main(argv=None):
     ap.add_argument("--eddy", action="store_true", help="FSL eddy (outlier replacement, eddy-rotated gradients) where the PE direction and "
                     "readout time are recorded, with topup where a reverse-PE b0 exists; replaces the rigid motion correction for those scans")
     ap.add_argument("--eddy-cpu", action="store_true", help="use eddy_cpu instead of eddy_cuda (hours per three-shell scan)")
+    ap.add_argument("--rebuilt-gradients", help="directory of <image_id>.bval/.bvec rebuilt by dwi_gradients for series whose export "
+                    "stripped the diffusion tags (rows get gradients_rebuilt=True: sensitivity analyses only)")
     ap.add_argument("--study", action="store_true", help="add the study's nigral measures: the tensor measure (dwis_*) and the "
                     "pre-registered multi-shell free-water endpoint (dwisf_*; primary dwisf_fw_sn_posterior_mean)")
     a = ap.parse_args(argv)
@@ -1191,7 +1208,7 @@ def main(argv=None):
     idx = load_index(work / "dwi_index.csv", a.zips, _flag_dwi)
     idx = idx[idx["selected"]]
     out_csv = work / "dwi_features.csv"
-    jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu, a.study)
+    jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu, a.study, a.rebuilt_gradients)
             for p, rows, fsd in modality_jobs(idx, a, out_csv)]
     if a.priority:
         order = {int(p): i for i, p in enumerate(Path(a.priority).read_text().split())}

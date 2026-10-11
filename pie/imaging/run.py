@@ -23,8 +23,8 @@ from pathlib import Path
 import pandas as pd
 
 from pie.imaging.convert import convert_series
-from pie.imaging.fastsurfer import (STATS_FILE, complete_segmentation, finish_stats, hippocampal_subfields, longitudinal, run_fastsurfer,
-                                    sclimbic, segment_batch, surfaces, synthseg, talairach_etiv)
+from pie.imaging.fastsurfer import (STATS_FILE, ch4_volume, complete_segmentation, finish_stats, hippocampal_subfields, longitudinal,
+                                    run_fastsurfer, sclimbic, segment_batch, surfaces, synthseg, talairach_etiv)
 from pie.imaging.features import build_idp_table
 from pie.imaging.index import (T1_HEADER_FIELDS, visit_to_event, index_zips, probe_headers, protocol_phase,
                                read_ida_metadata, read_loni_collection_csv, select_t1_series, t1_candidates)
@@ -240,6 +240,7 @@ STAGES = {   # optional per-subject stages on finished FastSurfer subjects: (sub
     "sclimbic": lambda fs, sid, t, nii: sclimbic(fs, sid, threads=t),
     "subfields": lambda fs, sid, t, nii: hippocampal_subfields(fs, sid, threads=t),
     "synthseg": lambda fs, sid, t, nii: synthseg(nii, Path(fs) / sid / "synthseg", threads=t),
+    "ch4": lambda fs, sid, t, nii: ch4_volume(fs, sid, threads=t),
 }
 
 
@@ -295,6 +296,8 @@ def main(argv=None):
                     "fornix, septal nuclei) for every finished subject, then rebuild the table; ~1 min and ~3.3 GB per scan")
     ap.add_argument("--subfields", action="store_true", help="hippocampal subfields and amygdala nuclei (segment_subregions) for every "
                     "subject that has run --surfaces, then rebuild the table")
+    ap.add_argument("--ch4", action="store_true", help="atlas-based nucleus basalis (Julich-Brain Ch4) grey-matter volume through the "
+                    "subject's T1 -> MNI SyN (~8 CPU-min to fit when not cached) and FSL FAST, then rebuild the table")
     ap.add_argument("--synthseg", action="store_true", help="SynthSeg-robust volumes and QC on the raw T1 of every finished subject "
                     "(legacy 1.5 T / thick-slice robustness, FastSurfer cross-check), then rebuild the table")
     ap.add_argument("--etiv", action="store_true", help="add FreeSurfer eTIV (talairach registration) to every finished subject, then "

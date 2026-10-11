@@ -413,3 +413,20 @@ def test_mni_coordinates_on_the_grid_follow_the_transforms():
     assert np.isclose(x[1, 2, 3], 0.0) and np.isclose(y[1, 2, 3], -13.0) and np.isnan(x[0, 0, 0])
     rois = dwi._roi_masks(np.zeros((4, 5, 6), int), np.zeros((4, 5, 6), int), -y, left=x < 0)
     assert not rois["sn_l"].any()
+
+
+def test_a_stripped_series_takes_its_rebuilt_gradients_and_is_flagged(tmp_path, monkeypatch):
+    from pie.imaging import batch
+    out = tmp_path / "nii"
+    out.mkdir()
+    nii = out / "I0000001_DTI.nii.gz"
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4, 3), np.float32), np.eye(4)), nii)
+    (out / "I0000001_DTI.json").write_text("{}")
+    monkeypatch.setattr(batch, "convert_series", lambda *a, **k: [str(nii)])
+    assert dwi.convert("z.zip", "PPMI/1/DTI/2020-01-01/I0000001/", out) == []           # no gradients: dropped, as before
+    rb = tmp_path / "rebuilt"
+    rb.mkdir()
+    np.savetxt(rb / "I0000001.bval", [[0, 1000, 1000]])
+    np.savetxt(rb / "I0000001.bvec", np.c_[np.zeros(3), np.eye(3)[:, :2]])
+    runs = dwi.convert("z.zip", "PPMI/1/DTI/2020-01-01/I0000001/", out, rebuilt_gradients=rb)
+    assert len(runs) == 1 and json.load(open(runs[0][3]))["PIEGradientsRebuilt"] and np.loadtxt(runs[0][1]).tolist() == [0, 1000, 1000]

@@ -47,6 +47,9 @@ def main(argv=None):
     ap.add_argument("--method", choices=["deming", "equipercentile"], default="deming")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--patnos", help="optional text file of PATNOs: compare two runs on the same participants")
+    ap.add_argument("--image-ids", help="optional text file of image IDs: compare two runs on the same scans")
+    ap.add_argument("--qc", choices=["manifest", "basic"], default="manifest", help="manifest: QC['dat']; basic: only a "
+                    "finished registration (finite metric) with >= 100 label voxels, for like-for-like comparisons of two runs")
     ap.add_argument("--threshold", type=float, default=0.65,
                     help="deficit cut-off on the core lab's percent-of-expected (0.65 was derived on Invicro's scale; "
                          "labels.xing_deficit_threshold gives Xing's equivalent)")
@@ -55,12 +58,13 @@ def main(argv=None):
     d = pd.read_csv(a.sbr, low_memory=False, dtype={"image_id": str})
     d = d[d["error"].fillna("") == ""] if "error" in d else d
     d = d[d["patno"].isin({int(x) for x in Path(a.patnos).read_text().split()})] if a.patnos else d
+    d = d[d["image_id"].isin(set(Path(a.image_ids).read_text().split()))] if a.image_ids else d
     col = lambda c: pd.to_numeric(d[c], errors="coerce") if c in d else pd.Series(np.nan, index=d.index)
     if "shift_x_mm" in d:      # per-axis placement (tables since October 2026); older tables only carry the norm
         old_edge = d[["shift_x_mm", "shift_y_mm", "shift_z_mm"]].abs().max(axis=1) / col("hdr_spacing_mm").fillna(3.9) >= 2 - 1e-6
     else:
         old_edge = col("shift_vox") >= 2 - 1e-6
-    qc = manifest.QC["dat"](d)
+    qc = manifest.QC["dat"](d) if a.qc == "manifest" else (np.isfinite(pd.to_numeric(d["reg_metric"], errors="coerce")) & (d["n_label_voxels"] >= 100))
     sf = d.get("hdr_scale_fit", pd.Series(False, index=d.index)).astype(str).str.lower().eq("true")
     versor = np.array([[float(v) for v in s.split()[:3]] if isinstance(s, str) else [np.nan] * 3
                        for s in d.get("reg_params", pd.Series(np.nan, index=d.index))]).reshape(-1, 3)
@@ -76,7 +80,8 @@ def main(argv=None):
     month = d["image_id"].map(idx["member"].str.split("/").str[3].str[:7])
     pre = "sbrwm" if a.source == "xing" else "sbr"
     pie = pd.DataFrame({"PATNO": d["patno"].astype(int), "DATSCAN_DATE": pd.to_datetime(month, format="%Y-%m", errors="coerce"),
-                        "hdr_model": d.get("hdr_model"), "old_edge": old_edge, **{f"pie_{r}": col(f"{pre}_{r}") for r in REGIONS}})[qc]
+                        "hdr_model": d.get("hdr_model"), "old_edge": old_edge, "metric": -col("reg_metric"),
+                        **{f"pie_{r}": col(f"{pre}_{r}") for r in REGIONS}})[qc]
     ref = labels.dat_sbr_scored(a.ppmi_dir, a.source).drop_duplicates(["PATNO", "DATSCAN_DATE"])
     ref = ref.assign(**{f"ref_{r}_{s}": ref[f"DATSCAN_{r.upper()}_{s.upper()}"] for r in ("putamen", "caudate") for s in "lr"})
     m = pie.merge(ref, on=["PATNO", "DATSCAN_DATE"]).reset_index(drop=True)
@@ -104,6 +109,11 @@ def main(argv=None):
                     "loa_low": diff.mean() - 1.96 * diff.std(ddof=1), "loa_high": diff.mean() + 1.96 * diff.std(ddof=1)})
     out = pd.DataFrame(out)
     print(out.round(3).to_string(index=False))
+    g = m.dropna(subset=["pie_putamen_min", "ref_putamen_min", "metric"])
+    tert = pd.qcut(g["metric"], 3, labels=["low", "mid", "high"])
+    print("putamen_min raw r by registration-metric tertile:", {str(t): round(float(np.corrcoef(x["pie_putamen_min"], x["ref_putamen_min"])[0, 1]), 3)
+                                                                 for t, x in g.groupby(tert, observed=True)},
+          "metric cut points", g["metric"].quantile([1 / 3, 2 / 3]).round(3).tolist())
 
     m["pie_pct"], _ = labels.percent_expected(m, "cal_putamen_min")
     m["ref_pct"], _ = labels.percent_expected(m, "ref_putamen_min")

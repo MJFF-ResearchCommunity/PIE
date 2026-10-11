@@ -98,6 +98,11 @@ def extra_t1_columns(subj):
             f = subj / "mri" / f"{h}.{kind}.txt"
             if f.exists():
                 out.update({f"vol_{prefix}_{h}_{_clean(k)}": v for k, v in parse_volume_txt(f).items()})
+    ch4 = subj / "stats" / "ch4.json"
+    if ch4.exists():      # vol_ch4_{lh,rh}_{gm,pgm}: GM in the 0.5 map / probability-weighted; ch4_*_map_mm3: registration check
+        import json
+        for k, v in json.loads(ch4.read_text()).items():
+            out[f"vol_{k.removesuffix('_mm3')}" if not k.endswith("map_mm3") else k] = v
     ss = subj / "synthseg"
     if (ss / "volumes.csv").exists():
         out.update({f"synthseg_{_clean(k)}": float(v) for k, v in pd.read_csv(ss / "volumes.csv").iloc[0, 1:].items()})

@@ -96,6 +96,18 @@ def templateflow_file(name, cache_dir=CACHE_DIR):
     return _pinned(TEMPLATEFLOW + name, Path(cache_dir) / name, TEMPLATEFLOW_FILES[name])
 
 
+# Julich-Brain v3.1 basal forebrain Ch4 (nucleus basalis of Meynert) probability maps, Zaborszky et al. 2008
+# (doi:10.1016/j.neuroimage.2007.08.054), in MNI152NLin2009cAsym 1 mm; CC BY 4.0, served by EBRAINS (verified 11 Oct 2026)
+JULICH = 'https://data-proxy.ebrains.eu/api/v1/public/buckets/d-f1fe19e8-99bd-44bc-9616-a52850680777/probabilistic-maps_PMs_207-areas/'
+CH4_FILES = {'lh': ('BasalForebrain-Ch-4/BasalForebrain-Ch-4_lh_MNI152.nii.gz', '9b70bcdf920030df50c8b186644b31cab79b7c8a1c61692756c484d9b3a31646'),
+             'rh': ('BasalForebrain-Ch-4/BasalForebrain-Ch-4_rh_MNI152.nii.gz', '42a855edcde456ed28554356bf58a0df1d41a17063398622a3000f14b6aa3cc3')}
+
+
+def ch4_maps(cache_dir=Path.home() / '.cache' / 'pie' / 'julich'):
+    """{"lh", "rh"} -> path of the pinned Ch4 probability map (values 0-1, MNI152NLin2009cAsym 1 mm)."""
+    return {h: _pinned(JULICH + rel, Path(cache_dir) / Path(rel).name, sha) for h, (rel, sha) in CH4_FILES.items()}
+
+
 def mni2009c_brain_1mm(cache_dir=CACHE_DIR):
     """Path of the brain-masked 1 mm MNI152NLin2009cAsym T1w: the deformable (SyN) target of ``dwi_refine`` and
     ``nm_template``, in the space of the bundled CIT168 atlas (nilearn's 1 mm template is the 2009a release)."""
