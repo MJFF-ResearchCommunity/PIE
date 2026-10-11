@@ -61,6 +61,9 @@ NM_VALIDATED = False
 # the lowest putamen SBR 0.03. Close to the meta-analytic nigral MD effect (Schwarz 2013, d 0.26), so likely a real small
 # effect on an endpoint the literature never supported. Assembled nigral DWI columns are exploratory.
 DWI_NIGRAL_VALIDATED = False
+# The pre-registered replacement endpoint (user decision, 11 Oct 2026): multi-shell posterior-SN free water
+# (``dwisf_fw_sn_posterior_mean``; documentation/preregistration_dwi_fw.md), untested, so the flag above covers it too.
+STUDY_DWI = {"dwis": r"dwis_(?:fa|md|ad|rd)_\w+", "dwisf": r"dwisf_(?:fw|fat|mdt)_\w+"}
 DWI_METRIC_SUFFIXES = ("_fa", "_md", "_ad", "_rd", "_fw", "_fat", "_mdt", "_mk")   # dwi.METRICS as column suffixes
 
 
@@ -237,11 +240,14 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
         if not single_shell_fw and "fw_method" in dwi:
             dwi.loc[dwi["fw_method"].eq("singleshell_prior"), [c for c in cols if c.endswith(("_fw", "_fat"))]] = np.nan
         blocks["dwi"] = dwi[["patno"] + cols].rename(columns={c: f"dwi_{c}" for c in cols})
-        if "dwis_qc_pass" in dwi:   # the study's nigral measure (``dwi --study``) carries its own QC, as nm_template does
-            scols = [c for c in dwi.columns if re.fullmatch(r"dwis_(?:fa|md|ad|rd)_\w+", c)]
-            ok = dwi["dwis_qc_pass"].astype(str).str.lower().eq("true")
-            dwi.loc[~ok, scols] = np.nan
-            df = df.merge(dwi[["patno", "dwis_qc_pass"] + scols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+        # the study's nigral measures (``dwi --study``) carry their own QC, as nm_template does: the tensor measure
+        # ``dwis_*`` and the pre-registered multi-shell free-water endpoint ``dwisf_*``
+        for pre in STUDY_DWI:
+            if f"{pre}_qc_pass" in dwi:
+                scols = [c for c in dwi.columns if re.fullmatch(STUDY_DWI[pre], c)]
+                ok = dwi[f"{pre}_qc_pass"].astype(str).str.lower().eq("true")
+                dwi.loc[~ok, scols] = np.nan
+                df = df.merge(dwi[["patno", f"{pre}_qc_pass"] + scols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
         df["dwi_nigral_validated"] = DWI_NIGRAL_VALIDATED
     nmf = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_features.csv")
     if nmf is not None:
@@ -318,6 +324,6 @@ def feature_blocks(columns):
     cols = list(columns)
     return {"dat": [c for c in cols if c.startswith("dat_sbr")],
             "dat_core": [c for c in cols if c.startswith("dat_core_") and c != "dat_core_source"],
-            "dwi": [c for c in cols if (c.startswith("dwi_") and is_dwi_feature(c)) or re.fullmatch(r"dwis_(?:fa|md|ad|rd)_\w+", c)],
+            "dwi": [c for c in cols if (c.startswith("dwi_") and is_dwi_feature(c)) or any(re.fullmatch(r, c) for r in STUDY_DWI.values())],
             "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_voxels", "_cr", "_mm3"))],
             "flair": [c for c in cols if c.startswith("flair_wmh")]}

@@ -139,15 +139,24 @@ def assemble(runs, main=None):
     loaded = [x for x in loaded if (x[1] > 50).sum() >= 6]
     if not loaded:
         raise ValueError("no diffusion-weighted run")
-    # Include the full affine, not just voxel sizes: shifted/oblique grids cannot be concatenated voxelwise.
-    groups = {}
-    for img, b, v, meta in loaded:
-        key = (img.shape[:3], tuple(np.round(img.affine, 4).ravel()), acquisition_metadata_key(meta))
-        groups.setdefault(key, []).append((img, b, v, meta))
-    best = [x for x in loaded if x[0].get_filename() == main] if main else max(groups.values(), key=lambda g: sum((x[1] > 50).sum() for x in g))
+    # Same axes, spacing and shape (oblique grids cannot be concatenated voxelwise) and origins within one voxel, which
+    # are regridded below; a larger shift covers other anatomy. Keying on the whole affine (to 1e-4 mm) demoted
+    # multi-shell sessions with a sub-voxel shift to one shell.
+    groups = []
+    for x in loaded:
+        img, key = x[0], (x[0].shape[:3], tuple(np.round(x[0].affine[:3, :3], 4).ravel()), acquisition_metadata_key(x[3]))
+        voxel = np.linalg.norm(img.affine[:3, :3], axis=0).min()
+        g = next((g for k, g in groups if k == key and np.linalg.norm(g[0][0].affine[:3, 3] - img.affine[:3, 3]) <= voxel), None)
+        if g is None:
+            groups.append((key, [x]))
+        else:
+            g.append(x)
+    best = [x for x in loaded if x[0].get_filename() == main] if main else max((g for _, g in groups), key=lambda g: sum((x[1] > 50).sum() for x in g))
     if not best:
         raise ValueError(f"{main} is not a diffusion-weighted run")
-    data = np.concatenate([np.asanyarray(x[0].dataobj).astype(np.float32) for x in best], axis=3)
+    arrays, regridded = _runs_on_first_grid(best)
+    arrays, b0_scales = _scale_runs_to_b0(arrays, [x[1] for x in best])
+    data = np.concatenate(arrays, axis=3)
     bvals = np.concatenate([x[1] for x in best])
     bvecs = np.concatenate([x[2] for x in best], axis=1)
     meta = best[0][3]
@@ -176,7 +185,40 @@ def assemble(runs, main=None):
     return {"data": data, "affine": best[0][0].affine, "bvals": bvals, "bvecs": bvecs, "meta": meta, "n_runs": len(best),
             "run_bounds": [(int(a), int(z)) for a, z in zip(np.r_[0, stops[:-1]], stops)],
             "shells": sorted(set(int(round(x / 100.0)) * 100 for x in bvals if x > 50)), "rev_b0": rev_b0,
-            "rev_meta": reverse[3] if reverse else {}, "source_nifti": [x[0].get_filename() for x in best]}
+            "rev_meta": reverse[3] if reverse else {}, "source_nifti": [x[0].get_filename() for x in best],
+            "b0_scales": b0_scales, "n_runs_regridded": regridded}
+
+
+def _runs_on_first_grid(runs):
+    """Each run's data on the first run's grid: a run whose origin alone differs is resampled at the same physical points
+    (``dwi_acquisition.regrid_volume``; no estimated motion, so gradients and PE axes are unchanged). Returns (arrays,
+    number regridded)."""
+    from .dwi_acquisition import regrid_volume
+
+    ref, out, n = runs[0][0], [], 0
+    for img, *_ in runs:
+        arr = np.asanyarray(img.dataobj).astype(np.float32)
+        if not np.allclose(img.affine, ref.affine, atol=1e-5, rtol=0):
+            arr = np.stack([regrid_volume(arr[..., i], img.affine, ref.shape[:3], ref.affine) for i in range(arr.shape[3])], axis=3)
+            n += 1
+        out.append(arr)
+    return out, n
+
+
+def _scale_runs_to_b0(arrays, bvals):
+    """Each run x (reference b0 / its own b0), medians over the reference run's b0 brain, the reference being the first
+    run with b0s. Scanners rescale every series, so shells from separate runs concatenated unscaled bias multi-shell
+    free water, MD-t and kurtosis; QSIPrep scales b0s the same way. A run without b0s stays unscaled (factor NaN).
+    Returns (arrays, factors)."""
+    have = [i for i, b in enumerate(bvals) if (b <= 50).any()]
+    if len(arrays) < 2 or not have:
+        return arrays, [1.0 if (b <= 50).any() else np.nan for b in bvals]
+    ref = arrays[have[0]][..., bvals[have[0]] <= 50].mean(axis=3)
+    brain = _b0_brain(ref)
+    brain = brain if brain.any() else ref > 0
+    level = float(np.median(ref[brain]))
+    factors = [level / float(np.median(a[..., b <= 50].mean(axis=3)[brain])) if (b <= 50).any() else np.nan for a, b in zip(arrays, bvals)]
+    return [a * f if np.isfinite(f) else a for a, f in zip(arrays, factors)], factors
 
 
 # ------------------------------------------------------------------------------------------ preprocess / fit
@@ -733,6 +775,22 @@ def load_mni_cache(path, expected_inputs=None):
     return sitk.ReadTransform(str(path))
 
 
+def mni_xy_on_grid(target, chain, where):
+    """MNI RAS x and y (mm) of the ``where`` voxels of ``target`` (SimpleITK image; arrays in its (z, y, x) order), NaN
+    elsewhere, through ``chain`` as ``labels_to_dwi`` takes it: the anatomical left/right and anterior/posterior axes,
+    independent of how the head is pitched or turned in the scanner."""
+    import SimpleITK as sitk
+
+    comp = sitk.CompositeTransform(3)
+    for t in chain:
+        comp.AddTransform(t.GetInverse())
+    x, y = np.full(where.shape, np.nan), np.full(where.shape, np.nan)
+    for k, j, i in np.argwhere(where):
+        p = comp.TransformPoint(target.TransformIndexToPhysicalPoint((int(i), int(j), int(k))))
+        x[k, j, i], y[k, j, i] = -p[0], -p[1]          # ITK points are LPS
+    return x, y
+
+
 def labels_to_dwi(label_img, target, chain):
     """Nearest-neighbour resampling of a label image onto the DWI grid (``target``: SimpleITK image in the native DWI
     voxel order, see ``_sitk_native``). ``chain`` lists the registration results (fixed -> moving transforms) from
@@ -769,16 +827,17 @@ def _left_mask(fs_lab):
     return np.broadcast_to((xi > mid) if xl > xr else (xi < mid), fs_lab.shape)
 
 
-def _roi_masks(fs_lab, pauli_lab, y_index):
+def _roi_masks(fs_lab, pauli_lab, y_index, left=None):
     """ROI name -> boolean mask on the DWI grid (arrays in sitk (z, y, x) order). ``y_index`` gives each voxel's
-    anterior-posterior coordinate for the anterior/posterior split of the substantia nigra."""
+    anterior-posterior coordinate (larger = posterior) for the anterior/posterior split of the substantia nigra; ``left``
+    the atlas hemisphere (default: ``_left_mask``, a voxel half-space between the putamina)."""
     rois = {}
     for name, (l, r) in FS_ROIS.items():
         rois[f"{name}_l"], rois[f"{name}_r"] = fs_lab == l, fs_lab == r
     for name, ids in FS_SINGLE.items():
         rois[name] = np.isin(fs_lab, ids)
     code = {n: i + 1 for i, n in enumerate(PAULI)}
-    left = _left_mask(fs_lab)
+    left = _left_mask(fs_lab) if left is None else left
     for name, parts in PAULI_ROIS.items():
         m = np.isin(pauli_lab, [code[p] for p in parts])
         rois[f"{name}_l"], rois[f"{name}_r"] = m & left, m & ~left
@@ -861,11 +920,13 @@ def study_dataset(runs):
                 shells=[int(shell)])
 
 
-def study_nigra_labels(b0_img, fastsurfer_dir, tx_t1_dwi, atlas=None):
+def study_nigra_labels(b0_img, fastsurfer_dir, tx_t1_dwi, atlas=None, posterior=False):
     """CIT168 SNc (7) and SNr (9) on the DWI grid as 10 * label + hemisphere (1 left, 2 right, from the atlas's own RAS x;
     the study packs both so they share one interpolation), through the subject's T1 -> MNI SyN (``nm_template.syn_cache``,
     the study's registration) and the rigid ``tx_t1_dwi`` (T1 point -> DWI point), in one nearest-neighbour resampling as
-    the study sampled them (``nm_transform_chain.sample``)."""
+    the study sampled them (``nm_transform_chain.sample``). ``posterior`` adds 100 to each side's posterior half, split at
+    that side's median atlas RAS y: an anatomical split, unlike the scanner-frame one of ``study_features``, which tilts
+    with head pitch."""
     from .atlases import cit168_mni2009c
     from .nm_native import pull_labels
     from .nm_template import syn_cache
@@ -873,8 +934,16 @@ def study_nigra_labels(b0_img, fastsurfer_dir, tx_t1_dwi, atlas=None):
     atlas = cit168_mni2009c() if atlas is None else atlas
     a = np.asarray(atlas.dataobj).astype(int)
     idx = np.argwhere(np.isin(a, (7, 9)))
+    ras = nib.affines.apply_affine(atlas.affine, idx)
     codes = np.zeros(a.shape, np.int16)
-    codes[tuple(idx.T)] = 10 * a[tuple(idx.T)] + np.where(nib.affines.apply_affine(atlas.affine, idx)[:, 0] < 0, 1, 2)
+    side = np.where(ras[:, 0] < 0, 1, 2)
+    codes[tuple(idx.T)] = 10 * a[tuple(idx.T)] + side
+    if posterior:
+        for k in (1, 2):
+            on = side == k
+            if on.any():
+                post = on & (ras[:, 1] < np.median(ras[on, 1]))
+                codes[tuple(idx[post].T)] += 100
     warp, affine = syn_cache(fastsurfer_dir)["fwd"]
     return pull_labels(nib.Nifti1Image(codes, atlas.affine), b0_img, tx_t1_dwi, warp, affine, interpolator="nearestNeighbor")[0]
 
@@ -892,10 +961,10 @@ def study_features(data, bvals, bvecs, affine, run_bounds, codes, brain, motion_
 
     b = np.asarray(bvals, float)
     keep = study_acquisition(b, run_bounds)
-    xyz = np.argwhere(np.isin(codes // 10, (7, 9)))
+    xyz = np.argwhere(np.isin(codes // 10 % 10, (7, 9)))
     if not len(xyz):
         raise ValueError("no native nigral voxels")
-    lab, left = codes[tuple(xyz.T)] // 10, codes[tuple(xyz.T)] % 10 == 1
+    lab, left = codes[tuple(xyz.T)] // 10 % 10, codes[tuple(xyz.T)] % 10 == 1
     t = tensor_measurements(data[tuple(xyz.T)][:, keep].astype(float), b[keep], np.asarray(bvecs)[:, keep])
     lps_y = -(xyz @ affine[1, :3] + affine[1, 3])
     rois = {}
@@ -917,6 +986,46 @@ def study_features(data, bvals, bvecs, affine, run_bounds, codes, brain, motion_
     row.update(dwis_sn_brain_mask_fraction=coverage, dwis_physical_fraction=physical, dwis_motion_for_qc_mm=motion_for_qc,
                dwis_qc_pass=all(checks.values()), dwis_qc_failed_checks=";".join(k for k, ok in checks.items() if not ok))
     return row
+
+
+FW_ENDPOINT = "dwisf_fw_sn_posterior_mean"    # the pre-registered DWI endpoint (documentation/preregistration_dwi_fw.md)
+
+
+def study_fw_features(maps, codes, brain, motion_for_qc, fw_method):
+    """Multi-shell free water in the study's nigra (``study_nigra_labels(..., posterior=True)``; arrays in the same voxel
+    order as ``maps``): the posterior-SN free water of Ofori 2015 and Burciu 2017 (PPMI-1, PD > HC, d ~0.4-0.5, rising
+    over 4 years). Per side SN, posterior and anterior halves (anatomical split), and bilateral ``*_mean``: free water
+    ``fw``, tissue FA ``fat`` and free-water-corrected MD ``mdt``. A region's value is the mean of its voxels with a
+    physical fit when there are >= 3 and >= 80 % of the region, as ``study_features``. QC: multi-shell fit (single-shell
+    free water is ill-posed and quarantined), >= 20 nigral voxels, >= 95 % inside ``brain``, >= 80 % physical free-water
+    fits, ``motion_for_qc`` <= 2 mm, both posterior values present. Columns ``dwisf_*``; the primary is ``FW_ENDPOINT``."""
+    nig = np.isin(codes // 10 % 10, (7, 9))
+    left, post = codes % 10 == 1, codes >= 100
+    rois = {}
+    for s, hemi in (("l", nig & left), ("r", nig & ~left)):
+        rois.update({f"sn_{s}": hemi, f"sn_posterior_{s}": hemi & post, f"sn_anterior_{s}": hemi & ~post})
+    multi = fw_method == "multishell_nls"
+    row = {"dwisf_n_sn": int(nig.sum())}
+    for k in ("fw", "fat", "mdt"):
+        m = maps.get(k)
+        for name, r in rois.items():
+            v = m[r] if (m is not None and multi) else np.array([])
+            ok = np.isfinite(v)
+            row[f"dwisf_{k}_{name}"] = float(v[ok].mean()) if ok.sum() >= 3 and ok.sum() >= 0.8 * r.sum() else np.nan
+        for base in ("sn", "sn_posterior", "sn_anterior"):
+            row[f"dwisf_{k}_{base}_mean"] = float(np.mean([row[f"dwisf_{k}_{base}_l"], row[f"dwisf_{k}_{base}_r"]]))
+    valid = float(np.isfinite(maps["fw"][nig]).mean()) if multi and nig.any() else np.nan
+    coverage = float(brain[nig].mean()) if nig.any() else np.nan
+    checks = {"multishell": multi, "sn_size": nig.sum() >= 20, "brain_coverage": coverage >= 0.95, "fw_physical_fraction": valid >= 0.8,
+              "motion": bool(np.isfinite(motion_for_qc) and motion_for_qc <= 2),
+              "bilateral_posterior": all(np.isfinite(row[f"dwisf_fw_sn_posterior_{s}"]) for s in "lr")}
+    row.update(dwisf_sn_brain_mask_fraction=coverage, dwisf_fw_physical_fraction=valid, dwisf_motion_for_qc_mm=motion_for_qc,
+               dwisf_qc_pass=all(checks.values()), dwisf_qc_failed_checks=";".join(k for k, ok in checks.items() if not ok))
+    return row
+
+
+def _tier(ds):
+    return ("topup_eddy" if ds.get("topup") else "eddy_no_reverse_PE") if ds.get("eddy") else ("topup_rigid" if ds.get("topup") else "rigid")
 
 
 def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, fsl=False, denoise=False, fba=False, keep_preproc=False,
@@ -941,7 +1050,10 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
            "shells": " ".join(map(str, ds["shells"])), "voxel_mm": float(np.round(np.linalg.norm(ds["affine"][:3, :3], axis=0).mean(), 2)),
            "manufacturer": str(ds["meta"].get("Manufacturer", "")), "model": str(ds["meta"].get("ManufacturersModelName", ds["meta"].get("ManufacturerModelName", ""))),
            "pe_direction": str(ds["meta"].get("PhaseEncodingDirection", "")), "pe_from_description": bool(ds["meta"].get("pe_from_description", False)), "readout_s": ds["meta"].get("TotalReadoutTime", np.nan),
-           "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows)))}
+           "series_desc": ";".join(sorted(set(r["desc"] for r in series_rows))),
+           # scanner identity for same-scanner rules and longitudinal harmonisation
+           **{k: str(ds["meta"].get(k, "")) for k in ("DeviceSerialNumber", "StationName", "SoftwareVersions")},
+           "b0_scales": ";".join(f"{f:.4f}" for f in ds.get("b0_scales", [])), "n_runs_regridded": ds.get("n_runs_regridded", 0)}
     row["n_rev_b0"] = int(ds["rev_b0"].shape[3]) if ds.get("rev_b0") is not None else 0
     ds = correct(ds, work, fsl=fsl, eddy=eddy, cuda=cuda)
     row["topup"], row["eddy"] = bool(ds.get("topup", False)), bool(ds.get("eddy", False))
@@ -949,7 +1061,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     row["motion_metric"] = ds["motion_metric"]                 # eddy RMS displacement and rigid translation differ in meaning
     row["eddy_slice_timing"] = ds.get("eddy_record", {}).get("slice_timing", "")
     row.update({"motion_mm_mean": ds["motion_mm_mean"], "motion_mm_max": ds["motion_mm_max"], "rotation_deg_max": ds["rotation_deg_max"],
-                "bvecs_rotated": ds["bvecs_rotated"], "processing_version": "2026-09-09-acquisition-metadata-v3",
+                "bvecs_rotated": ds["bvecs_rotated"], "processing_version": "2026-10-11-b0-scaling-anatomical-split-v4",
                 "fs_image_id": Path(fastsurfer_dir).name, "acquisition_date": series_rows[0]["date"],
                 "source_image_ids": ";".join(sorted({Path(p).name.split("_")[0] for p in ds["source_nifti"]}))})
     b0_img = nib.Nifti1Image(ds["b0"], ds["affine"])
@@ -969,20 +1081,24 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
         row.update(study_features(sds["data"], sds["bvals"], sds["bvecs"], sds["affine"], sds.get("run_bounds"),
                                   study_nigra_labels(s_b0, fastsurfer_dir, tx_study), _b0_brain(sds["b0"]), motion))
         row["dwis_own_correction"] = own
-        row["dwis_tier"] = ("topup_eddy" if sds.get("topup") else "eddy_no_reverse_PE") if sds.get("eddy") else ("topup_rigid" if sds.get("topup") else "rigid")
+        row["dwis_tier"] = _tier(sds)
     tgt = _sitk_native(ds["b0"], ds["affine"])       # native DWI grid: label arrays and maps share (z, y, x) order
     fs_lab = labels_to_dwi(aseg, tgt, [tx_t1_dwi])
     pauli_lab = labels_to_dwi(pauli_atlas(), tgt, [tx_mni_t1, tx_t1_dwi])
-    # anterior-posterior (LPS y) coordinate of every DWI voxel for the SN split
-    zz, yy, xx = np.meshgrid(*[np.arange(s) for s in sitk.GetArrayFromImage(tgt).shape], indexing="ij")
-    origin, spacing, direction = np.array(tgt.GetOrigin()), np.array(tgt.GetSpacing()), np.array(tgt.GetDirection()).reshape(3, 3)
-    phys_y = origin[1] + direction[1, 0] * xx * spacing[0] + direction[1, 1] * yy * spacing[1] + direction[1, 2] * zz * spacing[2]
-    rois = _roi_masks(fs_lab, pauli_lab, phys_y)
+    # atlas voxels' MNI x and y: hemisphere and the SN's anterior/posterior split on anatomical axes, not the scanner's
+    mni_x, mni_y = mni_xy_on_grid(tgt, [tx_mni_t1, tx_t1_dwi], pauli_lab > 0)
+    rois = _roi_masks(fs_lab, pauli_lab, -mni_y, left=mni_x < 0)
     small = [m for k, m in rois.items() if not k.startswith(("cerebral_wm", "cerebellum_wm", "brainstem"))]
     fw_mask_xyz = np.transpose(ndimage.binary_dilation(np.any(small, axis=0), iterations=2), (2, 1, 0))
+    if study:     # the pre-registered free-water endpoint, in the study's nigra on this dataset's grid
+        fw_codes = study_nigra_labels(b0_img, fastsurfer_dir, tx_t1_dwi, posterior=True)
+        fw_mask_xyz |= ndimage.binary_dilation(fw_codes > 0, iterations=2)
     # maps are computed in (x, y, z); ROI masks are in sitk (z, y, x): transpose the maps once
     maps = fit_models(ds, fw_mask=fw_mask_xyz)
     row["fw_method"] = maps.pop("fw_method")
+    if study:
+        row.update(study_fw_features(maps, fw_codes, ds["mask"], ds["motion_mm_mean"] if ds.get("eddy") else ds["motion_mm_max"], row["fw_method"]))
+        row["dwisf_tier"] = _tier(ds)
     fitted_mask = fw_mask_xyz & ds["mask"]
     row["fw_fit_valid_fraction"] = float(np.isfinite(maps["fw"][fitted_mask]).mean()) if fitted_mask.any() else np.nan
     maps = {k: np.transpose(v, (2, 1, 0)) for k, v in maps.items()}
@@ -1052,7 +1168,8 @@ def main(argv=None):
     ap.add_argument("--eddy", action="store_true", help="FSL eddy (outlier replacement, eddy-rotated gradients) where the PE direction and "
                     "readout time are recorded, with topup where a reverse-PE b0 exists; replaces the rigid motion correction for those scans")
     ap.add_argument("--eddy-cpu", action="store_true", help="use eddy_cpu instead of eddy_cuda (hours per three-shell scan)")
-    ap.add_argument("--study", action="store_true", help="add the study's nigral tensor measure (dwis_*; primary dwis_md_sn_posterior_mean)")
+    ap.add_argument("--study", action="store_true", help="add the study's nigral measures: the tensor measure (dwis_*) and the "
+                    "pre-registered multi-shell free-water endpoint (dwisf_*; primary dwisf_fw_sn_posterior_mean)")
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)

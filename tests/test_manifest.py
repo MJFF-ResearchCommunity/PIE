@@ -82,3 +82,16 @@ def test_core_lab_sbr_is_assembled_for_the_scan_pie_reconstructed_xing_first(tmp
     assert np.isnan(f.loc[3, "dat_sbr_putamen_l"])          # PIE's failed registration is blanked, the core lab never is
     assert f.loc[1, "dat_core_pc_ratio_l"] == 1.0
     assert "dat_core_putamen_l" in feature_blocks(f.columns)["dat_core"] and "dat_core_source" not in feature_blocks(f.columns)["dat_core"]
+
+
+def test_fw_endpoint_is_assembled_under_its_own_qc(tmp_path):
+    d = tmp_path
+    pd.DataFrame({"PATNO": [1, 2], "IMAGEID": ["I1", "I2"], "SCAN_DATE": ["2022-01-01"] * 2, "vol_Left_Putamen": [5000.0] * 2}).to_csv(d / "fastsurfer_idps.csv", index=False)
+    (d / "dwi").mkdir()
+    pd.DataFrame({"patno": [1, 2], "error": ["", ""], "motion_mm_mean": [0.5] * 2, "sn_brain_mask_fraction": [1.] * 2, "sn_physical_fraction": [.95] * 2,
+                  "sn_posterior_l_fa": [.5] * 2, "sn_posterior_r_fa": [.5] * 2, "n_sn_l": [40] * 2, "n_sn_r": [40] * 2, "fa_wm_median": [0.4] * 2,
+                  "manufacturer": ["Siemens"] * 2, "shells": ["1000 2000"] * 2, "fw_method": ["multishell_nls"] * 2,
+                  "dwisf_fw_sn_posterior_mean": [0.2, 0.3], "dwisf_n_sn": [80, 80], "dwisf_qc_pass": [True, False]}).to_csv(d / "dwi" / "dwi_features.csv", index=False)
+    f = assemble_features(d).set_index("PATNO")
+    assert f.loc[1, "dwisf_fw_sn_posterior_mean"] == 0.2 and np.isnan(f.loc[2, "dwisf_fw_sn_posterior_mean"])
+    assert "dwisf_n_sn" not in f.columns and "dwisf_fw_sn_posterior_mean" in feature_blocks(f.columns)["dwi"]
