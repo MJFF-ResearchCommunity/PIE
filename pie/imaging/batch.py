@@ -55,14 +55,24 @@ def convert_series(zip_path, prefix, out_dir, archive_cache=None):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     tag = prefix.rstrip("/").split("/")[-1]
+    log = out_dir / f"{tag}_dcm2niix.log"
     with (tempfile.TemporaryDirectory(dir=out_dir) as tmp, (ZipArchiveCache() if archive_cache is None else nullcontext(archive_cache)) as cache,
           cache.open(zip_path) as z):
+        src, dst = Path(tmp) / "dcm", Path(tmp) / "nii"
+        src.mkdir()
+        dst.mkdir()
         for n in z.namelist():
             if n.startswith(prefix) and n.endswith(".dcm"):
-                with open(Path(tmp) / Path(n).name, "wb") as f:
+                with open(src / Path(n).name, "wb") as f:
                     f.write(z.read(n))
-        subprocess.run([DCM2NIIX, "-z", "y", "-b", "y", "-f", f"{tag}_%s", "-o", str(out_dir), tmp], capture_output=True, text=True)
-    return sorted(str(p) for p in out_dir.glob(f"{tag}_*.nii.gz"))
+        # a fresh output dir: a retry must not pick up (or suffix itself next to) an earlier attempt's files
+        r = subprocess.run([DCM2NIIX, "-z", "y", "-b", "y", "-f", f"{tag}_%s", "-o", str(dst), str(src)], capture_output=True, text=True)
+        made = sorted(dst.iterdir())
+        if r.returncode != 0 or not any(f.name.endswith(".nii.gz") for f in made):   # keep the reason (e.g. stripped DWI tags)
+            log.write_text(f"exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+        for f in made:
+            os.replace(f, out_dir / f.name)
+    return sorted(str(out_dir / f.name) for f in made if f.name.endswith(".nii.gz"))
 
 
 def fastsurfer_by_patno(sessions_csv, fastsurfer_dir, require="stats/aseg+DKT.stats"):
@@ -76,9 +86,23 @@ def fastsurfer_by_patno(sessions_csv, fastsurfer_dir, require="stats/aseg+DKT.st
     return {int(r.patno): str(root / r.image_id) for r in sess.itertuples()}
 
 
-def session_rows(group):
-    """Rows of the acquisition date with the most files (one session per subject)."""
-    date = group.groupby("date")["n_files"].sum().idxmax()
+def t1_session_dates(sessions_csv, fs):
+    """patno -> session date (YYYY-MM-DD) of the FastSurfer T1 ``fastsurfer_by_patno`` chose."""
+    sess = pd.read_csv(sessions_csv, dtype={"image_id": str})
+    by_id = dict(zip(sess["image_id"], sess["session_date"].astype(str).str[:10]))
+    return {p: by_id.get(Path(d).name) for p, d in fs.items()}
+
+
+def session_rows(group, t1_date=None):
+    """Rows of one acquisition date per subject: the date nearest the T1 session whose anatomy the modality is
+    measured on (a later visit's scan on the baseline aseg would carry atrophy into the masks), then the most files.
+    Without ``t1_date``, the date with the most files."""
+    files = group.groupby("date")["n_files"].sum()
+    gap = pd.Series(0.0, index=files.index)
+    if t1_date:
+        gap = (pd.to_datetime(files.index, errors="coerce") - pd.Timestamp(t1_date)).to_series(index=files.index).abs().dt.days
+        gap = gap.fillna(float("inf"))     # LONI-masked dates: never preferred over a dated session
+    date = pd.DataFrame({"gap": gap, "files": -files}).sort_values(["gap", "files"]).index[0]
     return group[group["date"] == date].to_dict("records")
 
 

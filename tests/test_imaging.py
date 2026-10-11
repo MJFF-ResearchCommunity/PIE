@@ -32,11 +32,25 @@ def test_select_t1_series_prefers_non_repeat_largest_t1():
     assert sel["image_id"].tolist() == ["I1", "I4", "I6"]
 
 
+def test_select_t1_series_keeps_one_t1_per_visit_day():
+    # LONI timestamps each series separately: an MPRAGE and its repeat 7 minutes later are one visit, not two
+    idx = pd.DataFrame([
+        _series(1, "MPRAGE", "2011-01-01_10_00_00.0", "I1", 170, 100),
+        _series(1, "MPRAGE_RPT", "2011-01-01_10_07_30.0", "I2", 176, 120),
+        _series(1, "MPRAGE", "2012-01-01_10_00_00.0", "I3", 170, 100),
+        _series(2, "MPRAGE", "9999-01-01_10_00_00.0", "I4", 170, 100),   # LONI-masked dates are not one day
+        _series(2, "MPRAGE", "9999-01-01_11_00_00.0", "I5", 170, 100),
+    ])
+    idx["session_date"] = pd.to_datetime(idx["session"].str[:10], errors="coerce")
+    assert select_t1_series(idx)["image_id"].tolist() == ["I1", "I3", "I4", "I5"]
+
+
 def test_parse_stats_and_idp_table(tmp_path):
     sid = "I1"
     stats = tmp_path / sid / "stats"
     stats.mkdir(parents=True)
     (stats / "aseg+DKT.stats").write_text(
+        "# FastSurfer_version 2.6.0\n"
         "# Measure Mask, MaskVol, Mask Volume, 1500000.0, mm^3\n"
         "# ColHeaders  Index SegId NVoxels Volume_mm3 StructName normMean normStdDev normMin normMax normRange\n"
         "  1  12  4000 4100.0  Left-Putamen  90 5 60 120 60\n"
@@ -46,13 +60,15 @@ def test_parse_stats_and_idp_table(tmp_path):
     d = parse_stats(stats / "aseg+DKT.stats")
     assert d["MaskVol"] == 1500000.0 and d["Left-Putamen"] == 4100.0
     sessions = pd.DataFrame([dict(patno=7, image_id=sid, session_date="2020-01-01", EVENT_ID="BL", protocol_phase=1,
-                                  Manufacturer="Siemens", MagneticFieldStrength=3.0)])
+                                  Manufacturer="Siemens", MagneticFieldStrength=15000)])
     idp = build_idp_table(sessions, tmp_path)
     assert len(idp) == 1
     row = idp.iloc[0]
     assert row["vol_Left_Putamen"] == 4100.0 and row["sum_Putamen"] == 8000.0
     assert abs(row["asym_Putamen"] - (4100 - 3900) / 8000) < 1e-9
     assert row["sum_Ventricles"] == 9000.0 and row["Manufacturer"] == "Siemens"
+    assert row["fastsurfer_version"] == "2.6.0" and row["MagneticFieldStrength"] == 1.5     # gauss in old GE headers
+    assert "vol_FastSurfer_version" not in idp.columns
 
 
 def test_read_ida_metadata_parses_full_records_and_skips_stubs(tmp_path):

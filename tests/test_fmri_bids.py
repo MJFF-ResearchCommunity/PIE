@@ -60,7 +60,8 @@ def test_short_reference_cannot_be_bold(tmp_path, inputs):
         export_subject(tmp_path / 'bids', 'example', *inputs[:2], *inputs[4:])
 
 
-def test_reference_exhausted_by_discard_is_not_forced_or_fatal(tmp_path, inputs):
+def test_reference_shorter_than_the_discard_gives_its_last_volumes(tmp_path, inputs):
+    # PPMI 2.0: rsfMRI_AP is 10 volumes at TR 1 s, all inside the 10 s discard; dropping it left the BOLD uncorrected
     image = nib.load(inputs[4])
     data = image.get_fdata()
     image.header.set_zooms((1, 1, 1, 1))
@@ -69,9 +70,10 @@ def test_reference_exhausted_by_discard_is_not_forced_or_fatal(tmp_path, inputs)
     meta['RepetitionTime'] = 1
     inputs[5].write_text(json.dumps(meta))
     result = export_subject(tmp_path / 'bids', 'example', *inputs)
-    assert not result['correction_pair_exported']
-    assert 'reference_has_no_post_initialization_volumes' in result['unresolved_reasons']
-    assert not (tmp_path / 'bids/sub-example/fmap').exists()
+    assert result['correction_pair_exported'], result['unresolved_reasons']
+    n = data.shape[-1]
+    reverse = [m for m in result['reference_means'] if m['output'].endswith('dir-reverse_epi')][0]
+    assert reverse['last_volume_exclusive'] == n and reverse['first_volume_zero_based'] == max(0, n - 6)
     assert (tmp_path / 'bids/sub-example/func/sub-example_task-rest_bold.nii.gz').read_bytes() == inputs[2].read_bytes()
 
 

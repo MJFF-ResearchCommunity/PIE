@@ -24,12 +24,19 @@ def index_zips(zip_paths, cache_csv=None):
     """Return one row per DICOM series found in the given zips.
 
     Columns: zip, patno, series_desc, session, image_id, n_files, bytes, member_prefix.
-    ``cache_csv`` (optional) stores/loads the result so the 20 GB zips are only read once.
+    ``cache_csv`` (optional) stores/loads the result so the 20 GB zips are only read once; zips missing from the cache
+    (a later download added to the same work dir) are indexed and appended.
     """
+    zip_paths = list(map(str, zip_paths))
+    cached = None
     if cache_csv and Path(cache_csv).exists():
-        return pd.read_csv(cache_csv, dtype={"patno": int, "image_id": str})
+        cached = pd.read_csv(cache_csv, dtype={"patno": int, "image_id": str})
+        todo = [z for z in zip_paths if z not in set(cached["zip"].astype(str))]
+        if not todo:
+            return cached[cached["zip"].astype(str).isin(zip_paths)].reset_index(drop=True)
+        zip_paths = todo
     rows = {}
-    for zp in map(str, zip_paths):
+    for zp in zip_paths:
         with zipfile.ZipFile(zp) as z:
             for info in z.infolist():
                 parts = info.filename.split("/")
@@ -44,6 +51,8 @@ def index_zips(zip_paths, cache_csv=None):
                 r["bytes"] += info.file_size
     df = pd.DataFrame(list(rows.values()))
     df["session_date"] = pd.to_datetime(df["session"].str[:10], errors="coerce")
+    if cached is not None:
+        df = pd.concat([cached, df], ignore_index=True)
     if cache_csv:
         df.to_csv(cache_csv, index=False)
     return df
@@ -62,9 +71,11 @@ def select_t1_series(index):
     df["score"] = (2 * desc.str.contains(_IS_3D).astype(int) - 2 * desc.str.contains(_IS_2D).astype(int)
                    - desc.str.contains(_REPEAT).astype(int))
     df["date_masked"] = df["session"].str.startswith("9999")
-    df = df.sort_values(["patno", "session", "score", "bytes"], ascending=[True, True, False, False])
-    chosen = df.drop_duplicates(["patno", "session"], keep="first").reset_index(drop=True)
-    return chosen.drop(columns=["score"])
+    # LONI stamps every series with its own time, so a visit is a day; masked dates (9999-...) say nothing about the day
+    day = df["session"].where(df["date_masked"], df["session"].str[:10])
+    df = df.assign(_day=day).sort_values(["patno", "_day", "score", "bytes", "session"], ascending=[True, True, False, False, True])
+    chosen = df.drop_duplicates(["patno", "_day"], keep="first").reset_index(drop=True)
+    return chosen.drop(columns=["score", "_day"])
 
 
 def probe_headers(sessions, fields=("Manufacturer", "ManufacturerModelName", "MagneticFieldStrength", "InstitutionName",

@@ -187,6 +187,15 @@ def residual_connectivity(series, design, networks):
     return residual, edges, dict(zip(names, values))
 
 
+def _check_tr(img, tr):
+    """The caller's TR must be the BOLD file's: PPMI has 2.4, 2.5 and 1.0 s protocols, and a wrong TR mis-scales
+    censoring (frames discarded, retained seconds) and the ALFF band."""
+    zoom, unit = float(img.header.get_zooms()[3]), img.header.get_xyzt_units()[1]
+    header_tr = zoom / 1000 if unit == 'msec' else zoom / 1e6 if unit == 'usec' else zoom
+    if header_tr > 0 and not np.isclose(header_tr, tr, rtol=0.01):
+        raise ValueError(f'tr={tr} s but the BOLD header says {header_tr:g} s')
+
+
 def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
                          label_networks, output_dir, *, tr, config=ConnectivityConfig(), bold_cache=None):
     """Extract features or an explicit QC failure with complete input hashes.
@@ -214,6 +223,7 @@ def extract_connectivity(bold, brain_mask, confounds_tsv, confounds_json, atlas,
                 raise ValueError('Existing connectivity output checksum mismatch')
         return saved
     img, mask, atlas_img = (nib.load(p) for p in (bold, brain_mask, atlas))
+    _check_tr(img, tr)
     if any(image.header.get_xyzt_units()[0] != 'mm' for image in (img, mask, atlas_img)):
         raise ValueError('Explicit millimeter spatial units are required')
     table = pd.read_csv(confounds_tsv, sep='\t')
@@ -275,6 +285,7 @@ def local_measures(bold, brain_mask, confounds_tsv, confounds_json, atlas, *, tr
     only resampled (nearest) onto the BOLD grid. Returns {"alff_<id>", "falff_<id>", "reho_<id>", "temporal"}; numbers
     only, no QC verdict, so check ``temporal["temporal_qc_pass"]`` as for connectivity."""
     img, mask_img, atlas_img = (nib.load(p) for p in (bold, brain_mask, atlas))
+    _check_tr(img, tr)
     table = pd.read_csv(confounds_tsv, sep='\t')
     if img.ndim != 4 or len(table) != img.shape[3]:
         raise ValueError('BOLD/confounds length mismatch')

@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy import ndimage
 
+from .datscan import ITK_SEED
 from .dwi import _brain, _sitk_from_nib, _sitk_native
 from .batch import convert_series as convert
 
@@ -83,7 +84,7 @@ def register_flair_to_t1(flair_sitk, t1_img, t1_mask_img):
         reg = sitk.ImageRegistrationMethod()
         reg.SetMetricAsMattesMutualInformation(32)
         reg.SetMetricSamplingStrategy(reg.RANDOM)
-        reg.SetMetricSamplingPercentage(sampling, seed=0)
+        reg.SetMetricSamplingPercentage(sampling, seed=ITK_SEED)
         reg.SetInterpolator(sitk.sitkLinear)
         return reg
 
@@ -196,7 +197,7 @@ def _job(args):
 def main(argv=None):
     import argparse
 
-    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows
+    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows, t1_session_dates
 
     a = add_common_args(argparse.ArgumentParser()).parse_args(argv)
     work = Path(a.work_dir)
@@ -205,9 +206,10 @@ def main(argv=None):
     idx["flair_3d"] = flag_flair_3d(idx)
     idx = idx[idx["selected"]]
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+    t1d = t1_session_dates(a.sessions, fs)
     out_csv = work / "flair_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti)
+    jobs = [(int(patno), session_rows(g, t1d.get(int(patno))), fs[int(patno)], str(work), a.keep_nifti)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, log_every=20, pid_file=a.pid_file)
 

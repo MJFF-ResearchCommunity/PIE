@@ -33,7 +33,8 @@ def _nm_slab_coverage_ok(d):
 T1_KEY_VOLUMES = ["vol_Left_Putamen", "vol_Right_Putamen", "vol_Left_Caudate", "vol_Right_Caudate", "vol_Left_Thalamus", "vol_Right_Thalamus"]
 QC = {
     "t1": lambda d: (d[[c for c in T1_KEY_VOLUMES if c in d]] > 0).all(axis=1),   # a failed FastSurfer run leaves empty labels (0 mm3): ratios/asymmetries undefined
-    "dat": lambda d: (d["reg_metric"].abs() >= 0.4) & (d["n_label_voxels"] >= 100),
+    # correlation metric: -1 is a perfect fit; a failed registration (inf) or an anti-correlated one must not pass
+    "dat": lambda d: (-d["reg_metric"] >= 0.4) & (d["n_label_voxels"] >= 100),
     # the study's nigral diffusion rule (split-half ICC FA 0.88, MD 0.97 under it): >= 20 SN voxels, >= 95 % of the SN in
     # the brain mask, >= 80 % physically admissible tensor fits, mean motion <= 2 mm, both posterior SN halves measured;
     # tables written before these columns existed fail it (re-run them)
@@ -55,6 +56,11 @@ QC = {
 # territories on 106 held-out PD + the 39 usable HC: sensorimotor contrast 0.62 [0.53, 0.72], rho with putamen SBR
 # 0.18; 8-territory model 0.67 [97.5 % CI 0.55, 0.78], rho 0.20 (both fail). Assembled NM columns are exploratory.
 NM_VALIDATED = False
+# The study's posterior-nigral MD (``dwis_md_sn_posterior_mean``, the DWI primary) failed its pre-registered
+# PPMI 2.0 PD-vs-HC gate (AUROC >= 0.60, lower bound > 0.50; 29 Sep 2026): 0.574 [0.495, 0.652], 218 PD / 82 HC, rho with
+# the lowest putamen SBR 0.03. Close to the meta-analytic nigral MD effect (Schwarz 2013, d 0.26), so likely a real small
+# effect on an endpoint the literature never supported. Assembled nigral DWI columns are exploratory.
+DWI_NIGRAL_VALIDATED = False
 DWI_METRIC_SUFFIXES = ("_fa", "_md", "_ad", "_rd", "_fw", "_fat", "_mdt", "_mk")   # dwi.METRICS as column suffixes
 
 
@@ -209,7 +215,8 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
     man = build_manifest(derived, modality_dirs=modality_dirs)
     idps = _baseline_idps(derived).drop(columns=["SCAN_DATE"])
     idps["t1_qc_pass"] = QC["t1"](idps)   # failed segmentation: T1 measures blanked, flag kept (as for the other modalities)
-    idps.loc[~idps["t1_qc_pass"], [c for c in idps.columns if c not in ("PATNO", "IMAGEID", "t1_qc_pass")]] = np.nan
+    measures = [c for c in idps.columns if c.startswith(("vol_", "sum_", "asym_")) or c.endswith("Vol") or c == "eTIV"]
+    idps.loc[~idps["t1_qc_pass"], measures] = np.nan     # identifiers, visit and scanner stay
     df = man.merge(idps, on="PATNO", how="left")
     if ppmi_dir is not None and "EVENT_ID" in df:   # PPMI's FS7 / MRIQC values, only for the visit of the T1 PIE used
         from .features import fs7_tables
@@ -230,6 +237,12 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
         if not single_shell_fw and "fw_method" in dwi:
             dwi.loc[dwi["fw_method"].eq("singleshell_prior"), [c for c in cols if c.endswith(("_fw", "_fat"))]] = np.nan
         blocks["dwi"] = dwi[["patno"] + cols].rename(columns={c: f"dwi_{c}" for c in cols})
+        if "dwis_qc_pass" in dwi:   # the study's nigral measure (``dwi --study``) carries its own QC, as nm_template does
+            scols = [c for c in dwi.columns if re.fullmatch(r"dwis_(?:fa|md|ad|rd)_\w+", c)]
+            ok = dwi["dwis_qc_pass"].astype(str).str.lower().eq("true")
+            dwi.loc[~ok, scols] = np.nan
+            df = df.merge(dwi[["patno", "dwis_qc_pass"] + scols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+        df["dwi_nigral_validated"] = DWI_NIGRAL_VALIDATED
     nmf = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_features.csv")
     if nmf is not None:
         cols = [c for c in nmf.columns if c.startswith("nm_") and c.endswith(("_cnr", "_voxels"))]
@@ -276,6 +289,6 @@ def feature_blocks(columns):
     """Modality block -> feature columns, for block-wise harmonisation / stacking."""
     cols = list(columns)
     return {"dat": [c for c in cols if c.startswith("dat_sbr")],
-            "dwi": [c for c in cols if c.startswith("dwi_") and is_dwi_feature(c)],
+            "dwi": [c for c in cols if (c.startswith("dwi_") and is_dwi_feature(c)) or re.fullmatch(r"dwis_(?:fa|md|ad|rd)_\w+", c)],
             "nm": [c for c in cols if c.startswith(("nm_", "nmt_", "nmb_", "nml_", "nms_")) and c.endswith(("_cnr", "_voxels", "_cr", "_mm3"))],
             "flair": [c for c in cols if c.startswith("flair_wmh")]}

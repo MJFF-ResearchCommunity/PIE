@@ -132,6 +132,21 @@ def test_multishell_free_water_is_nan_where_the_fit_is_not_physical():
     assert np.isnan(maps["fw"][1, 0, 0]) and np.isnan(maps["fat"][1, 0, 0]) and np.isnan(maps["mdt"][1, 0, 0])
 
 
+def test_tensor_maps_are_missing_outside_the_brain_mask():
+    # an ROI partly outside the mask must average only measured voxels (zeros there once halved nigral MD)
+    rng = np.random.default_rng(5)
+    g = rng.normal(size=(3, 30))
+    g /= np.linalg.norm(g, axis=0)
+    bvals, bvecs = np.r_[0, 0, np.full(30, 1000.)], np.c_[np.zeros((3, 2)), g]
+    D = np.diag([1.2e-3, 0.6e-3, 0.6e-3])
+    data = np.tile(1000 * np.exp(-bvals * np.einsum("in,ij,jn->n", bvecs, D, bvecs)), (2, 1, 1, 1)).astype(np.float32)
+    mask = np.array([True, False]).reshape(2, 1, 1)
+    maps = dwi.fit_models({"bvals": bvals, "bvecs": bvecs, "data": data, "mask": mask})
+    assert np.isnan(maps["md"][1, 0, 0]) and not maps["tensor_physical"][1, 0, 0]
+    out = dwi.features(maps, {"roi": np.ones((2, 1, 1), bool)}, min_voxels=1)
+    assert abs(out["roi_md"] - 0.8e-3) < 1e-5
+
+
 def test_scan_without_a_tensor_shell_is_an_explicit_error():
     # e.g. Philips PPMI-2 sessions whose three "b700/b1000/b2000" series were all acquired at b = 2000 (the header
     # and the attenuation agree; only the names differ): no b <= 1050 shell, so no tensor, never a silent FA of 0

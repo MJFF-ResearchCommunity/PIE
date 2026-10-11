@@ -176,7 +176,9 @@ def dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")
         i = months.idxmin()
         if months[i] > max_months:
             continue
-        row = {"PATNO": s.patno, "IMAGEID": s.image_id, "months_to_datscan": round(float(months[i]), 1)}
+        # signed gap too: a DaTscan after the MRI (up to max_months) can carry a later disease state, e.g. a converter's
+        row = {"PATNO": s.patno, "IMAGEID": s.image_id, "months_to_datscan": round(float(months[i]), 1),
+               "days_datscan_after_mri": int((cand.loc[i, "DATSCAN_DATE"] - pd.Timestamp(s.session_date)).days)}
         row.update({k: cand.loc[i, k] for k in keep})
         out.append(row)
     return pd.DataFrame(out).rename(columns={"EVENT_ID": "DATSCAN_EVENT_ID"})

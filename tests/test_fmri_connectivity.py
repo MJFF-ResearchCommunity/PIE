@@ -88,6 +88,8 @@ def test_extraction_and_coverage_rejection(tmp_path):
     for path, array in [(paths[0], data), (paths[1], mask), (paths[4], atlas)]:
         image = nib.Nifti1Image(array, np.eye(4))
         image.header.set_xyzt_units('mm', 'sec')
+        if image.ndim == 4:
+            image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
         nib.save(image, path)
     table.to_csv(paths[2], sep='\t', index=False)
     paths[3].write_text(json.dumps(meta))
@@ -119,6 +121,8 @@ def test_extraction_and_coverage_rejection(tmp_path):
     mask[:2] = 0
     image = nib.Nifti1Image(mask, np.eye(4))
     image.header.set_xyzt_units('mm', 'sec')
+    if image.ndim == 4:
+        image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
     nib.save(image, paths[1])
     result = extract_connectivity(*paths, {1: 'network', 2: 'network'}, tmp_path / 'rejected', tr=2.5)
     assert not result['numerical_qc_pass']
@@ -136,6 +140,8 @@ def synthetic_inputs(tmp_path):
                         (paths[1], np.ones(atlas.shape, np.uint8)), (paths[4], atlas)]:
         image = nib.Nifti1Image(array, np.eye(4))
         image.header.set_xyzt_units('mm', 'sec')
+        if image.ndim == 4:
+            image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
         nib.save(image, path)
     table.to_csv(paths[2], sep='\t', index=False)
     paths[3].write_text(json.dumps(meta))
@@ -194,6 +200,8 @@ def test_local_measures_use_the_same_censoring_and_find_the_coherent_slow_parcel
     data[:2] += 5 * np.sin(2 * np.pi * 0.03 * t).astype(np.float32)          # parcel 1: coherent, in the ALFF band
     image = nib.Nifti1Image(data, np.eye(4))
     image.header.set_xyzt_units('mm', 'sec')
+    if image.ndim == 4:
+        image.header.set_zooms((1, 1, 1, 2.5))   # the TR the tests pass
     nib.save(image, paths[0])
     out = local_measures(*paths, tr=2.5)
     ref = extract_connectivity(*paths, {1: 'network', 2: 'network'}, tmp_path / 'fc', tr=2.5)
@@ -207,7 +215,7 @@ def test_local_alff_is_normalised_to_the_brain_mean_so_intensity_scale_does_not_
     paths = synthetic_inputs(tmp_path)
     a = local_measures(*paths, tr=2.5)
     img = nib.load(paths[0])
-    scaled = nib.Nifti1Image(np.asarray(img.dataobj) * 10, img.affine)
+    scaled = nib.Nifti1Image(np.asarray(img.dataobj) * 10, img.affine, img.header)
     scaled.header.set_xyzt_units('mm', 'sec')
     nib.save(scaled, paths[0])
     b = local_measures(*paths, tr=2.5)
@@ -240,3 +248,14 @@ def test_local_measures_blank_parcels_the_brain_mask_mostly_misses(tmp_path):
     out = local_measures(*paths, tr=2.5)
     assert np.isfinite(out['alff_1']) and np.isfinite(out['reho_1'])
     assert np.isnan(out['alff_2']) and np.isnan(out['falff_2']) and np.isnan(out['reho_2'])   # 50 % < minimum_parcel_coverage
+
+
+def test_a_tr_that_contradicts_the_bold_header_is_refused(tmp_path):
+    # PPMI 2.0 multiband BOLD (TR 1 s) analysed with the legacy tr=2.5 would mis-scale censoring and the ALFF band
+    from pie.imaging.fmri_connectivity import local_measures
+    paths = synthetic_inputs(tmp_path)
+    img = nib.load(paths[0])
+    img.header.set_zooms((1, 1, 1, 1.0))
+    nib.save(nib.Nifti1Image(np.asarray(img.dataobj), img.affine, img.header), paths[0])
+    with pytest.raises(ValueError, match='BOLD header'):
+        local_measures(*paths, tr=2.5)

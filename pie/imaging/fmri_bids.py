@@ -21,8 +21,11 @@ def export_subject(bids_root, subject, t1, t1_sidecar, bold, bold_sidecar,
     """Export one selected rest run, optional verified reverse-PE means, and T1.
 
     fMRI fieldmap means use up to six volumes after ten seconds of initialization
-    from each input. Unknown/incompatible reference metadata is retained in the
-    provenance record, but cannot become a fieldmap. Original files are untouched.
+    from each input. A reference too short for that (PPMI 2.0's 10-volume reverse-PE
+    run at TR 1 s) gives its last volumes instead: distortion is geometry, and
+    dropping the pair would leave the BOLD with no correction at all.
+    Unknown/incompatible reference metadata is retained in the provenance record,
+    but cannot become a fieldmap. Original files are untouched.
     """
     if not re.fullmatch(r"[A-Za-z0-9]+", subject):
         raise ValueError('Subject must be an alphanumeric BIDS label')
@@ -46,8 +49,7 @@ def export_subject(bids_root, subject, t1, t1_sidecar, bold, bold_sidecar,
         reference_info = inspect_nifti(reference, reference_sidecar)
         reasons = phase_encoding_pair(info, reference_info)
         rtr = reference_info['tr_seconds']
-        if (len(reference_info['shape']) != 4 or rtr is None or
-                reference_info['shape'][3] <= math.ceil(discard_seconds / rtr)):
+        if len(reference_info['shape']) != 4 or rtr is None or reference_info['shape'][3] < 3:
             reasons.append('reference_has_no_post_initialization_volumes')
         if not all(isinstance(m.get('EchoTime'), (int, float)) for m in (bmeta, rmeta)):
             reasons.append('missing_echo_time')
@@ -89,6 +91,8 @@ def export_subject(bids_root, subject, t1, t1_sidecar, bold, bold_sidecar,
             for direction, source, metadata in [('forward', bold, bmeta), ('reverse', reference, rmeta)]:
                 img = nib.load(source)
                 discard = math.ceil(discard_seconds / metadata['RepetitionTime'])
+                if discard >= img.shape[-1]:     # short reference: its last (most recovered) volumes
+                    discard = max(0, img.shape[-1] - reference_volumes)
                 end = min(img.shape[-1], discard + reference_volumes)
                 if end <= discard:
                     raise ValueError('Reference has no stable volumes after initialization')

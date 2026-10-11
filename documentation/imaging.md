@@ -81,8 +81,8 @@ bundled with PIE, so no template is downloaded.
 | Pretrained weights | `embed`, `cnn --pretrained` | `$PIE_WEIGHTS_DIR`, else `<repo>/third_party/weights`, then `<backend>/`; sources and checksums in `third_party/weights/WEIGHTS.md` |
 
 The defaults are relative to the source tree; set the `PIE_*` environment variables (read at import) to run from an
-installed package or with tools elsewhere. No FreeSurfer licence is needed: only FastSurfer's segmentation stream is used (no surfaces, so no cortical
-thickness). Disk: roughly 20 GB per 1,000 T1 scans for NIfTI + segmentations.
+installed package or with tools elsewhere. The default T1 run needs no FreeSurfer licence: it uses only FastSurfer's segmentation stream (no surfaces, so no
+cortical thickness); `run --etiv`, `run --long` and `fastsurfer.surfaces` do need FreeSurfer and its licence. Disk: roughly 20 GB per 1,000 T1 scans for NIfTI + segmentations.
 
 ## Structural T1: FastSurfer IDPs (`run.py`)
 
@@ -116,9 +116,12 @@ What happens:
 
 1. **Index** — `index_zips(zip_paths, cache_csv=None)` reads the zip listings (no extraction) into one row per
    series: `zip, patno, series_desc, session, image_id, n_files, bytes, member_prefix, session_date`. Cached as
-   `index.csv`.
+   `index.csv`; a zip added later (a follow-up download into the same work dir) is indexed and appended, and
+   `sessions.csv` is rebuilt whenever the T1 selection it holds no longer matches the zips (it is kept as it is
+   when a zip is not on disk, e.g. a backfill with the download drive unmounted).
 2. **Choose the T1** — `select_t1_series(index)` drops localisers, calibration and non-T1 descriptions (`_NOT_T1`),
-   then per `(patno, session)` ranks 3D/MPRAGE-family descriptions up, 2D/axial ones down (some sites label a
+   then per participant and visit day (LONI timestamps every series separately, so an MPRAGE and its repeat minutes
+   later are one visit; before 11 Oct 2026 they were two sessions, 29 subject-days in the September 2026 tables) ranks 3D/MPRAGE-family descriptions up, 2D/axial ones down (some sites label a
    2-frame axial T1 as the only "T1", which FastSurfer cannot use), repeats down, and breaks ties by bytes (this
    also handles single-file multi-frame DICOM). Sessions dated 9999 (LONI date masking) are kept with
    `date_masked=True`.
@@ -243,7 +246,7 @@ is a frame with `patno`, `image_id`, `session_date`, `EVENT_ID` (e.g. `sessions.
 | Function | Output |
 |---|---|
 | `covariates(ppmi_dir)` | Per PATNO: `COHORT`, `ENROLL_DATE`, `ENROLL_AGE`, `SEX`, `BIRTHDT`, `HANDED`, `LRRK2`, `GBA`, `SNCA`, `APOE`, `PATHVAR_COUNT`, `{LRRK2,GBA,SNCA}_carrier` (0 for `0`, `0.0`, `"0"`, `"0.0"` whatever the column dtype, 1 for any other value, NaN when blank or missing: untested is not a control), `APOE_e4` (count), and `PRS_GP2`, `PRS_META5_noLRRK2GBA` when `Polygenic_Risk_Scores_*.csv` exists |
-| `dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")` | Closest analysed DaTscan within 18 months: `PATNO`, `IMAGEID`, `months_to_datscan`, `DATSCAN_DATE`, `DATSCAN_EVENT_ID`, `DATSCAN_{CAUDATE,PUTAMEN}_{R,L}`, `sbr_putamen_min`, `sbr_caudate_min`, `sbr_putamen_mean`, `sbr_pc_ratio_{l,r}` (putamen/caudate), `sbr_ai_{putamen,caudate}` (\|L − R\| / mean x 100), `sbr_pct_expected` (lowest putamen SBR / the age + sex expectation fitted on visually-negative healthy controls), `sbr_putamen_min_z` (same, as a z-score against the controls' residual SD), `dat_visual` (PPMI visual read, 1/0), `dat_deficit_sbr` = `sbr_pct_expected <= threshold` (0.65: PPMI prodromal / PARS rule, Jennings et al. 2017, doi:10.1001/jamaneurol.2017.0985; 0.65–0.80 is their indeterminate band), `dat_d_nsdiss` = `sbr_pct_expected <= 0.75` (the NSD-ISS D+ rule as applied in PPMI, Dam et al. 2024, doi:10.1038/s41531-024-00789-w), `sbr_source` |
+| `dat_labels(ppmi_dir, sessions, threshold=0.65, max_months=18, source="auto")` | Closest analysed DaTscan within 18 months: `PATNO`, `IMAGEID`, `months_to_datscan`, `days_datscan_after_mri` (signed: positive when the DaTscan came later, which for a converter can carry a later disease state), `DATSCAN_DATE`, `DATSCAN_EVENT_ID`, `DATSCAN_{CAUDATE,PUTAMEN}_{R,L}`, `sbr_putamen_min`, `sbr_caudate_min`, `sbr_putamen_mean`, `sbr_pc_ratio_{l,r}` (putamen/caudate), `sbr_ai_{putamen,caudate}` (\|L − R\| / mean x 100), `sbr_pct_expected` (lowest putamen SBR / the age + sex expectation fitted on visually-negative healthy controls), `sbr_putamen_min_z` (same, as a z-score against the controls' residual SD), `dat_visual` (PPMI visual read, 1/0), `dat_deficit_sbr` = `sbr_pct_expected <= threshold` (0.65: PPMI prodromal / PARS rule, Jennings et al. 2017, doi:10.1001/jamaneurol.2017.0985; 0.65–0.80 is their indeterminate band), `dat_d_nsdiss` = `sbr_pct_expected <= 0.75` (the NSD-ISS D+ rule as applied in PPMI, Dam et al. 2024, doi:10.1038/s41531-024-00789-w), `sbr_source` |
 | `dat_sbr_table(ppmi_dir, source="auto")` | PPMI's SBR table and visual reads. `xing`: `Xing_Core_Lab_-_Quant_SBR_*` (PPMI's primary SBRs since December 2024, all earlier scans re-analysed; cerebral white-matter reference; sub-regional `*_REF_CWM` columns kept); `invicro`: the archived `DaTScan_SBR_Analysis_*` (occipital reference, nothing after 1 December 2024); `auto` = Xing when present. The scales differ: never pool them. 99mTc-TRODAT-1 scans are dropped |
 | `saa_labels(ppmi_dir, sessions, allow_unmatched=False)` | `PATNO`, `IMAGEID`, `SAA_EVENT_ID`, `SAA_Status` (`Conflicting` when calls at the chosen visit disagree), `SAA_Type`, `saa_positive` (NaN unless one Positive/Negative call), `saa_match` (`same_visit`, `screening_baseline_pair`, `unmatched_visit`), `saa_visit_concurrent` |
 
@@ -474,7 +477,7 @@ time, appending to `<out stem>_<backend>.csv` (resumes from it) and then joins t
 `dwi`, `nm` and `flair` share one runner shape: `index_series(zips)` (one row per series: `zip`, `prefix`,
 `patno`, `desc`, `date`, `image_id`, `n_files`) → `load_index(index_file, zips, flag_fn)` (cached index with a
 `selected` column) → `fastsurfer_by_patno(sessions_csv, fastsurfer_dir, require="stats/aseg+DKT.stats")` (earliest
-finished T1 per PATNO) → `session_rows(group)` (the acquisition date with the most DICOM files) →
+finished T1 per PATNO) → `session_rows(group, t1_date)` (the acquisition date nearest the T1 session, then the most DICOM files) →
 `run_batch(jobs, job_fn, out_csv, workers=4, log_every=10, pid_file=None)`. `run_batch` appends one row per
 subject as it finishes, so a killed run loses at most the subjects in flight; `job_fn` must return a row with an
 `error` string rather than raise; when a later row brings new columns the file is rewritten with the union
@@ -646,9 +649,9 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | % of age/sex-expected lowest putamen; PARS ≤ 65 %, NSD-ISS D+ ≤ 75 % | Gold (PPMI staging) | Yes: `sbr_pct_expected`, `dat_deficit_sbr`, `dat_d_nsdiss` |
 | | Pre/post-commissural, dorsal/ventral putamen | SOTA | PPMI's Xing columns kept; PIE's own: anterior/posterior halves |
 | | Annualised SBR change | Gold trial endpoint | PPMI's longitudinal SBRs + `stats.longitudinal`; PIE's own reconstruction takes one scan per subject |
-| T1 | aseg/DKT volumes, head-size adjustment | Gold | Yes (FastSurfer); eTIV needs FreeSurfer's `--tal_reg` (not installed), the registration TIV is unvalidated |
+| T1 | aseg/DKT volumes, head-size adjustment | Gold | Yes (FastSurfer, release pinned in `setup_imaging.sh`, version on every row); eTIV from `run --etiv` (FreeSurfer 7.4.1 talairach, validated r 0.992 vs FS7 on 40 scans; cohort run pending); the registration TIV is unvalidated |
 | | Cortical thickness and area (DK) | Gold; PPMI releases FS7 tables for 1,716 baseline scans | No (surface stream needs a FreeSurfer licence): use `FS7_APARC_CTH/SA` |
-| | Longitudinal within-subject stream | Gold for atrophy rates | No (`long_fastsurfer.sh` not wrapped) |
+| | Longitudinal within-subject stream | Gold for atrophy rates | Wrapped (`run --long`), never piloted, no table parser; the manifest is one session per subject |
 | | Brain-age gap | SOTA, replicated in PPMI | SFCN + `embed.brain_age_gap` |
 | | Foundation-model embeddings | SOTA, exploratory | BrainIAC, 3D-Neuro-SimCLR, SFCN; check scanner reliability first |
 | | Normative centiles; NBM Ch4 volume; MRPI; SynthSeg+ | SOTA / specialised | No |
@@ -670,7 +673,9 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | rs-fMRI | fMRIPrep + 24P + aCompCor + censoring, GSR as sensitivity | Best practice | Yes |
 | | Schaefer cortex + CIT168 subcortex | SOTA default ("4S") | Yes (`atlases.schaefer400_mni2009c`, `striatal_rois`) |
 | | Striatal seed FC, basal-ganglia network (ICA + dual regression) | Canonical, poorly reproducible | Yes |
-| | ALFF / fALFF / ReHo | SOTA | No (XCP-D computes them) |
+| | ALFF / fALFF / ReHo | SOTA | `fmri_connectivity.local_measures` (unvalidated); XCP-D is the community implementation |
+| PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | No PET processing. PPMI's analysed tables can be joined as labels; an AV-133 module (reusing `datscan.sbr_from_arrays` on the PET registered to the T1) is the first candidate |
+| CT | Safety head CT before the screening lumbar puncture | Not an imaging endpoint: the `Safety_Head_CT_Scan` form (`CTSCAN`, yes/no) records whether one was done; PPMI does not distribute the images | Nothing to process |
 | All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method; ComBat is the alternative) |
 
 ### Real-data validity checks (September 2026)

@@ -46,6 +46,7 @@ from scipy import ndimage
 
 from .archives import ZipArchiveCache
 from .convert import DCM2NIIX
+from .datscan import ITK_SEED
 from .dwi import PAULI, _register_volume, _sitk_from_nib, _sitk_native, labels_to_dwi, pauli_atlas
 
 NM_PATTERN = r"GRE.?MT|MT.?GRE|GRE ?- ?MT|NM\s*-|Neuromelanin|NM_MT|NM MT"
@@ -138,7 +139,7 @@ def _mppca_centre(stack, frac=0.5):
     return out
 
 
-def average_repeats(niis, sampling_seed=0, transforms_dir=None, denoise=False):
+def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=False):
     """Align/average one compatible reconstruction per acquisition; return image, metadata, count, motion and the
     repeat support: per voxel of the image, the share of repeats whose field of view reaches it (1 = every repeat).
     ``denoise``: MP-PCA (Veraart et al. 2016, DIPY ``mppca``, 5-voxel patches) over the stacked repeats before
@@ -184,14 +185,14 @@ def average_repeats(niis, sampling_seed=0, transforms_dir=None, denoise=False):
 
 
 # ------------------------------------------------------------------------------------------ registration / ROIs
-def register_nm_to_t1(nm_img, t1_img, target_center=None, sampling_seed=0):
+def register_nm_to_t1(nm_img, t1_img, target_center=None, sampling_seed=ITK_SEED):
     """Rigid MI registration between the NM slab (fixed: every metric sample lies inside the 24 mm slab) and the
     *unmasked* conformed T1 (moving). The full head matters: with a brain-masked T1 a thin slab of brain tissue
     matches several heights equally well and the optimizer settled on the striatum for some subjects; the eyes,
     sinuses and skull in the slab pin its height. ``target_center`` (LPS mm) initialises the slab centre there
     (atlas SN centroid in T1 space); otherwise the same-session headers are trusted.
     Returns (transform fixed(T1)->moving(NM), metric), the convention used by ``labels_to_dwi``.
-    ``sampling_seed=0`` preserves the legacy ITK wall-clock seed; pass a nonzero seed for repeatability studies."""
+    ``sampling_seed=0`` is ITK's wall-clock seed (not reproducible); the default is the fixed ``ITK_SEED``."""
     import SimpleITK as sitk
 
     t1 = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(t1_img.dataobj).astype(np.float32), t1_img.affine))
@@ -479,7 +480,7 @@ def _refeature_job(args):
         return {**keep, "error": f"refeature: {type(e).__name__}: {str(e)[:150]}"}
 
 
-def register_slab(nm_img, fastsurfer_dir, sampling_seed=0, min_cov=0.9):
+def register_slab(nm_img, fastsurfer_dir, sampling_seed=ITK_SEED, min_cov=0.9):
     """Rigid slab -> T1 registration from both initialisations: the same-session headers, and the slab centred on the
     atlas SN centroid (the protocol centres the slab on the midbrain; the SN reaches the T1 through the subject's SyN).
     Of the fits whose slab holds >= ``min_cov`` of each side's atlas SN (``slab_coverage``), the lowest MI metric wins;
@@ -507,7 +508,7 @@ def register_slab(nm_img, fastsurfer_dir, sampling_seed=0, min_cov=0.9):
 
 
 # ------------------------------------------------------------------------------------------ driver
-def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, sampling_seed=0, keep_raw=False, denoise=False):
+def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, sampling_seed=ITK_SEED, keep_raw=False, denoise=False):
     import SimpleITK as sitk
 
     sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)
@@ -573,7 +574,7 @@ def _job(args):
 def main(argv=None):
     import argparse
 
-    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows
+    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows, t1_session_dates
 
     ap = add_common_args(argparse.ArgumentParser())
     ap.add_argument("--denoise", action="store_true", help="MP-PCA over the repeats before averaging (Langley et al. 2025)")
@@ -610,9 +611,10 @@ def main(argv=None):
     idx = load_index(work / "nm_index.csv", a.zips, flag_nm)
     idx = idx[idx["selected"]]
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+    t1d = t1_session_dates(a.sessions, fs)
     out_csv = work / "nm_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.denoise)
+    jobs = [(int(patno), session_rows(g, t1d.get(int(patno))), fs[int(patno)], str(work), a.keep_nifti, a.denoise)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, pid_file=a.pid_file)
 

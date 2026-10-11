@@ -39,9 +39,16 @@ def prepare_sessions(zips, ppmi_dir, work, ida_metadata=(), loni_csv=()):
     and add scanner/protocol columns."""
     sessions_csv = work / "sessions.csv"
     if sessions_csv.exists():
-        return pd.read_csv(sessions_csv, dtype={"image_id": str}, parse_dates=["session_date"])
+        cached = pd.read_csv(sessions_csv, dtype={"image_id": str}, parse_dates=["session_date"])
+        if not all(Path(z).exists() for z in zips):   # e.g. a backfill stage with the download drive unmounted
+            log.warning("some zips are not on disk: using sessions.csv as it is")
+            return cached
     index = index_zips(zips, cache_csv=work / "index.csv")
     sessions = select_t1_series(index)
+    if sessions_csv.exists():
+        if set(cached["image_id"]) == set(sessions["image_id"]):
+            return cached
+        log.info("sessions.csv does not match the zips' T1 selection (new download or selection fix): rebuilding")
     sessions["protocol_phase"] = sessions["zip"].map({z: i + 1 for i, z in enumerate(map(str, zips))})
     sessions = link_sessions_to_events(sessions, ppmi_dir)
     if loni_csv:  # the collection CSV: visit label for every series, group, age at scan

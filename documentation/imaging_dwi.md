@@ -57,9 +57,9 @@ and PPMI-2 Siemens Prisma three-shell (b = 700/1000/2000, 64 directions each, re
    in the study's September 2026 DTI download, snapshot; GE "Ax DWI B-0 A/P"), ~3-7 min per subject; otherwise
    returns the data unchanged with
    `topup=False`. Odd-sized axes are cropped by one voxel first (`_crop_even`: `b02b0.cnf` subsamples by 2).
-   eddy is not run in this path (eddy_cuda measured ~26 min per three-shell subject on an RTX 2080); see
-   `dwi_correction` for the opt-in eddy command.
-5. **`preprocess(ds, sampling_seed=0)`** — median-Otsu brain mask on the mean b0 and rigid Mattes-MI
+   eddy is not run in this path; `--eddy` runs it instead (eddy_cuda ~26 min per three-shell subject on an RTX 2080;
+   with a reverse-PE b0 it follows topup, without one it runs alone, tier `eddy_no_reverse_PE`).
+5. **`preprocess(ds, sampling_seed=ITK_SEED)`** — median-Otsu brain mask on the mean b0 and rigid Mattes-MI
    registration of every volume to the mean b0 (SimpleITK, 2-level pyramid, ~0.7 s/volume). Each DW gradient is
    reoriented with `rotate_bvec(bvec, affine, fixed_to_moving_lps)`, which converts the FSL voxel-frame bvec
    through physical LPS and back (FSL flips x for positive-determinant affines) and uses the inverse of ITK's
@@ -132,9 +132,10 @@ venv_imaging/bin/python -m pie.imaging.dwi --zips <DTI zips> --sessions <derived
 | `--priority` | none | Text file of PATNOs to run first |
 | `--eddy` | off | topup + FSL eddy (outlier replacement, eddy-rotated gradients) for scans with a reverse-PE b0 whose PE direction and readout time are recorded; replaces the rigid motion correction for those scans (`dwi.correct`, `dwi.eddy_correct`). Rows record `eddy` and `eddy_outlier_fraction`; `dwi_batch` gains `_eddy` |
 | `--eddy-cpu` | off | `eddy_cpu` instead of `eddy_cuda` (hours per three-shell scan instead of ~26 min on the GPU) |
+| `--study` | off | Add the study's nigral tensor measure (`dwis_*`, below) on the study's single b ≈ 1000 acquisition |
 
-One session per subject: among selected series, the acquisition date with the most DICOM files
-(`batch.session_rows`). The run is resumable: rows are appended as subjects finish and finished PATNOs are
+One session per subject: among selected series, the acquisition date nearest the subject's FastSurfer T1 session,
+then the one with the most DICOM files (`batch.session_rows`). The run is resumable: rows are appended as subjects finish and finished PATNOs are
 skipped. Failures are rows with an `error` string, not crashes.
 
 ## Output columns (`dwi_features.csv`)
@@ -173,6 +174,21 @@ Rows also carry:
 - `eddy_slice_timing`.
 
 Tables written before 26 September 2026 lack the new columns and fail the rule; re-run them.
+
+### The study's nigral measure (`--study`, `dwis_*`)
+
+A WLS tensor on the single b ≈ 1000 acquisition with its own b0s, in the CIT168 SNc + SNr voxels behind each side's
+median (split in the atlas's own frame), with the study's QC (`dwis_qc_pass`: ≥ 95 % of the SN in the brain mask,
+≥ 80 % physical fits, motion, both posterior halves). Primary column `dwis_md_sn_posterior_mean`; `dwis_tier`
+records the correction (`topup_eddy`, `eddy_no_reverse_PE`, `topup_rigid`, `rigid`). `assemble_features` carries
+the `dwis_{fa,md,ad,rd}_*` columns under their own QC, as it does `nmt_*`.
+
+Validation: equivalent to the study's implementation on 51 scans (r 0.968, QC agreement 1.00), but it **failed** its
+pre-registered PPMI 2.0 PD-vs-HC gate (AUROC 0.574 [0.495, 0.652], 218 PD / 82 HC; 29 Sep 2026). That is about the
+meta-analytic nigral MD effect (Schwarz et al. 2013, doi:10.1016/j.nicl.2013.10.006, d ≈ 0.26), so nigral MD is
+exploratory (`manifest.DWI_NIGRAL_VALIDATED = False`, column `dwi_nigral_validated`). The PPMI-supported nigral marker
+is posterior-SN free water (Burciu et al. 2017, doi:10.1093/brain/awx146; PPMI-1 d ≈ 0.4–0.5), measurable on PPMI 2.0's
+multi-shell scans.
 
 ### Single-shell free water is not assembled by default
 
@@ -371,7 +387,7 @@ not run the instrumentation concurrently with another optimizer in the same Pyth
 (and `topup_*` with `use_topup`) in the working directory. Feed raw images, not ones already through
 applytopup or rigid motion correction; consume eddy's rotated bvecs once. The command and slice decisions
 reproduced all 114 saved study attempts available at integration time. Scheduling, logs, timeouts and memory
-admission stay with the caller: PIE has no end-to-end eddy cohort CLI.
+admission stay with the caller of these helpers; the cohort CLI for eddy is `dwi --eddy` (above).
 
 ```python
 from pie.imaging import dwi_correction as dc

@@ -63,4 +63,15 @@ def _row(nifti, sidecar):
     for k in SIDECAR_FIELDS:
         v = meta.get(k)
         row[k] = ";".join(map(str, v)) if isinstance(v, list) else v
+    row["MagneticFieldStrength"] = field_tesla(row["MagneticFieldStrength"])
+    row["ConversionSoftwareVersion"] = meta.get("ConversionSoftwareVersion")
     return row
+
+
+def field_tesla(v):
+    """Old GE Genesis Signa headers give gauss (15000 = 1.5 T, 7000 = 0.7 T); everything else is tesla."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return v
+    return v / 10000 if v > 100 else v

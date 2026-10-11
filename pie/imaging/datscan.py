@@ -238,6 +238,11 @@ def to_nifti(vol, spacing_mm):
 
 
 # --------------------------------------------------------------------------- registration + SBR
+# SimpleITK treats seed 0 as "seed from the wall clock" (sitkWallClock): every random-sampling registration in PIE
+# uses this fixed seed instead, so a rerun reproduces its transforms (same thread count assumed).
+ITK_SEED = 20260909
+
+
 def _sitk_from_nib(img):
     import SimpleITK as sitk
     data = np.asanyarray(img.dataobj).astype(np.float32)
@@ -319,7 +324,7 @@ def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc
         reg = sitk.ImageRegistrationMethod()
         reg.SetMetricAsCorrelation()
         reg.SetMetricSamplingStrategy(reg.RANDOM)
-        reg.SetMetricSamplingPercentage(sampling, seed=0)
+        reg.SetMetricSamplingPercentage(sampling, seed=ITK_SEED)
         reg.SetInterpolator(sitk.sitkLinear)
         return reg
 

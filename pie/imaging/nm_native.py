@@ -487,14 +487,15 @@ def main(argv=None):
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     if a.prepare_tse:
-        from .batch import fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows
+        from .batch import fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows, t1_session_dates
 
         idx = load_index(work / "tse_index.csv", a.zips, flag_tse)
         idx = idx[idx["selected"]]
         fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+        t1d = t1_session_dates(a.sessions, fs)
         out_csv = work / "nm_features.csv"
         done = set(pd.read_csv(out_csv)["patno"]) if out_csv.exists() and out_csv.stat().st_size else set()
-        jobs = [(int(p), session_rows(g), fs[int(p)], str(work), a.echo) for p, g in idx.groupby("patno") if p not in done and int(p) in fs]
+        jobs = [(int(p), session_rows(g, t1d.get(int(p))), fs[int(p)], str(work), a.echo) for p, g in idx.groupby("patno") if p not in done and int(p) in fs]
         run_batch(filter_jobs(jobs, a.patnos, a.limit), _tse_job, out_csv, workers=a.workers)
         return
     subjects = _subjects(work, a.sessions, a.fastsurfer_dir, a.patnos)

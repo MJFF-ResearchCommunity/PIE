@@ -16,12 +16,13 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
+from pie.imaging.convert import field_tesla
 from pie.imaging.fastsurfer import STATS_FILE, parse_stats, valid_etiv
 
 BILATERAL = ["Putamen", "Caudate", "Pallidum", "Thalamus", "Hippocampus", "Amygdala", "Accumbens-area",
              "Lateral-Ventricle", "Cerebellum-Cortex", "Cerebellum-White-Matter", "VentralDC"]
 META_COLS = ["Manufacturer", "ManufacturersModelName", "MagneticFieldStrength", "SoftwareVersions",
-             "InstitutionName", "RepetitionTime", "EchoTime", "InversionTime", "FlipAngle", "SliceThickness"]
+             "InstitutionName", "StationName", "DeviceSerialNumber", "ConversionSoftwareVersion", "RepetitionTime", "EchoTime", "InversionTime", "FlipAngle", "SliceThickness"]
 
 
 def _clean(name):
@@ -39,9 +40,13 @@ def build_idp_table(sessions, subjects_dir):
         row = {"PATNO": s.patno, "EVENT_ID": s.EVENT_ID, "IMAGEID": s.image_id, "SCAN_DATE": s.session_date,
                "protocol_phase": s.protocol_phase}
         row.update({c: getattr(s, c, None) for c in META_COLS})
+        row["MagneticFieldStrength"] = field_tesla(row["MagneticFieldStrength"])   # sessions.csv written before the fix
         measures = {k: v for k, v in d.items() if k.endswith("Vol")}
         row.update(measures)
         row["eTIV"] = valid_etiv(Path(subjects_dir) / s.image_id / "mri")     # FreeSurfer eTIV, see fastsurfer.talairach_etiv
+        # per-row provenance: segmentation versions differ in PD-vs-HC effects (Sokolowski 2024), so never pool blindly
+        row["fastsurfer_version"] = next((ln.split(None, 2)[2].strip() for ln in stats.read_text().splitlines()
+                                          if ln.startswith("# FastSurfer_version")), None)
         for k, v in d.items():
             if k not in measures:
                 row[f"vol_{_clean(k)}"] = v

@@ -9,7 +9,10 @@ cd "$(dirname "$0")/.."
 BACKEND="${1:-cu128}"
 command -v uv >/dev/null || { echo "install uv first: https://docs.astral.sh/uv/"; exit 1; }
 
-[ -d third_party/FastSurfer ] || git clone --depth 1 https://github.com/Deep-MI/FastSurfer.git third_party/FastSurfer
+# Pinned: PIE's T1 validation (FS7 agreement, eTIV) was run on FastSurfer 2.6.0-dev0; v2.6.0 is its release.
+# Each IDP row records the version that produced it (fastsurfer_version). Change the tag only with a re-validation.
+FASTSURFER_TAG="${PIE_FASTSURFER_TAG:-v2.6.0}"
+[ -d third_party/FastSurfer ] || git clone --depth 1 --branch "$FASTSURFER_TAG" https://github.com/Deep-MI/FastSurfer.git third_party/FastSurfer
 uv venv venv_imaging --python 3.12
 uv pip install --python venv_imaging/bin/python --torch-backend="$BACKEND" -r third_party/FastSurfer/requirements.txt
 uv pip install --python venv_imaging/bin/python dcm2niix pydicom nibabel pandas numpy neuroCombat scikit-learn \

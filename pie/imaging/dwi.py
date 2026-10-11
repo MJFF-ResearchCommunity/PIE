@@ -46,7 +46,7 @@ from scipy import ndimage
 
 from .archives import ZipArchiveCache
 from .convert import DCM2NIIX
-from .datscan import _sitk_from_nib
+from .datscan import ITK_SEED, _sitk_from_nib
 
 log = logging.getLogger("pie.dwi")
 
@@ -342,7 +342,7 @@ def _sitk_native(arr, affine):
     return img
 
 
-def _register_volume(fixed, moving, sampling=0.1, iterations=50, sampling_seed=0):
+def _register_volume(fixed, moving, sampling=0.1, iterations=50, sampling_seed=ITK_SEED):
     """Rigid MI registration (SimpleITK, 2-level pyramid) of one DWI volume to the b0 reference. Returns the Euler transform."""
     import SimpleITK as sitk
 
@@ -384,7 +384,7 @@ def rotate_bvec(bvec, affine, fixed_to_moving_lps):
     return out / np.linalg.norm(out)
 
 
-def preprocess(ds, sampling_seed=0):
+def preprocess(ds, sampling_seed=ITK_SEED):
     """Brain mask + rigid motion correction of every volume to the mean b0 (SimpleITK mutual information, ~0.7 s per
     volume against ~5 s for DIPY's affine pipeline). Reorients FSL b-vectors for each volume's rotation.
     Returns the dataset with corrected data, gradients, mask,
@@ -530,8 +530,8 @@ def fit_models(ds, fw_mask=None):
     t = tensor_measurements(data[mask][:, sel], b[sel], v[:, sel])
     t["tensor_physical"] = t["accepted"]
     out = {}
-    for k in ("fa", "md", "ad", "rd", "tensor_physical"):
-        out[k] = np.zeros(mask.shape, bool if k == "tensor_physical" else np.float32)
+    for k in ("fa", "md", "ad", "rd", "tensor_physical"):   # outside the mask is unmeasured (NaN), never 0
+        out[k] = np.zeros(mask.shape, bool) if k == "tensor_physical" else np.full(mask.shape, np.nan, np.float32)
         out[k][mask] = t[k]
     fmask = mask if fw_mask is None else (mask & fw_mask)
     shells = sorted(set(int(round(x / 100.0)) * 100 for x in b if x > 50))
@@ -570,7 +570,7 @@ def _brain(img, mask_img, mm=2.0):
     return sitk.Shrink(out, [max(1, int(round(mm / sp))) for sp in out.GetSpacing()])
 
 
-def register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0):
+def register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=ITK_SEED):
     """Rigid (mutual information) registration of the mean b0 to the brain-masked conformed T1 at 2 mm.
     Returns (transform fixed(T1)->moving(b0), metric). EPI susceptibility distortion is corrected only upstream, by
     ``susceptibility_correct`` (FSL topup, ``--fsl``) where a reverse-phase b0 exists; a T1-guided B-spline
@@ -650,7 +650,7 @@ def _sdc(ants, _to_ants, tdir, b0_img, t1_img, t1_mask_img, pe_axis, seed):
     return labels_fn, info
 
 
-def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None, sampling_seed=0):
+def register_t1_to_mni(t1_img, t1_mask_img, cache_path=None, sampling_seed=ITK_SEED):
     """Affine T1 -> verified MNI152NLin2009cAsym; returns its fixed-to-moving pull.
 
     A versioned cache and provenance prevent reuse of legacy Nilearn-2009a maps.
@@ -808,7 +808,7 @@ def features(maps, rois, min_voxels=3):
     for base in ("sn_posterior", "sn", "snc", "snr", "putamen", "caudate", "sn_posterior_t", "sn_t", "snc_t", "snr_t"):
         for k in metrics:
             l, r = out.get(f"{base}_l_{k}", np.nan), out.get(f"{base}_r_{k}", np.nan)
-            out[f"{base}_mean_{k}"] = float(np.nanmean([l, r])) if not (np.isnan(l) and np.isnan(r)) else np.nan
+            out[f"{base}_mean_{k}"] = float((l + r) / 2)     # bilateral needs both sides (NaN otherwise), as study_features
     return out
 
 
@@ -1041,7 +1041,7 @@ def _flag_dwi(idx):
 def main(argv=None):
     import argparse
 
-    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows
+    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows, t1_session_dates
 
     ap = add_common_args(argparse.ArgumentParser())
     ap.add_argument("--fsl", action="store_true", help="FSL topup/applytopup susceptibility correction where a reverse-phase b0 exists")
@@ -1059,9 +1059,10 @@ def main(argv=None):
     idx = load_index(work / "dwi_index.csv", a.zips, _flag_dwi)
     idx = idx[idx["selected"]]
     fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+    t1d = t1_session_dates(a.sessions, fs)
     out_csv = work / "dwi_features.csv"
     done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu, a.study)
+    jobs = [(int(patno), session_rows(g, t1d.get(int(patno))), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu, a.study)
             for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
     if a.priority:
         order = {int(p): i for i, p in enumerate(Path(a.priority).read_text().split())}

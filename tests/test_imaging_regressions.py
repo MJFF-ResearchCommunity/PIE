@@ -1235,3 +1235,49 @@ def test_eddy_mask_is_the_studys_mask_on_the_topup_b0(tmp_path, monkeypatch):
     assert np.array_equal(seen(), dwi._b0_brain(big.mean(axis=3)))
     dwi.eddy_correct({**ds, "rev_b0": None}, tmp_path / "work", cuda=True)
     assert np.array_equal(seen(), dwi._b0_brain(raw[..., :2].mean(axis=3)))
+
+
+def test_index_cache_takes_in_a_zip_added_later(tmp_path):
+    # a follow-up download added to an existing work dir was silently ignored by the cached index
+    import zipfile
+
+    from pie.imaging import index
+
+    a, b = tmp_path / "bl.zip", tmp_path / "v04.zip"
+    with zipfile.ZipFile(a, "w") as z:
+        z.writestr("PPMI/1/MPRAGE/2000-01-01_09_00_00.0/I000001/a.dcm", b"x")
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("PPMI/1/MPRAGE/2002-01-01_09_00_00.0/I000002/a.dcm", b"x")
+    cache = tmp_path / "index.csv"
+    assert index.index_zips([a], cache_csv=cache)["image_id"].tolist() == ["I000001"]
+    assert index.index_zips([a, b], cache_csv=cache)["image_id"].tolist() == ["I000001", "I000002"]
+    assert index.index_zips([b], cache_csv=cache)["image_id"].tolist() == ["I000002"]
+
+
+def test_field_strength_in_gauss_reads_as_tesla():
+    from pie.imaging.convert import field_tesla
+
+    assert field_tesla(15000) == 1.5 and field_tesla("7000") == 0.7 and field_tesla(3) == 3 and field_tesla(None) is None
+
+
+def test_itk_registrations_are_seeded_not_wall_clock():
+    # SimpleITK seed 0 is sitkWallClock: DaT transforms (and so SBRs) differed between identical runs
+    import inspect
+
+    from pie.imaging import datscan, dwi, flair, nm
+
+    assert datscan.ITK_SEED != 0
+    for f in (dwi._register_volume, dwi.preprocess, dwi.register_b0_to_t1, dwi.register_t1_to_mni, nm.average_repeats,
+              nm.register_nm_to_t1, nm.register_slab, nm.process_subject):
+        assert inspect.signature(f).parameters["sampling_seed"].default == datscan.ITK_SEED, f.__name__
+    for mod in (datscan, flair):
+        assert "seed=0)" not in inspect.getsource(mod)
+
+
+def test_dat_labels_record_whether_the_datscan_came_after_the_mri(tmp_path):
+    # the +/-18-month window can attach a later DaTscan (a converter's later state); the sign lets callers exclude it
+    ppmi, sessions = _ppmi(tmp_path)
+    d = labels.dat_labels(ppmi, sessions).set_index("PATNO")
+    assert d.loc[1, "days_datscan_after_mri"] == -14 and d.loc[1, "months_to_datscan"] == 0.5    # DaTscan month 01/2011
+    later = labels.dat_labels(ppmi, sessions.assign(session_date="2010-12-01")).set_index("PATNO")
+    assert later.loc[1, "days_datscan_after_mri"] == 31
