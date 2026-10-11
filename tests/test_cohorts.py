@@ -52,3 +52,30 @@ def test_adni_sessions_take_adnimerge_visit_codes(tmp_path):
     s = pd.DataFrame({"patno": [OFFSET["ADNI"] + 295] * 3, "session_date": ["2010-05-01", "2011-04-20", "2013-01-01"]})
     s = link_adni(link_sessions_to_events(s, tmp_path / "no_ppmi"), tmp_path / "ADNIMERGE.csv")
     assert s["EVENT_ID"].tolist() == ["bl", "m12", "UNK"]
+
+
+def test_bids_modality_images_are_indexed_for_the_modality_selectors_and_copied(tmp_path):
+    from pie.imaging.batch import convert_series, index_series
+    from pie.imaging.dwi import _flag_dwi, convert as dwi_convert
+    from pie.imaging.flair import flag_flair, flag_flair_3d
+    from pie.imaging.nm import flag_nm
+
+    root = tmp_path / "stanford"
+    when = json.dumps({"AcquisitionDateTime": "2019-04-01T10:00:00"})
+    for folder, stem, zoom in (("dwi", "sub-7_dwi", 2.0), ("anat", "sub-7_FLAIR", 1.0), ("anat", "sub-7_acq-NM_T1w", 0.7), ("anat", "sub-7_T1w", 1.0)):
+        d = root / "sub-7" / folder
+        d.mkdir(parents=True, exist_ok=True)
+        shape = (8, 8, 6, 4) if folder == "dwi" else (8, 8, 6)
+        nib.save(nib.Nifti1Image(np.ones(shape, np.float32), np.diag([zoom, zoom, zoom, 1.0])), d / f"{stem}.nii.gz")
+        (d / f"{stem}.json").write_text(when)
+    np.savetxt(root / "sub-7" / "dwi" / "sub-7_dwi.bval", [[0, 1000, 1000, 1000]])
+    np.savetxt(root / "sub-7" / "dwi" / "sub-7_dwi.bvec", np.c_[np.zeros(3), np.eye(3)])
+    idx = index_series([root]).set_index("desc")
+    assert set(idx.index) == {"BIDS_dwi", "BIDS_FLAIR_3D", "NM - BIDS sub-7_acq-NM_T1w", "BIDS_T1w"} and set(idx["date"]) == {"2019-04-01"}
+    i = idx.reset_index()
+    assert i.loc[flag_nm(i), "desc"].tolist() == ["NM - BIDS sub-7_acq-NM_T1w"] and i.loc[flag_flair(i) & flag_flair_3d(i), "desc"].tolist() == ["BIDS_FLAIR_3D"]
+    assert _flag_dwi(i).all()
+    row = idx.loc["BIDS_dwi"]
+    runs = dwi_convert(row["zip"], row["prefix"], tmp_path / "nii")
+    assert len(runs) == 1 and np.loadtxt(runs[0][1]).tolist() == [0, 1000, 1000, 1000]
+    assert convert_series(row["zip"], idx.loc["BIDS_FLAIR_3D", "prefix"], tmp_path / "fl")[0].endswith("sub-7_FLAIR.nii.gz")

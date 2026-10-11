@@ -104,6 +104,8 @@ def bids_sessions(root, suffixes=("T1w",)):
     root = Path(root)
     out = []
     for nii in sorted(root.glob("sub-*/**/*.nii.gz")):
+        if "derivatives" in nii.relative_to(root).parts:
+            continue
         name = nii.name[:-7]
         if name.rsplit("_", 1)[-1] not in suffixes:
             continue

@@ -612,8 +612,13 @@ The ranges never overlap, so cohorts can be pooled. `index.csv`, `sessions.csv` 
   - undated sessions are kept apart by session label, LONI-masked style (9999-01-01);
   - images are copied, not converted, with their sidecar (`convert.convert_series`).
   PPP's data can only be reached inside its PEP environment, so PIE runs there from the container (`docker/`).
-- **Still PPMI-only:** clinical labels (`labels.py`), the DaT core-lab reader, the modality pipelines' BIDS input
-  (DWI, NM and FLAIR read LONI zips; BIDS for them is next), and PPMI-specific series names in their selection rules.
+- **BIDS for DWI, NM and FLAIR:** the same folders work in their `--zips` (`batch.bids_series`):
+  - `*_dwi` with its `.bval`/`.bvec` reads as `BIDS_dwi`;
+  - `*_FLAIR` reads as `BIDS_FLAIR`, with `_3D` at slices of 1.5 mm or less;
+  - neuromelanin (`acq-NM`, `neuromelanin`, `_NM`, `_MTw`) reads as `NM - BIDS …`, so the existing selectors pick
+    them;
+  - images are copied with their sidecars and gradients.
+- **Still PPMI-only:** clinical labels (`labels.py`) and the DaT core-lab reader.
 
 **Sharing across cohorts.** `manifest.export_long(df, out_dir)` writes the assembled table (cross-sectional or
 per-visit) as a BIDS-Derivatives-style long table: `dataset_description.json` and `imaging_features.tsv` with one row

@@ -7,6 +7,8 @@ pattern-matching process lists.
 
 import csv
 import os
+import re
+import shutil
 from contextlib import nullcontext
 import subprocess
 import tempfile
@@ -26,6 +28,9 @@ def index_series(zips):
     date, image_id, n_files."""
     rows = []
     for zp in zips:
+        if Path(zp).is_dir():          # a BIDS dataset
+            rows += bids_series(zp)
+            continue
         with zipfile.ZipFile(zp) as z:
             counts = {}
             for n in z.namelist():
@@ -40,6 +45,37 @@ def index_series(zips):
             rows.append({"zip": str(zp), "prefix": key + "/", "patno": patno, "desc": desc, "date": date[:10], "image_id": image_id, "n_files": c,
                          "cohort": project.upper(), "participant_id": subject})
     return pd.DataFrame(rows)
+
+
+BIDS_SUFFIXES = ("dwi", "FLAIR", "T1w", "T2w", "PDT2", "MTw", "NM", "epi", "bold")
+
+
+def bids_series(root):
+    """A BIDS dataset's images as ``index_series`` rows: ``prefix`` = the image's path inside the dataset, ``date`` from
+    its acquisition time (9999-01-01 when undated), and a ``desc`` the modality selectors read: "BIDS_dwi", "BIDS_FLAIR"
+    (+ "_3D" at <= 1.5 mm slices), "NM - BIDS ..." for neuromelanin (``acq-NM``/``neuromelanin`` in the name, or an
+    ``_NM``/``_MTw`` image), else "BIDS_<suffix>"."""
+    import hashlib
+
+    import nibabel as nib
+
+    from .index import bids_sessions
+
+    cohort, rows = f"BIDS:{Path(root).resolve().name}", []
+    for r in bids_sessions(root, suffixes=BIDS_SUFFIXES):
+        rel, stem = str(r["path"].relative_to(root)), r["path"].name[:-7]
+        suffix = stem.rsplit("_", 1)[-1]
+        if suffix in ("NM", "MTw") or re.search(r"acq-nm|neuromelanin", stem, re.I):
+            desc = f"NM - BIDS {stem}"
+        elif suffix == "FLAIR":
+            desc = "BIDS_FLAIR" + ("_3D" if max(nib.load(r["path"]).header.get_zooms()[:3]) <= 1.5 else "")
+        else:
+            desc = f"BIDS_{suffix}"
+        dt = r["date_time"]
+        rows.append({"zip": str(root), "prefix": rel, "patno": subject_key(cohort, r["sub"]), "desc": desc,
+                     "date": dt.strftime("%Y-%m-%d") if pd.notna(dt) else "9999-01-01", "image_id": "B" + hashlib.sha1(rel.encode()).hexdigest()[:10],
+                     "n_files": 1, "cohort": cohort, "participant_id": r["sub"]})
+    return rows
 
 
 def load_index(index_file, zips, flag_fn):
@@ -57,6 +93,13 @@ def convert_series(zip_path, prefix, out_dir, archive_cache=None):
     zip with millions of members takes ~13 s and ~3 GB to index, and PPMI stores each NM repeat as its own series."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if Path(zip_path).is_dir():        # BIDS (bids_series): copy the image with its sidecar and gradients
+        src = Path(zip_path) / prefix
+        stem = src.name[:-7]
+        for ext in (".nii.gz", ".json", ".bval", ".bvec"):
+            if (src.parent / (stem + ext)).exists():
+                shutil.copyfile(src.parent / (stem + ext), out_dir / (stem + ext))
+        return [str(out_dir / src.name)]
     tag = prefix.rstrip("/").split("/")[-1]
     log = out_dir / f"{tag}_dcm2niix.log"
     with (tempfile.TemporaryDirectory(dir=out_dir) as tmp, (ZipArchiveCache() if archive_cache is None else nullcontext(archive_cache)) as cache,
