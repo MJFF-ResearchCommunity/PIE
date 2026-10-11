@@ -190,7 +190,7 @@ message), `fastsurfer_idps.csv`.
 | `Manufacturer`, `ManufacturersModelName`, `MagneticFieldStrength`, `SoftwareVersions`, `InstitutionName`, `RepetitionTime`, `EchoTime`, `InversionTime`, `FlipAngle`, `SliceThickness` | dcm2niix sidecar (`features.META_COLS`); scanner batch for harmonisation |
 | `MaskVol`, `BrainSegVol`, … | Global measures whose short name ends in `Vol` keep that name; other measures become `vol_<name>` |
 | `vol_<Structure>` | Regional volume in mm^3, name with non-alphanumerics replaced by `_` (`vol_Left_Putamen`, `vol_ctx_lh_precuneus`, `vol_WM_hypointensities`) |
-| `sum_<S>`, `asym_<S>` | Left + right and (L − R) / (L + R) for `Putamen Caudate Pallidum Thalamus Hippocampus Amygdala Accumbens_area Lateral_Ventricle Cerebellum_Cortex Cerebellum_White_Matter VentralDC` |
+| `sum_<S>`, `asym_<S>`, `ai_<S>` | Left + right, (L − R) / (L + R), and the ENIGMA asymmetry index (L − R) / ((L + R) / 2) (twice `asym_`) for `Putamen Caudate Pallidum Thalamus Hippocampus Amygdala Accumbens_area Lateral_Ventricle Cerebellum_Cortex Cerebellum_White_Matter VentralDC` |
 | `sum_Ventricles` | Lateral + inferior-lateral + 3rd + 4th ventricles |
 | `eTIV` | FreeSurfer eTIV from `mri/transforms/talairach.xfm` when `run --etiv` has made it, else NaN |
 
@@ -583,13 +583,25 @@ fastsurfer_dir=None, row=None)`, `gallery(pngs, out_png, cols=4)`. Tests: `tests
 (intercept, the numeric covariates you pass, and age² when one of them is `age`); `normative.zscores(frame, model)`
 returns `z_<feature>` = (observed − predicted) / the reference residual SD. Use PPMI healthy controls (or, inside a
 cross-validation fold, the training controls) as the reference and `tiv_mm3`, sex and a one-hot scanner batch as
-covariates. Pretrained lifespan models (Rutherford et al. 2022) need FreeSurfer Destrieux thickness, which PIE does not
-produce. Tests: `tests/test_normative.py`.
+covariates.
+
+Options for a multi-site reference (the consortium; PPMI's ~50 sites):
+- `site=` adds a per-site offset: the site's reference residual mean, shrunk by empirical Bayes; a site without
+  controls gets none.
+- `age_terms="spline"` uses a natural cubic spline in age.
+- `heteroscedastic=True` lets the residual SD change with age.
+- `crossfit_zscores(...)` gives controls out-of-fold z, so their z is a fair null for patients'.
+
+`mtl_preservation(z)` gives `mtl_z`, the mean z of hippocampi and amygdalae, and `mtl_preserved` (`mtl_z` > −1). This
+is relative medial-temporal preservation, the DLB-supportive biomarker (McKeith 2017). Pretrained lifespan models
+(Rutherford et al. 2022) need pcntoolkit and are not wrapped. Tests: `tests/test_normative.py`.
 
 ```python
 from pie.imaging import normative
 model = normative.fit(df, ["vol_Left_Putamen", "vol_Right_Putamen"], ["age", "sex", "tiv_mm3"], reference=df.COHORT.eq("Healthy Control"))
 z = normative.zscores(df, model)          # z_vol_Left_Putamen, z_vol_Right_Putamen
+z = normative.crossfit_zscores(df, features, ["age", "sex", "tiv_mm3"], df.COHORT.eq("Healthy Control"),
+                               site="scanner_id", age_terms="spline", heteroscedastic=True)
 ```
 
 ## Other cohorts: ADNI, any LONI project, BIDS (`cohorts.py`)

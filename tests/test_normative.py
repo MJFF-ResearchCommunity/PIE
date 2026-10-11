@@ -34,4 +34,31 @@ def test_normative_fit_uses_only_reference_rows_and_refuses_too_few():
     df2 = df.copy()
     df2.loc[40:, "vol"] += 1e6                                   # non-reference rows must not move the model
     m1, m2 = normative.fit(df, ["vol"], ["age"], ref), normative.fit(df2, ["vol"], ["age"], ref)
-    assert np.allclose(m1["features"]["vol"][0], m2["features"]["vol"][0])
+    assert np.allclose(m1["features"]["vol"]["beta"], m2["features"]["vol"]["beta"])
+
+
+def test_site_offsets_heteroscedastic_sd_and_out_of_fold_controls():
+    rng = np.random.default_rng(4)
+    n = 600
+    age = rng.uniform(45, 85, n)
+    site = rng.choice(["A", "B", "C"], n)
+    shift = pd.Series(site).map({"A": 0.0, "B": 300.0, "C": -300.0}).to_numpy()
+    sd = 50 + 5 * (age - 45)                                  # variance grows with age
+    vol = 5000 - 20 * (age - 65) + shift + sd * rng.normal(size=n)
+    df = pd.DataFrame({"age": age, "sex": rng.integers(0, 2, n).astype(float), "site": site, "vol": vol})
+    ref = np.r_[np.ones(500, bool), np.zeros(100, bool)]
+    plain = normative.zscores(df, normative.fit(df, ["vol"], ["age", "sex"], ref))["z_vol"]
+    m = normative.fit(df, ["vol"], ["age", "sex"], ref, site="site", age_terms="spline", heteroscedastic=True)
+    z = normative.zscores(df, m)["z_vol"]
+    assert abs(m["features"]["vol"]["site_offsets"]["B"] - 300) < 60 and abs(z[ref].std() - 1) < 0.1
+    young, old = df.age < 55, df.age > 75
+    assert abs(z[ref & young].std() - z[ref & old].std()) < 0.3 < abs(plain[ref & young].std() - plain[ref & old].std())
+    cz = normative.crossfit_zscores(df, ["vol"], ["age", "sex"], ref, site="site", age_terms="spline", heteroscedastic=True)["z_vol"]
+    assert abs(cz[ref].mean()) < 0.1 and 0.95 < cz[ref].std() < 1.15 and np.allclose(cz[~ref], z[~ref])
+
+
+def test_mtl_preservation_reads_hippocampal_and_amygdala_z():
+    z = pd.DataFrame({"z_vol_Left_Hippocampus": [0.5, -2.0, np.nan], "z_vol_Right_Hippocampus": [0.1, -1.6, 0.0],
+                      "z_vol_Left_Amygdala": [0.0, -1.0, 0.0], "z_vol_Left_Putamen": [-3.0, 0.0, 0.0]})
+    m = normative.mtl_preservation(z)
+    assert m["mtl_preserved"].tolist()[:2] == [True, False] and pd.isna(m["mtl_preserved"].iloc[2]) and abs(m["mtl_z"].iloc[1] + 1.533) < 1e-3

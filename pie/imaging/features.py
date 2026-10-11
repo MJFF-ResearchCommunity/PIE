@@ -55,6 +55,7 @@ def build_idp_table(sessions, subjects_dir):
             if l is not None and r is not None:
                 row[f"sum_{_clean(st)}"] = l + r
                 row[f"asym_{_clean(st)}"] = (l - r) / (l + r) if (l + r) else None
+                row[f"ai_{_clean(st)}"] = (l - r) / ((l + r) / 2) if (l + r) else None   # the ENIGMA asymmetry index (2x asym_)
         vent = [d.get(k, 0.0) for k in ["Left-Lateral-Ventricle", "Right-Lateral-Ventricle", "3rd-Ventricle",
                                         "4th-Ventricle", "Left-Inf-Lat-Vent", "Right-Inf-Lat-Vent"]]
         row["sum_Ventricles"] = sum(vent)

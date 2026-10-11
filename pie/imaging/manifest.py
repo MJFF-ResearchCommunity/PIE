@@ -151,7 +151,7 @@ def _baseline_idps(derived, per_visit=False):
         .drop_duplicates("PATNO", keep="first").drop(columns="_usable")
 
 
-T1_MEASURE = lambda c: c.startswith(("vol_", "sum_", "asym_", "cth_", "area_")) or c.endswith("Vol") or c == "eTIV"
+T1_MEASURE = lambda c: c.startswith(("vol_", "sum_", "asym_", "ai_", "cth_", "area_", "synthseg_")) or c.endswith("Vol") or c == "eTIV"
 
 
 def t1_visits(derived_dir, stream="cross"):

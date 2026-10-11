@@ -65,7 +65,7 @@ def test_parse_stats_and_idp_table(tmp_path):
     assert len(idp) == 1
     row = idp.iloc[0]
     assert row["vol_Left_Putamen"] == 4100.0 and row["sum_Putamen"] == 8000.0
-    assert abs(row["asym_Putamen"] - (4100 - 3900) / 8000) < 1e-9
+    assert abs(row["asym_Putamen"] - (4100 - 3900) / 8000) < 1e-9 and abs(row["ai_Putamen"] - (4100 - 3900) / 4000) < 1e-9
     assert row["sum_Ventricles"] == 9000.0 and row["Manufacturer"] == "Siemens"
     assert row["fastsurfer_version"] == "2.6.0" and row["MagneticFieldStrength"] == 1.5     # gauss in old GE headers
     assert "vol_FastSurfer_version" not in idp.columns
