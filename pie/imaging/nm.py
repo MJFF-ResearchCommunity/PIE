@@ -581,7 +581,7 @@ def _job(args):
 def main(argv=None):
     import argparse
 
-    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows, t1_session_dates
+    from .batch import add_common_args, fastsurfer_by_patno, filter_jobs, load_index, modality_jobs, run_batch
 
     ap = add_common_args(argparse.ArgumentParser())
     ap.add_argument("--denoise", action="store_true", help="MP-PCA over the repeats before averaging (Langley et al. 2025)")
@@ -617,12 +617,8 @@ def main(argv=None):
         return
     idx = load_index(work / "nm_index.csv", a.zips, flag_nm)
     idx = idx[idx["selected"]]
-    fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
-    t1d = t1_session_dates(a.sessions, fs)
     out_csv = work / "nm_features.csv"
-    done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g, t1d.get(int(patno))), fs[int(patno)], str(work), a.keep_nifti, a.denoise)
-            for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
+    jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.denoise) for p, rows, fsd in modality_jobs(idx, a, out_csv)]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, pid_file=a.pid_file)
 
 

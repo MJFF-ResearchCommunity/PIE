@@ -637,7 +637,22 @@ Recommended analysis:
 - scanner changes harmonised with `harmonize.long_combat`, with same-scanner follow-up as a sensitivity analysis.
 
 The pilot's acceptance test is the 29 same-day repeat sets: they should show about zero change, and they give the
-minimal detectable change. Per-visit DWI, NM and FLAIR need per-session modality runs, which come next.
+minimal detectable change.
+
+**Every modality, every visit.** The DWI, NM and FLAIR CLIs take `--per-visit`, in a separate `--work-dir`:
+- `batch.visit_jobs` runs one modality session per finished T1 session.
+- Each dated session goes to the participant's T1 session nearest in date, within `--visit-window-days` (default 180).
+- A T1 session keeps only its nearest modality session.
+- Each session is measured on its own visit's anatomy (`fs_image_id`); resuming is by (patno, `fs_image_id`).
+
+`build_manifest(per_visit=True)` and `assemble_features(per_visit=True)` then give one row per T1 session:
+- each modality row attaches to the T1 session it was measured on;
+- AV-133 PET attaches to the nearest T1 session; every PET visit is measured on the earliest T1;
+- rows from tables written before `fs_image_id` existed attach to the baseline;
+- the QC rules are the same as cross-sectional.
+
+The cross-sectional reads prefer the row measured on the baseline T1 when a table holds several per participant.
+DaT longitudinal values should come from PPMI's core-lab tables (`dat_sbr_table`), not PIE's reconstruction.
 
 ## Harmonisation (`harmonize.py`)
 

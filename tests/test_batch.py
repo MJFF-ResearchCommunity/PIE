@@ -61,3 +61,19 @@ def test_convert_series_returns_only_this_conversion_and_keeps_a_failure_log(tmp
     monkeypatch.setenv("FAIL", "1")
     assert batch.convert_series(zp, "PPMI/1/DTI/2000-01-01_09_00_00.0/I000001/", tmp_path / "nii2") == []
     assert "no gradient tags" in (tmp_path / "nii2" / "I000001_dcm2niix.log").read_text()
+
+
+def test_per_visit_jobs_pair_each_session_with_its_own_t1(tmp_path):
+    from pie.imaging.batch import visit_jobs
+
+    fs = tmp_path / "fs"
+    for img in ("T_BL", "T_V06", "T_NOFS"):
+        if img != "T_NOFS":
+            (fs / img / "stats").mkdir(parents=True)
+            (fs / img / "stats" / "aseg+DKT.stats").write_text("")
+    pd.DataFrame({"patno": [1, 1, 1], "image_id": ["T_BL", "T_V06", "T_NOFS"],
+                  "session_date": ["2020-01-01", "2022-01-05", "2023-06-01"]}).to_csv(tmp_path / "sessions.csv", index=False)
+    idx = pd.DataFrame({"patno": [1] * 5, "date": ["2020-01-03", "2020-01-03", "2022-01-01", "2022-02-20", "2023-06-01"],
+                        "prefix": ["a", "b", "c", "d", "e"], "n_files": [10] * 5})
+    jobs = visit_jobs(idx, tmp_path / "sessions.csv", fs, window_days=90)
+    assert [(p, Path(d).name, sorted(r["prefix"] for r in rows)) for p, rows, d in jobs] == [(1, "T_BL", ["a", "b"]), (1, "T_V06", ["c"])]

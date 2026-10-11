@@ -1172,7 +1172,7 @@ def _flag_dwi(idx):
 def main(argv=None):
     import argparse
 
-    from .batch import add_common_args, done_subjects, fastsurfer_by_patno, filter_jobs, load_index, run_batch, session_rows, t1_session_dates
+    from .batch import add_common_args, filter_jobs, load_index, modality_jobs, run_batch
 
     ap = add_common_args(argparse.ArgumentParser())
     ap.add_argument("--fsl", action="store_true", help="FSL topup/applytopup susceptibility correction where a reverse-phase b0 exists")
@@ -1190,12 +1190,9 @@ def main(argv=None):
     work.mkdir(parents=True, exist_ok=True)
     idx = load_index(work / "dwi_index.csv", a.zips, _flag_dwi)
     idx = idx[idx["selected"]]
-    fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
-    t1d = t1_session_dates(a.sessions, fs)
     out_csv = work / "dwi_features.csv"
-    done = done_subjects(out_csv, a.retry_errors)
-    jobs = [(int(patno), session_rows(g, t1d.get(int(patno))), fs[int(patno)], str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu, a.study)
-            for patno, g in idx.groupby("patno") if patno not in done and int(patno) in fs]
+    jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.fsl, a.denoise, a.fba, a.keep_preproc, a.eddy, not a.eddy_cpu, a.study)
+            for p, rows, fsd in modality_jobs(idx, a, out_csv)]
     if a.priority:
         order = {int(p): i for i, p in enumerate(Path(a.priority).read_text().split())}
         jobs.sort(key=lambda j: order.get(j[0], len(order)))

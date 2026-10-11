@@ -120,19 +120,65 @@ def add_common_args(ap):
     ap.add_argument("--retry-errors", action="store_true", help="re-process subjects whose previous row recorded an error")
     ap.add_argument("--keep-nifti", action="store_true", help="keep per-subject NIfTI outputs")
     ap.add_argument("--pid-file", help="write the runner's PID here")
+    ap.add_argument("--per-visit", action="store_true", help="longitudinal: one session per finished T1 session (each measured on "
+                    "its own visit's T1), not one per participant; use a separate --work-dir")
+    ap.add_argument("--visit-window-days", type=int, default=180, help="--per-visit: largest gap between a session and its T1")
     return ap
 
 
 def done_subjects(out_csv, retry_errors=False, key="patno"):
-    """Values of ``key`` already in ``out_csv`` (``image_id`` for runners with one row per scan, e.g. pet)."""
+    """Values of ``key`` already in ``out_csv`` (``image_id`` for runners with one row per scan, e.g. pet; a list of
+    columns gives tuples, e.g. ["patno", "fs_image_id"] for per-visit runs)."""
     out_csv = Path(out_csv)
     if not out_csv.exists() or out_csv.stat().st_size == 0:
         return set()
-    prev = pd.read_csv(out_csv)
+    prev = pd.read_csv(out_csv, dtype={"fs_image_id": str})
     if retry_errors and prev["error"].fillna("").ne("").any():
         prev = prev[prev["error"].fillna("") == ""]
         prev.to_csv(out_csv, index=False)
+    if isinstance(key, list):
+        return set(prev.reindex(columns=key).itertuples(index=False, name=None))
     return set(prev[key])
+
+
+def visit_jobs(idx, sessions_csv, fastsurfer_dir, window_days=180, require="stats/aseg+DKT.stats"):
+    """Per-visit jobs (longitudinal runs): (patno, rows of one modality session, FastSurfer dir of the T1 session it is
+    measured on). Each dated modality session goes to the participant's finished T1 session nearest in date, within
+    ``window_days``; a T1 session keeps only its nearest modality session. LONI-masked dates never match."""
+    sess = pd.read_csv(sessions_csv, dtype={"image_id": str})
+    root = Path(fastsurfer_dir)
+    finished = {p.parts[-3] for p in root.glob(f"*/{require}")}
+    t1 = sess[sess["image_id"].isin(finished)].assign(_d=lambda x: pd.to_datetime(x["session_date"], errors="coerce"))
+    t1 = t1[t1["_d"].dt.year < 2100]
+    pairs = []
+    for patno, g in idx.groupby("patno"):
+        tp = t1[t1["patno"] == patno]
+        for date, rows in g.groupby("date") if len(tp) else ():
+            d = pd.to_datetime(date, errors="coerce")
+            if pd.isna(d) or d.year >= 2100:
+                continue
+            gap = (tp["_d"] - d).abs().dt.days
+            if gap.min() <= window_days:
+                pairs.append((int(gap.min()), int(patno), tp.loc[gap.idxmin(), "image_id"], rows.to_dict("records")))
+    jobs, used = [], set()
+    for _, patno, image_id, rows in sorted(pairs, key=lambda x: (x[0], x[1])):
+        if (patno, image_id) not in used:
+            used.add((patno, image_id))
+            jobs.append((patno, rows, str(root / image_id)))
+    return sorted(jobs, key=lambda j: (j[0], j[2]))
+
+
+def modality_jobs(idx, a, out_csv):
+    """(patno, series rows, FastSurfer dir) still to run for a modality CLI: per participant, the session nearest its
+    earliest finished T1 (``session_rows``); with ``--per-visit``, one per finished T1 session (``visit_jobs``), resumed
+    by (patno, fs_image_id)."""
+    if getattr(a, "per_visit", False):
+        done = done_subjects(out_csv, a.retry_errors, key=["patno", "fs_image_id"])
+        return [j for j in visit_jobs(idx, a.sessions, a.fastsurfer_dir, a.visit_window_days) if (j[0], Path(j[2]).name) not in done]
+    fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+    t1d = t1_session_dates(a.sessions, fs)
+    done = done_subjects(out_csv, a.retry_errors)
+    return [(int(p), session_rows(g, t1d.get(int(p))), fs[int(p)]) for p, g in idx.groupby("patno") if p not in done and int(p) in fs]
 
 
 def filter_jobs(jobs, patnos_file=None, limit=None):

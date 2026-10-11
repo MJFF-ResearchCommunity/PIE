@@ -173,3 +173,23 @@ def test_av133_visit_nearest_the_t1_is_assembled_under_pet_qc_and_wmh_method_is_
     assert f.loc[1, "flair_wmh_method"] == "truenet" and not f["pet_av133_validated"].any()
     blocks = feature_blocks(f.columns)
     assert "pet_av133_sbrcb_caudate_l" in blocks["pet_av133"] and "flair_wmh_method" not in blocks["flair"]
+
+
+def test_per_visit_assembly_attaches_each_modality_row_to_the_t1_it_was_measured_on(tmp_path):
+    d = tmp_path
+    pd.DataFrame({"PATNO": [1, 1, 2], "IMAGEID": ["A", "B", "C"], "SCAN_DATE": ["2020-01-01", "2022-01-01", "2021-01-01"],
+                  "EVENT_ID": ["BL", "V06", "BL"], "vol_Left_Putamen": [5000.0, 4800.0, 5100.0]}).to_csv(d / "fastsurfer_idps.csv", index=False)
+    (d / "dwi").mkdir()
+    ok = {"error": "", "motion_mm_mean": 0.5, "sn_brain_mask_fraction": 1., "sn_physical_fraction": .95, "sn_posterior_l_fa": .5,
+          "sn_posterior_r_fa": .5, "n_sn_l": 40, "n_sn_r": 40, "fa_wm_median": 0.4, "manufacturer": "Siemens", "shells": "1000", "fw_method": "multishell_nls"}
+    pd.DataFrame([dict(ok, patno=1, fs_image_id="A", acquisition_date="2020-01-03", sn_mean_md=8e-4),
+                  dict(ok, patno=1, fs_image_id="B", acquisition_date="2022-01-02", sn_mean_md=9e-4),
+                  dict(ok, patno=2, acquisition_date="2021-01-02", sn_mean_md=7e-4)]).to_csv(d / "dwi" / "dwi_features.csv", index=False)
+    v = assemble_features(d, per_visit=True).set_index("t1_image_id")
+    assert len(v) == 3 and v.loc["A", "dwi_sn_mean_md"] == 8e-4 and v.loc["B", "dwi_sn_mean_md"] == 9e-4
+    assert v.loc["C", "dwi_sn_mean_md"] == 7e-4 and v.loc["B", "EVENT_ID"] == "V06" and v.loc["B", "dwi_days_from_t1"] == 1
+    assert "_t1" not in v.columns
+    t = pd.read_csv(d / "dwi" / "dwi_features.csv")
+    t.iloc[[1, 0, 2]].to_csv(d / "dwi" / "dwi_features.csv", index=False)   # the follow-up row first in the file
+    x = assemble_features(d).set_index("PATNO")                        # cross-sectional: the row measured on the baseline T1
+    assert len(x) == 2 and x.loc[1, "t1_image_id"] == "A" and x.loc[1, "dwi_sn_mean_md"] == 8e-4 and x.loc[1, "dwi_qc_pass"]

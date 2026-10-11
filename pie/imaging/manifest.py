@@ -137,13 +137,15 @@ def t1_visual_ratings(derived):
     return r.drop_duplicates("IMAGEID", keep="last").set_index("IMAGEID")["rating"].astype(str).str.lower().to_dict()
 
 
-def _baseline_idps(derived):
+def _baseline_idps(derived, per_visit=False):
     idps = pd.read_csv(derived / "fastsurfer_idps.csv", parse_dates=["SCAN_DATE"], low_memory=False)
     idps = idps.join(t1_outliers(idps))
     ratings = t1_visual_ratings(derived)
     if ratings:
         idps["t1_visual_qc"] = idps["IMAGEID"].astype(str).map(ratings)
     idps["_usable"] = QC["t1"](idps)
+    if per_visit:      # every T1 session (one per visit day), failed ones kept for QC reporting
+        return idps.sort_values(["PATNO", "SCAN_DATE", "IMAGEID"]).drop_duplicates("IMAGEID").drop(columns="_usable")
     # Prefer the earliest usable session, as build_dataset does; retain a failed subject only for QC reporting.
     return idps.sort_values(["PATNO", "_usable", "SCAN_DATE", "IMAGEID"], ascending=[True, False, True, True])\
         .drop_duplicates("PATNO", keep="first").drop(columns="_usable")
@@ -204,14 +206,27 @@ def _modality_metadata(d, mod, index_file, subjects, flag):
     return cols
 
 
-def _read(path):
+def _read(path, baseline_t1=None, per_visit=False):
+    """A modality table, error rows dropped, one row per participant: the row measured on the baseline T1 (``baseline_t1``:
+    patno -> image ID) when there is one, else the first. ``per_visit``: one row per participant and T1 session instead,
+    keyed ``_t1``: the T1 the row was measured on (``fs_image_id``), else the baseline T1 (tables written before rows
+    recorded it)."""
     p = Path(path)
     if not p.exists() or p.stat().st_size == 0:
         return None
-    d = pd.read_csv(p, low_memory=False)
+    d = pd.read_csv(p, low_memory=False, dtype={"fs_image_id": str})
     if "error" in d:
         d = d[d["error"].fillna("") == ""]
-    return (d.drop_duplicates("patno") if "patno" in d else d).copy()
+    if "patno" not in d:
+        return d.copy()
+    if baseline_t1 is None:
+        return d.drop_duplicates("patno").copy()
+    t1 = d["fs_image_id"] if "fs_image_id" in d else pd.Series(np.nan, index=d.index)
+    d = d.assign(_t1=t1.fillna(d["patno"].map(baseline_t1)).astype(str))
+    if per_visit:
+        return d.drop_duplicates(["patno", "_t1"]).copy()
+    on_baseline = d["_t1"].eq(d["patno"].map(baseline_t1).astype(str))
+    return d.assign(_b=~on_baseline).sort_values("_b", kind="stable").drop_duplicates("patno").drop(columns=["_b", "_t1"]).copy()
 
 
 def _vendor(s):
@@ -232,13 +247,26 @@ def _dates_from_index(index_csv, subjects, flag_col=None):
     return out
 
 
-def build_manifest(derived_dir, modality_dirs=None):
+def _per_visit_keys(derived, per_visit):
+    """(merge keys, extra key columns, the baseline-T1 map for ``_read``) for cross-sectional or per-visit assembly."""
+    base = _baseline_idps(derived)
+    base = dict(zip(base["PATNO"].astype(int), base["IMAGEID"].astype(str)))
+    return (["PATNO", "_t1"], ["_t1"], base) if per_visit else (["PATNO"], [], base)
+
+
+def build_manifest(derived_dir, modality_dirs=None, per_visit=False):
+    """One row per participant (the earliest usable T1 and the modality sessions measured nearest it); ``per_visit``: one
+    row per T1 session, each modality row attached to the T1 session it was measured on (``fs_image_id``; ``batch
+    --per-visit`` runs one modality session per T1 session), AV-133 PET to the nearest T1 session."""
     derived = Path(derived_dir)
-    idps = _baseline_idps(derived)
+    K, T, base = _per_visit_keys(derived, per_visit)
+    idps = _baseline_idps(derived, per_visit)
     man = pd.DataFrame({"PATNO": idps["PATNO"].astype(int), "t1_image_id": idps["IMAGEID"].astype(str), "t1_date": _masked_dates(idps["SCAN_DATE"])})
+    if per_visit:
+        man["_t1"] = man["t1_image_id"]
     subjects = set(man["PATNO"])
     # DaTscan (PIE SBRs): date from the SPECT index member path
-    dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv")
+    dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv", base, per_visit)
     if dat is not None:
         dat["dat_qc_pass"] = QC["dat"](dat)
         spect_idx = derived / "spect_index.csv"
@@ -250,11 +278,11 @@ def build_manifest(derived_dir, modality_dirs=None):
         dat["dat_date"] = _masked_dates(dat["image_id"].astype(str).map(dates))
         dat["dat_batch"] = _vendor(dat["hdr_manufacturer"]) + "_" + dat["hdr_model"].astype(str).str[:12]
         extra = ["fs_image_id"] if "fs_image_id" in dat else []     # the T1 the stored SPECT transform refers to
-        man = man.merge(dat[["patno", "image_id", "dat_date", "dat_batch", "dat_qc_pass"] + extra]
-                        .rename(columns={"patno": "PATNO", "image_id": "dat_image_id", "fs_image_id": "dat_fs_image_id"}), on="PATNO", how="left")
+        man = man.merge(dat[["patno", *T, "image_id", "dat_date", "dat_batch", "dat_qc_pass"] + extra]
+                        .rename(columns={"patno": "PATNO", "image_id": "dat_image_id", "fs_image_id": "dat_fs_image_id"}), on=K, how="left")
     # DWI
     dwi_dir = _modality_dir(derived, "dwi", modality_dirs)
-    dwi = _read(dwi_dir / "dwi_features.csv")
+    dwi = _read(dwi_dir / "dwi_features.csv", base, per_visit)
     if dwi is not None:
         dwi["dwi_qc_pass"] = QC["dwi"](dwi)
         dwi["dwi_batch"] = _vendor(dwi["manufacturer"]) + "_" + dwi["shells"].astype(str).str.replace(" ", "-") + "_" + dwi["fw_method"].astype(str)
@@ -265,10 +293,10 @@ def build_manifest(derived_dir, modality_dirs=None):
         dwi["dwi_acquisition_batch"] = _vendor(dwi["manufacturer"]) + "|" + dwi["shells"].astype(str) + "|" + \
             dwi.get("voxel_mm", pd.Series("", index=dwi.index)).astype(str) + "|" + dwi.get("n_volumes", pd.Series("", index=dwi.index)).astype(str)
         extra = _modality_metadata(dwi, "dwi", dwi_dir / "dwi_index.csv", subjects, "selected")
-        man = man.merge(dwi[["patno", "dwi_date", "dwi_batch", "dwi_acquisition_batch", "dwi_correction", "dwi_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+        man = man.merge(dwi[["patno", *T, "dwi_date", "dwi_batch", "dwi_acquisition_batch", "dwi_correction", "dwi_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on=K, how="left")
     # NM
     nm_dir = _modality_dir(derived, "nm", modality_dirs)
-    nmf = _read(nm_dir / "nm_features.csv")
+    nmf = _read(nm_dir / "nm_features.csv", base, per_visit)
     if nmf is not None:
         nmf["nm_qc_pass"] = QC["nm"](nmf)
         nmf["nm_batch"] = _vendor(nmf["manufacturer"]) + "_" + nmf["voxel_mm"].astype(str)
@@ -277,21 +305,21 @@ def build_manifest(derived_dir, modality_dirs=None):
         nmf["nm_acquisition_batch"] = (_vendor(nmf["manufacturer"]) + "|" + nmf["voxel_mm"].astype(str) + "|" + num("tr_s") + "|"
                                        + num("te_s") + "|" + num("mt_flag"))
         extra = _modality_metadata(nmf, "nm", nm_dir / "nm_index.csv", subjects, "selected")
-        man = man.merge(nmf[["patno", "nm_date", "nm_batch", "nm_acquisition_batch", "nm_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+        man = man.merge(nmf[["patno", *T, "nm_date", "nm_batch", "nm_acquisition_batch", "nm_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on=K, how="left")
     # FLAIR
     flair_dir = _modality_dir(derived, "flair", modality_dirs)
-    fl = _read(flair_dir / "flair_features.csv")
+    fl = _read(flair_dir / "flair_features.csv", base, per_visit)
     if fl is not None:
         fl["flair_qc_pass"] = QC["flair"](fl)
         fl["flair_batch"] = _vendor(fl["manufacturer"]) + "_" + np.where(fl["flair_3d"].astype(bool), "3D", "2D")
         fl["flair_wmh_method"] = fl.get("wmh_method", pd.Series("threshold", index=fl.index)).fillna("threshold")
         extra = _modality_metadata(fl, "flair", flair_dir / "flair_index.csv", subjects, "selected")
-        man = man.merge(fl[["patno", "flair_date", "flair_batch", "flair_wmh_method", "flair_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+        man = man.merge(fl[["patno", *T, "flair_date", "flair_batch", "flair_wmh_method", "flair_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on=K, how="left")
     # AV-133 PET (pet.py): one row per visit, so the visit nearest the T1; the stored registration refers to fs_image_id
     pet = pet_av133_rows(derived, modality_dirs, man)
     if pet is not None:
-        man = man.merge(pet[["PATNO", "pet_av133_image_id", "pet_av133_date", "pet_av133_batch", "pet_av133_fs_image_id",
-                             "pet_av133_qc_pass"]], on="PATNO", how="left")
+        man = man.merge(pet[["PATNO", *T, "pet_av133_image_id", "pet_av133_date", "pet_av133_batch", "pet_av133_fs_image_id",
+                             "pet_av133_qc_pass"]], on=K, how="left")
     for mod in ("dat", "dwi", "nm", "flair", "pet_av133"):
         if f"{mod}_date" in man:
             man[f"{mod}_days_from_t1"] = (man[f"{mod}_date"] - man["t1_date"]).dt.days
@@ -300,7 +328,7 @@ def build_manifest(derived_dir, modality_dirs=None):
             mismatch = recorded & man[f"{mod}_fs_image_id"].astype(str).ne(man["t1_image_id"])
             man[f"{mod}_t1_mismatch"] = mismatch
             man.loc[mismatch, f"{mod}_qc_pass"] = False
-    return man
+    return man.drop(columns="_t1", errors="ignore")
 
 
 # AV-133 PET (pet.py) is unvalidated: agreement with PPMI's PET_SBR_Analysis (`pet --agreement`) has not been run.
@@ -319,23 +347,29 @@ def pet_av133_rows(derived, modality_dirs, man):
     d = pd.read_csv(p, low_memory=False, dtype={"image_id": str, "fs_image_id": str})
     d = d[d.get("error", pd.Series("", index=d.index)).fillna("") == ""].copy()
     d["_qc"], d["_qc_cb"] = qc_pass(d), qc_pass(d, "cerebellum")
+    per_visit = "_t1" in man
     d = d.merge(man[["PATNO", "t1_date", "t1_image_id"]], left_on="patno", right_on="PATNO")
     d["pet_av133_date"] = _masked_dates(d["acquisition_date"])
     d["_gap"] = (d["pet_av133_date"] - d["t1_date"]).dt.days.abs().fillna(np.inf)
-    d = d.sort_values(["PATNO", "_gap"]).drop_duplicates("PATNO")
+    # each PET visit goes to its nearest T1 session, then each T1 session keeps its nearest PET visit
+    d = d.sort_values(["PATNO", "_gap"]).drop_duplicates("image_id").drop_duplicates(["PATNO", "t1_image_id"])
     sbr = [c for c in d.columns if re.fullmatch(r"sbr(?:cb)?_\w+", c)] + (["cb_occ"] if "cb_occ" in d else [])
     d.loc[~d["_qc"], sbr] = np.nan
     d.loc[~d["_qc_cb"], [c for c in sbr if c.startswith("sbrcb_")]] = np.nan
     text = lambda c: d.get(c, pd.Series("", index=d.index)).fillna("").astype(str)
-    d["pet_av133_qc_pass"] = d["_qc"] & ~(text("fs_image_id").ne("") & text("fs_image_id").ne(d["t1_image_id"].astype(str)))
+    # cross-sectional: the stored registration must refer to the manifest's T1; per visit, every PET visit is measured on
+    # the participant's earliest T1 (pet.py), so a later T1 session's row carries values on baseline anatomy
+    mismatch = text("fs_image_id").ne("") & text("fs_image_id").ne(d["t1_image_id"].astype(str))
+    d["pet_av133_qc_pass"] = d["_qc"] & (per_visit | ~mismatch)
     d.loc[~d["pet_av133_qc_pass"], sbr] = np.nan
     d["pet_av133_batch"] = _vendor(text("manufacturer")) + "_" + text("model").str[:12] + "_" + text("postfilter")
     out = d.rename(columns={"image_id": "pet_av133_image_id", "fs_image_id": "pet_av133_fs_image_id", **{c: f"pet_av133_{c}" for c in sbr}})
-    keep = ["PATNO", "pet_av133_image_id", "pet_av133_date", "pet_av133_batch", "pet_av133_fs_image_id", "pet_av133_qc_pass"]
-    return out.reindex(columns=keep + [f"pet_av133_{c}" for c in sbr])
+    keep = ["PATNO", *(["_t1"] if per_visit else []), "pet_av133_image_id", "pet_av133_date", "pet_av133_batch", "pet_av133_fs_image_id",
+            "pet_av133_qc_pass"]
+    return out.assign(_t1=out["t1_image_id"].astype(str)).reindex(columns=keep + [f"pet_av133_{c}" for c in sbr])
 
 
-def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, ppmi_dir=None):
+def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, ppmi_dir=None, per_visit=False):
     """Manifest + features per subject: FastSurfer IDPs (as in fastsurfer_idps.csv), `dat_*` SBRs (occipital `sbr_*` and
     cerebral-WM `sbrwm_*` references, their anterior/posterior halves, putamen/caudate ratios and asymmetry indices),
     `dwi_*`, `nm_*` (ratios/volumes only), `flair_*`. Values of QC-failed modalities are blanked; the QC flags stay.
@@ -343,35 +377,41 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
     Single-shell free water (``fw_method == "singleshell_prior"``) and its tissue FA are blanked unless
     ``single_shell_fw``: on 762 PPMI-1 scans its brain median did not rise with age (r = +0.02, against +0.43 for
     white-matter MD and +0.49 for multi-shell free water), it tracked nigral MD at r = 0.12 and it did not separate
-    PD from controls. The estimator is ill-posed without a second shell (Golub et al. 2021, MRM, doi:10.1002/mrm.28599)."""
+    PD from controls. The estimator is ill-posed without a second shell (Golub et al. 2021, MRM, doi:10.1002/mrm.28599).
+
+    ``per_visit``: one row per T1 session (``build_manifest(per_visit=True)``), each modality's features from the row
+    measured on that session; for longitudinal models (``pie.stats.longitudinal``), with ``t1_visits`` for time."""
     from .labels import sbr_indices
 
     derived = Path(derived_dir)
-    man = build_manifest(derived, modality_dirs=modality_dirs)
-    idps = _baseline_idps(derived).drop(columns=["SCAN_DATE"])
+    K, T, base = _per_visit_keys(derived, per_visit)
+    man = build_manifest(derived, modality_dirs=modality_dirs, per_visit=per_visit)
+    idps = _baseline_idps(derived, per_visit).drop(columns=["SCAN_DATE"])
+    if per_visit:
+        man["_t1"], idps["_t1"] = man["t1_image_id"], idps["IMAGEID"].astype(str)
     idps["t1_qc_pass"] = QC["t1"](idps)   # failed segmentation: T1 measures blanked, flag kept (as for the other modalities)
     measures = [c for c in idps.columns if T1_MEASURE(c)]
     idps.loc[~idps["t1_qc_pass"], measures] = np.nan     # identifiers, visit and scanner stay
-    df = man.merge(idps, on="PATNO", how="left")
+    df = man.merge(idps, on=K, how="left")
     if ppmi_dir is not None and "EVENT_ID" in df:   # PPMI's FS7 / MRIQC values, only for the visit of the T1 PIE used
         from .features import fs7_tables
         fs7 = fs7_tables(ppmi_dir).rename(columns={"EVENT_ID": "_fs7_event"})
         df = df.merge(fs7, left_on=["PATNO", "EVENT_ID"], right_on=["PATNO", "_fs7_event"], how="left").drop(columns="_fs7_event")
     blocks = {}
-    dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv")
+    dat = _read(_modality_dir(derived, "dat", modality_dirs) / "datscan_sbr.csv", base, per_visit)
     if dat is not None:
         for ref in ("sbr", "sbrwm"):
             if all(f"{ref}_{r}_{s}" in dat for r in ("caudate", "putamen") for s in "lr"):
                 idx = sbr_indices(*(dat[f"{ref}_{r}_{s}"] for r in ("caudate", "putamen") for s in "lr"))
                 dat[[f"{ref}_{c}" for c in idx]] = idx.to_numpy()
         cols = [c for c in dat.columns if c.startswith(("sbr_", "sbrwm_"))]
-        blocks["dat"] = dat[["patno"] + cols].rename(columns={c: f"dat_{c}" for c in cols})
-    dwi = _read(_modality_dir(derived, "dwi", modality_dirs) / "dwi_features.csv")
+        blocks["dat"] = dat[["patno", *T] + cols].rename(columns={c: f"dat_{c}" for c in cols})
+    dwi = _read(_modality_dir(derived, "dwi", modality_dirs) / "dwi_features.csv", base, per_visit)
     if dwi is not None:
         cols = [c for c in dwi.columns if is_dwi_feature(c)]
         if not single_shell_fw and "fw_method" in dwi:
             dwi.loc[dwi["fw_method"].eq("singleshell_prior"), [c for c in cols if c.endswith(("_fw", "_fat"))]] = np.nan
-        blocks["dwi"] = dwi[["patno"] + cols].rename(columns={c: f"dwi_{c}" for c in cols})
+        blocks["dwi"] = dwi[["patno", *T] + cols].rename(columns={c: f"dwi_{c}" for c in cols})
         # the study's nigral measures (``dwi --study``) carry their own QC, as nm_template does: the tensor measure
         # ``dwis_*`` and the pre-registered multi-shell free-water endpoint ``dwisf_*``
         for pre in STUDY_DWI:
@@ -379,39 +419,39 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
                 scols = [c for c in dwi.columns if re.fullmatch(STUDY_DWI[pre], c)]
                 ok = dwi[f"{pre}_qc_pass"].astype(str).str.lower().eq("true")
                 dwi.loc[~ok, scols] = np.nan
-                df = df.merge(dwi[["patno", f"{pre}_qc_pass"] + scols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
+                df = df.merge(dwi[["patno", *T, f"{pre}_qc_pass"] + scols].rename(columns={"patno": "PATNO"}), on=K, how="left")
         df["dwi_nigral_validated"] = DWI_NIGRAL_VALIDATED
-    nmf = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_features.csv")
+    nmf = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_features.csv", base, per_visit)
     if nmf is not None:
         cols = [c for c in nmf.columns if c.startswith("nm_") and c.endswith(("_cnr", "_voxels"))]   # nm.py ring contrast: diagnostic
-        blocks["nm"] = nmf[["patno"] + cols]
+        blocks["nm"] = nmf[["patno", *T] + cols]
         df["nm_validated"] = NM_VALIDATED
         # vendor and slab thickness (thin-axis extent) so analyses can restrict to Siemens / full coverage: 41 % of PIE's
         # NM is GE, most of it 20 mm slabs against the protocol's 24 mm, and GE separated PD from HC far worse
         dims = lambda c: nmf.get(c, pd.Series("", index=nmf.index)).astype(str).str.split("x", expand=True).apply(pd.to_numeric, errors="coerce")
-        df = df.merge(pd.DataFrame({"PATNO": nmf["patno"], "nm_vendor": _vendor(nmf["manufacturer"]),
-                                    "nm_slab_mm": (dims("shape") * dims("voxel_mm")).min(axis=1)}), on="PATNO", how="left")
-    nmt = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_template_features.csv")
+        df = df.merge(pd.DataFrame({"PATNO": nmf["patno"], **({"_t1": nmf["_t1"]} if per_visit else {}), "nm_vendor": _vendor(nmf["manufacturer"]),
+                                    "nm_slab_mm": (dims("shape") * dims("voxel_mm")).min(axis=1)}), on=K, how="left")
+    nmt = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_template_features.csv", base, per_visit)
     if nmt is not None:      # template-space CNR (Cassidy/Wengler); its own QC, so a failed template row blanks only these
         nmt["nmt_qc_pass"] = QC["nmt"](nmt)
         cols = [c for c in nmt.columns if c.startswith("nmt_") and c.endswith("_cnr")]
         nmt.loc[~nmt["nmt_qc_pass"], cols] = np.nan
-        df = df.merge(nmt[["patno", "nmt_qc_pass"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
-    nmb = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_published_features.csv")
+        df = df.merge(nmt[["patno", *T, "nmt_qc_pass"] + cols].rename(columns={"patno": "PATNO"}), on=K, how="left")
+    nmb = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_published_features.csv", base, per_visit)
     if nmb is not None:      # published Biondetti territories vs background; coverage already blanks a region
         cols = [c for c in nmb.columns if c.startswith("nmb_") and c.endswith("_cnr")]
-        df = df.merge(nmb[["patno"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
-    nat = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_native_features.csv")
+        df = df.merge(nmb[["patno", *T] + cols].rename(columns={"patno": "PATNO"}), on=K, how="left")
+    nat = _read(_modality_dir(derived, "nm", modality_dirs) / "nm_native_features.csv", base, per_visit)
     if nat is not None:      # native-space published measures (nm_native): Langley SNc volume, snceg volume and contrast
         cols = [c for c in nat.columns if c.startswith(("nml_sn_volume", "nms_sn", "nm_bion_")) and c.endswith(("_mm3", "_cr", "_cnr"))]
-        df = df.merge(nat[["patno"] + cols].rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
-    fl = _read(_modality_dir(derived, "flair", modality_dirs) / "flair_features.csv")
+        df = df.merge(nat[["patno", *T] + cols].rename(columns={"patno": "PATNO"}), on=K, how="left")
+    fl = _read(_modality_dir(derived, "flair", modality_dirs) / "flair_features.csv", base, per_visit)
     if fl is not None:
         cols = ["wmh_log_mm3", "wmh_pv_mm3", "wmh_deep_mm3", "wmh_frac_wm", "wmh_n_lesions", "wmh_mm3"]
-        blocks["flair"] = fl[["patno"] + cols].rename(columns={c: f"flair_{c}" for c in cols})
+        blocks["flair"] = fl[["patno", *T] + cols].rename(columns={c: f"flair_{c}" for c in cols})
     for mod, b in blocks.items():
-        df = df.merge(b.rename(columns={"patno": "PATNO"}), on="PATNO", how="left")
-        feat_cols = [c for c in b.columns if c != "patno"]
+        df = df.merge(b.rename(columns={"patno": "PATNO"}), on=K, how="left")
+        feat_cols = [c for c in b.columns if c not in ("patno", "_t1")]
         if f"{mod}_qc_pass" in df:
             # A failed left-side metric must not let valid-looking right-side metrics escape QC.
             bad = ~df[f"{mod}_qc_pass"].fillna(False).astype(bool)
@@ -431,9 +471,9 @@ def assemble_features(derived_dir, modality_dirs=None, single_shell_fw=False, pp
         df = df.merge(core_lab_sbr(ppmi_dir, df[["PATNO", "dat_date"]]), on=["PATNO", "dat_date"], how="left")
     pet = pet_av133_rows(derived, modality_dirs, man)
     if pet is not None:
-        df = df.merge(pet[["PATNO"] + [c for c in pet if c.startswith(("pet_av133_sbr", "pet_av133_cb_occ"))]], on="PATNO", how="left")
+        df = df.merge(pet[["PATNO", *T] + [c for c in pet if c.startswith(("pet_av133_sbr", "pet_av133_cb_occ"))]], on=K, how="left")
         df["pet_av133_validated"] = PET_AV133_VALIDATED
-    return df
+    return df.drop(columns="_t1", errors="ignore")
 
 
 def core_lab_sbr(ppmi_dir, scans):
