@@ -1,0 +1,8 @@
+# Whitelist for docker/Dockerfile: the build context is only what the image copies, so PPMI/, Imaging/, outputs and
+# other participant data in a working checkout can never reach an image (or be sent to the Docker daemon).
+*
+!LICENSE
+!pie
+!requirements-imaging.lock
+!requirements-imaging-cpu.lock
+**/__pycache__

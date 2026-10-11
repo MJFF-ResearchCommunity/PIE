@@ -1,0 +1,72 @@
+# Top-level Python dependencies of PIE's imaging stack: pie/imaging, the pie/stats and modelling code its tests
+# import, and FastSurfer, which runs in this same environment (pie.imaging.fastsurfer's PIE_FASTSURFER_PYTHON).
+# Compiled to requirements-imaging.lock (CUDA 12.8) and requirements-imaging-cpu.lock (CPU: CI, GPU-less enclaves).
+# Versions are pinned there, not here. Regenerate with the command in each lock's header (uv 0.7+); uv keeps the pins
+# already in the -o file, so adding a package does not move the others. The locks were first pinned to venv_imaging
+# as of 11 Oct 2026 (pandas 3.0.3, torch 2.7.1+cu128) by adding
+#   -c <(venv_imaging/bin/python -m pip freeze --exclude-editable | grep -v ' @ ' | sed -E 's/\+cu[0-9]+$//')
+# to that command; do the same to re-pin from a changed venv. Install: uv pip sync --torch-backend cu128 (or cpu) <lock>.
+
+# FastSurfer 2.6.0-dev0 (Deep-MI/FastSurfer@d0d7d39, the snapshot PIE's T1 validation ran on): its pyproject
+# dependencies plus the qc/lit extras its requirements.txt installs
+h5py
+lapy
+matplotlib
+meshpy
+monai
+neuroreg
+nibabel
+numpy
+packaging
+pandas
+pyrr
+pyyaml
+requests
+scikit-image
+scikit-learn
+scipy
+simpleitk
+tensorboard
+torch==2.7.*
+torchio
+torchvision
+tqdm
+yacs
+whippersnappy
+neurolit
+
+# pie/imaging
+antspyx
+cairosvg
+dcm2niix
+dipy
+fastapi
+neuroCombat
+nilearn
+pydicom
+uvicorn
+# TrUE-Net (FLAIR WMH; no PIE wrapper yet) is not on PyPI: pinned to the commit installed in venv_imaging (2.0.2)
+truenet @ git+https://github.com/v-sundaresan/truenet.git@4c539165932f7f0607693363731fe5d4e8356590
+
+# pie core and pie/stats (requirements.txt minus pie-clean and jupyterlab; endgame without the [tabular] extra,
+# whose deep-learning models venv_imaging does not have; and minus lifelines, which requires pandas<3: pie.stats.survive
+# runs in the general PIE environment, and its tests skip here)
+endgame-ml
+catboost
+interpret
+lightgbm
+optuna
+pingouin
+plotly
+polars
+psutil
+pyarrow
+scikit-posthocs
+seaborn
+shap
+statsmodels
+xgboost
+
+# tests
+httpx
+pytest
