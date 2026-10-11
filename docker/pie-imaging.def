@@ -1,0 +1,18 @@
+# Apptainer image of docker/Dockerfile, which stays the single place the versions are pinned; this file only converts it.
+#   docker build -f docker/Dockerfile -t pie-imaging .
+#   apptainer build pie-imaging.sif docker/pie-imaging.def
+# On a host without Docker, convert a saved image instead: apptainer build pie-imaging.sif docker-archive://pie-imaging.tar
+Bootstrap: docker-daemon
+From: pie-imaging:latest
+
+%labels
+    org.opencontainers.image.title PIE imaging
+
+%help
+    PIE imaging stack: FastSurfer 2.6.0-dev0 (d0d7d39), FreeSurfer 7.4.1, FSL 6.0.7.23, ANTs 2.6.5, MRtrix3 3.0.4,
+    dcm2niix v1.0.20260724 and the Python environment of requirements-imaging.lock. Bind data, outputs and the
+    FreeSurfer licence; --cleanenv keeps the host's PIE_*, FSLDIR and PYTHONPATH out:
+      apptainer exec --nv --cleanenv -B /path/Imaging:/data:ro -B /path/derived:/out \
+          -B /path/license.txt:/opt/freesurfer/license.txt pie-imaging.sif \
+          python -m pie.imaging.run --zips /data/<zip> --ppmi-dir /data/PPMI --work-dir /out
+    PIE's download cache lives in $HOME/.cache/pie (Apptainer binds the host home). See docker/README.md.
