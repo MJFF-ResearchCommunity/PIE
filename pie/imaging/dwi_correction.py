@@ -67,7 +67,7 @@ def topup_config(shape):
 
 
 def build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False,
-                       raw_is_uncorrected, cuda=True, nthr=1):
+                       raw_is_uncorrected, cuda=True, nthr=1, n_directions=None):
     """Build the bounded correction command for a prepared working directory.
 
     Requires standard raw.nii.gz/mask/gradient/acqparams/index filenames and
@@ -76,7 +76,8 @@ def build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False,
     not images already passed through applytopup or rigid motion correction.
     The caller owns resource scheduling, command/provenance logs and timeouts.
     CPU and CUDA engines are explicit choices, never a silent fallback. ``nthr``: OpenMP threads, which only eddy_cpu
-    uses (single-threaded it takes many hours per multi-shell scan).
+    uses (single-threaded it takes many hours per multi-shell scan). ``n_directions`` (distinct diffusion directions):
+    below 60, ``--slm=linear``, FSL's advice for data with few directions or not covering the whole sphere.
     """
     if raw_is_uncorrected is not True:
         raise ValueError('Raw uncorrected input required; do not apply correction twice')
@@ -89,6 +90,9 @@ def build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False,
                '--acqp=acqparams.txt', '--index=index.txt', '--bvals=bvals',
                '--bvecs=bvecs', '--out=eddy', '--niter=5', f'--nthr={int(nthr)}', '--repol',
                '--initrand=1', '--cnr_maps', '--ol_type=sw', '--mporder=0', '--verbose', *options]
+    record['slm'] = 'linear' if n_directions is not None and n_directions < 60 else 'none'
+    if record['slm'] == 'linear':
+        command.append('--slm=linear')
     if use_topup:
         command.append('--topup=topup')
     return command, record

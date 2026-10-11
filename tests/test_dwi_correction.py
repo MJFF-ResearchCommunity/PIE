@@ -56,3 +56,11 @@ def test_corrected_geometry_rejects_shifted_grid_and_bad_gradients():
         correction.validate_corrected_geometry(raw, shifted, b, v)
     with pytest.raises(ValueError, match='unit length'):
         correction.validate_corrected_geometry(raw, raw, b, v * 2)
+
+
+def test_few_directions_get_a_linear_second_level_model():
+    meta = {'PhaseEncodingDirection': 'j-', 'TotalReadoutTime': .06}
+    argv, record = correction.build_eddy_command('/fsl/bin', meta, 5, raw_is_uncorrected=True, n_directions=32)
+    assert '--slm=linear' in argv and record['slm'] == 'linear'
+    argv, record = correction.build_eddy_command('/fsl/bin', meta, 5, raw_is_uncorrected=True, n_directions=64)
+    assert '--slm=linear' not in argv and record['slm'] == 'none'

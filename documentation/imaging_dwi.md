@@ -463,7 +463,7 @@ not run the instrumentation concurrently with another optimizer in the same Pyth
 | `choose_tensor_acquisition(runs)` | One complete acquisition nearest b = 1000 (shells 500-1500, >= 12 DW volumes, own b0); ties → more volumes, then filename. Returns `(run, selected_mask, shell)`; never borrows b0s from another acquisition |
 | `slice_options(metadata, n_slices)` | `['--json=metadata.json']` only when `SliceTiming` is complete and its simultaneous-slice groups match `MultibandAccelerationFactor`; otherwise `[]` plus the reason. Unverified grouping must not enable `mporder>0` |
 | `topup_config(shape)` | `b02b0.cnf` for even grids, `b02b0_1.cnf` for any odd dimension; never crops |
-| `build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False, raw_is_uncorrected, cuda=True)` | `eddy_cuda`/`eddy_cpu` (explicit, no fallback) with `--repol --ol_type=sw --mporder=0 --niter=5 --cnr_maps …`; `raw_is_uncorrected` must be `True` (no correction applied twice); needs verified PE/readout (`pe_row`) |
+| `build_eddy_command(fsl_bin, metadata, n_slices, *, use_topup=False, raw_is_uncorrected, cuda=True, nthr=1, n_directions=None)` | `eddy_cuda`/`eddy_cpu` (explicit, no fallback) with `--repol --ol_type=sw --mporder=0 --niter=5 --cnr_maps …`, plus `--slm=linear` below 60 distinct directions (FSL's advice; `eddy_slm` on the row, from 11 Oct 2026); `raw_is_uncorrected` must be `True` (no correction applied twice); needs verified PE/readout (`pe_row`) |
 | `validate_corrected_geometry(raw_image, corrected_image, bvals, rotated_bvecs)` | Rejects changed shape/affine, bad b-values, missing b0 or DW volumes, non-unit rotated bvecs. Headers only |
 
 `build_eddy_command` expects `raw.nii.gz`, `eddy_mask.nii.gz`, `acqparams.txt`, `index.txt`, `bvals`, `bvecs`

@@ -353,8 +353,11 @@ def _eddy_in(work, ds, rows, cuda, timeout, threads):
         b0 = np.asanyarray(nib.load(work / "topup_b0.nii.gz").dataobj).mean(axis=3)
     # the study's eddy mask (run_scientific_dwi.mask_b0), on topup's corrected mean b0 when topup ran
     nib.save(nib.Nifti1Image(_b0_brain(b0).astype(np.uint8), aff), work / "eddy_mask.nii.gz")
+    g = ds["bvecs"][:, b > 50].T
+    g = g * np.sign(g[np.arange(len(g)), np.abs(g).argmax(axis=1)])[:, None]     # g and -g are one direction
+    n_dirs = len(np.unique(np.round(g, 2), axis=0))
     cmd, record = build_eddy_command(f"{FSLDIR}/bin", ds["meta"], int(data.shape[2]), use_topup=topup, raw_is_uncorrected=True,
-                                     cuda=cuda, nthr=1 if cuda else threads)
+                                     cuda=cuda, nthr=1 if cuda else threads, n_directions=n_dirs)
     r = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
     if r.returncode:
         raise RuntimeError(f"eddy failed: {(r.stderr or r.stdout)[-300:]}")
@@ -1071,6 +1074,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     row["eddy_outlier_fraction"] = ds.get("eddy_outlier_fraction", np.nan)
     row["motion_metric"] = ds["motion_metric"]                 # eddy RMS displacement and rigid translation differ in meaning
     row["eddy_slice_timing"] = ds.get("eddy_record", {}).get("slice_timing", "")
+    row["eddy_slm"] = ds.get("eddy_record", {}).get("slm", "")
     row.update({"motion_mm_mean": ds["motion_mm_mean"], "motion_mm_max": ds["motion_mm_max"], "rotation_deg_max": ds["rotation_deg_max"],
                 "bvecs_rotated": ds["bvecs_rotated"], "processing_version": "2026-10-11-b0-scaling-anatomical-split-v4",
                 "fs_image_id": Path(fastsurfer_dir).name, "acquisition_date": series_rows[0]["date"],
