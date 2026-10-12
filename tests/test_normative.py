@@ -62,3 +62,13 @@ def test_mtl_preservation_reads_hippocampal_and_amygdala_z():
                       "z_vol_Left_Amygdala": [0.0, -1.0, 0.0], "z_vol_Left_Putamen": [-3.0, 0.0, 0.0]})
     m = normative.mtl_preservation(z)
     assert m["mtl_preserved"].tolist()[:2] == [True, False] and pd.isna(m["mtl_preserved"].iloc[2]) and abs(m["mtl_z"].iloc[1] + 1.533) < 1e-3
+
+
+def test_a_missing_site_label_is_its_own_site_not_a_nan_model():
+    rng = np.random.default_rng(1)
+    n = 200
+    df = pd.DataFrame({"age": rng.uniform(50, 80, n), "sex": rng.integers(0, 2, n).astype(float), "vol": rng.normal(5000, 300, n),
+                       "site": pd.Series(rng.choice(["A", "B"], n), dtype=object)})
+    df.loc[:7, "site"] = np.nan
+    z = normative.zscores(df, normative.fit(df, ["vol"], ["age", "sex"], np.ones(n, bool), site="site"))["z_vol"]
+    assert z.notna().all() and abs(z.std() - 1) < 0.1

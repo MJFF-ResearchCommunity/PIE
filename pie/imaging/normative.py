@@ -59,7 +59,7 @@ def fit(frame, features, covariates, reference, site=None, age_terms="quadratic"
         resid = y[ok] - X[ok] @ beta
         offsets = {}
         if site is not None:       # empirical-Bayes site intercepts from the reference residuals
-            s = frame.loc[ok, site].astype(str).to_numpy()
+            s = frame.loc[ok, site].fillna("unknown").astype(str).to_numpy()     # pandas 3 keeps NaN through astype(str)
             g = pd.Series(resid).groupby(s)
             within = float(np.var(resid - g.transform("mean").to_numpy(), ddof=1))
             tau2 = max(float(g.mean().var(ddof=1)) - within / max(g.size().mean(), 1), 0.0) if g.ngroups > 1 else 0.0
@@ -93,7 +93,7 @@ def zscores(frame, model):
             e = {"beta": e[0], "sd": e[1], "site_offsets": {}, "sd_age": None}
         pred = X @ e["beta"]
         if model.get("site") is not None:
-            pred = pred + frame[model["site"]].astype(str).map(e["site_offsets"]).fillna(0.0).to_numpy()
+            pred = pred + frame[model["site"]].fillna("unknown").astype(str).map(e["site_offsets"]).fillna(0.0).to_numpy()
         out[f"z_{f}"] = (frame[f].to_numpy(float) - pred) / _sd(frame, model, e)
     return pd.DataFrame(out, index=frame.index)
 

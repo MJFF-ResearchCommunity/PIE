@@ -39,6 +39,8 @@ def _values(df, features):
 
 def _batches(df, batch, levels=None):
     """Sorted batch levels and each row's index into them; unseen levels are an error."""
+    if df[batch].isna().any():
+        raise ValueError(f"{int(df[batch].isna().sum())} rows have no {batch!r}: label them (or drop them) before harmonising")
     values = df[batch].astype(str).to_numpy()
     levels = np.unique(values) if levels is None else levels
     unseen = sorted(set(values) - set(levels))
