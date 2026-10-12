@@ -170,7 +170,7 @@ def test_av133_visit_nearest_the_t1_is_assembled_under_pet_qc_and_wmh_method_is_
     f = assemble_features(d).set_index("PATNO")
     assert f.loc[1, "pet_av133_image_id"] == "P1b" and f.loc[1, "pet_av133_sbr_putamen_l_post"] == 2.0 and f.loc[1, "pet_av133_days_from_t1"] == 31
     assert not f.loc[2, "pet_av133_qc_pass"] and np.isnan(f.loc[2, "pet_av133_sbr_caudate_l"])      # measured on another T1
-    assert f.loc[1, "flair_wmh_method"] == "truenet" and not f["pet_av133_validated"].any()
+    assert f.loc[1, "flair_wmh_method"] == "truenet" and f["pet_av133_validated"].all()
     blocks = feature_blocks(f.columns)
     assert "pet_av133_sbrcb_caudate_l" in blocks["pet_av133"] and "flair_wmh_method" not in blocks["flair"]
 

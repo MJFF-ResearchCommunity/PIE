@@ -392,8 +392,9 @@ keeps the prepared FLAIR and the probability map.
 
 [18F]AV-133 binds the vesicular monoamine transporter in dopaminergic terminals: a presynaptic striatal measure like
 DaTscan. PPMI's `PET_SBR_Analysis` (September 2026) holds 237 AV-133 rows (233 analysed, 106 participants, 2012–2024)
-plus 10 [18F]C05-05 and 9 [18F]DPA-714 rows. **Status: implemented and phantom-tested, not yet run: no AV-133 images
-are downloaded, so agreement with PPMI is unmeasured.**
+plus 10 [18F]C05-05 and 9 [18F]DPA-714 rows. **Status (12 Oct 2026): validated against all three PPMI pipelines**
+(table below): posterior putamen r 0.92–0.97. The caudate correlates at r 0.79–0.95 but reads 0.4–0.6 lower than
+PPMI's small VOIs.
 
 What PPMI did (IND processing methods, rev. 25 April 2014; PET Technical Operations Manual for protocol 004, v4.0 2022):
 - 222 MBq bolus; 2 × 5 min frames from 80 ± 5 min after injection (median injection-to-scan 75–80 min per protocol in
@@ -419,25 +420,51 @@ stay apart as well. `sbrcb_*` re-references sub-regional rows to the cerebellum:
 is no Xing-style re-analysis of AV-133 (that exists for DaTscan only).
 
 PIE measures every PET visit on the participant's earliest finished FastSurfer T1:
-1. `index_pet`, `select_series`: LONI series plus a first-file DICOM probe. Candidates are modality PT with no other
-   PPMI tracer named. The scanner's FDG default does not exclude a series; the PPMI join decides the tracer. Per
-   participant-day the unfiltered reconstruction wins (`--recon filtered` reverses this), then most frames, then most
+1. `index_pet`, `select_series`: LONI series (DICOM, or one ECAT 7 `.v` file) plus a first-file probe. Candidates
+   are modality PT with no other PPMI tracer named, LONI's renamed descriptions included ("6x5_PPMI_TAU__AC_"), and
+   not a transmission scan (TX, Ge-68, measured attenuation). The scanner's FDG default does not exclude a series; the
+   PPMI join decides the tracer. Per participant-day attenuation-corrected reconstructions beat NAC ones, scans known to
+   start before the analysis window ("Initial", ECAT dose times) rank last, then the unfiltered reconstruction wins
+   (`--recon filtered` reverses this), then most frames, then most
    files; single-frame series of one class are stacked as sequential statics. Choices are kept in `pet_index.csv`.
 2. `load_scan`: dcm2niix gives the 4D image and a PET-BIDS sidecar (`TracerName`, `InjectedRadioactivity`, `Units`,
-   `DecayCorrection`, `ReconMethodName`). Frame timing comes from every DICOM header: `FrameReferenceTime` − duration / 2
+   `DecayCorrection`, `ReconMethodName`). Exports dcm2niix rejects are built from the slices (`dicom_volume`; 29 2012–14
+   HR+ visits restart `ImageIndex` at 0 per frame). ECAT 7 files are read with nibabel (`read_ecat`): frame times come
+   from the scan and dose start, and the orientation is nibabel's affine as is (`ECAT_FLIP`: rotated alternatives
+   registered worse, and the left–right asymmetry matched PPMI's at r 0.96). Series that start before the analysis
+   window are dropped when a later one exists, and the rest are resampled onto the first series' grid (2012–13 visits
+   hold separate ~50 and ~80 min statics with the participant repositioned in between). Frame timing comes from every DICOM header: `FrameReferenceTime` − duration / 2
    within a series, anchored at its earliest `AcquisitionTime`, relative to `RadiopharmaceuticalStartTime`.
    Overlapping frames are refused, and the volume count and dcm2niix's durations must agree.
 3. `mean_image`: frames starting ≥ 70 min after injection (all of them when timing is unknown). Each is registered to
    the first (rigid MI). If any corner of a ±50 mm cube moves more than 1 mm (`motion_mm`), frames are resampled onto
    the first. Then the duration-weighted mean.
 4. `register_pet_to_t1`: rigid Mattes MI to `orig.mgz`, the metric restricted to the FastSurfer brain dilated 10 mm,
-   started from the centres of mass, seeded with `datscan.ITK_SEED`.
+   seeded with `datscan.ITK_SEED`, on the PET clipped at its 99.5th percentile. **Multi-start** (`REG_STARTS`): the
+   centre-of-mass start shifted −30 to +30 mm along the scanner axis and pitched −15° to +30°, a coarse registration
+   from each, the best metric refined. A single start converged to a wrong pose on about a quarter of PPMI AV-133 scans,
+   mostly tilted 2012–14 HR+ acquisitions. On 53 of them the multi-start raised posterior putamen r with PPMI from
+   0.42–0.61 to 0.83, chosen by the metric alone.
 5. `quantify`: the PET is resampled onto the T1, and voxels outside its field of view leave every ROI.
    `datscan.sbr_from_arrays` then measures caudate and putamen, each also split at the median anterior coordinate,
    against the DKT occipital cortex; `sbrcb_*` uses cerebellar cortex (aseg 8 / 47).
 
 On a phantom with known uptake, a 9° / 14 mm misalignment and 3 mm of inter-frame motion, the SBRs come back within
 10 % (+0.05). With the registration's optimiser switched off they miss by up to 0.45.
+
+**On PPMI (12 Oct 2026).** The readiness download held 210 AV-133 visits with a PIE T1: 57 ECAT-only (2012–14 HR+),
+29 rebuilt from slices, and the rest converted by dcm2niix. 208 were measured, 172 pass `qc_pass`, and 35 still fail
+the template correlation (< 0.4). Agreement with PPMI on QC-passing scans, occipital reference:
+
+| Pipeline | Scans | Posterior putamen r (L / R) | CCC (L / R) | Anterior putamen r | Caudate r | Caudate bias |
+|---|---|---|---|---|---|---|
+| `core_lab_6voi` | 66 | 0.95 / 0.92 | 0.90 / 0.90 | 0.95 / 0.93 | 0.88 / 0.92 | −0.49 / −0.63 |
+| `ind_2014` | 81 | 0.94 / 0.95 | 0.93 / 0.95 | 0.89 / 0.88 | 0.79 / 0.79 | −0.40 / −0.48 |
+| `subregional` | 23 | 0.97 / 0.95 | 0.96 / 0.92 | 0.98 / 0.99 | 0.95 / 0.95 | −0.53 / −0.62 |
+
+On the cerebellar reference (`sbrcb_*`, sub-regional rows, n 22) the putamen agrees at r 0.95–0.99. The caudate offset
+is systematic, not scatter: FastSurfer's whole caudate against PPMI's small VOIs. Use PIE's caudate within PIE, and
+never on PPMI's scale. The ECAT-only visits alone (n 53) give posterior putamen CCC 0.92–0.96 against `ind_2014`.
 
 ```bash
 venv_imaging/bin/python -m pie.imaging.pet --zips <AV-133 PET zips> --sessions <derived>/sessions.csv \
@@ -565,7 +592,7 @@ With `pet/pet_av133.csv` present (`pet.py`), the manifest takes the AV-133 visit
 - QC is `pet.qc_pass`, and it fails when the stored registration refers to another T1;
 - the assembled table adds `pet_av133_sbr_*` (occipital reference, PPMI's scale), `pet_av133_sbrcb_*` (cerebellum,
   under its own coverage rule) and `pet_av133_cb_occ`, as the `pet_av133` block;
-- `pet_av133_validated` is False until `pet --agreement` has been run.
+- `pet_av133_validated` is True since the 12 Oct 2026 agreement run (above).
 
 FLAIR rows carry `flair_wmh_method` (`truenet`, or `threshold` for tables written before 11 Oct 2026). Never pool the
 two methods. With `nm/nm_template_features.csv` present it adds the template-space NM

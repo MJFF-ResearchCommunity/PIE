@@ -351,8 +351,9 @@ def build_manifest(derived_dir, modality_dirs=None, per_visit=False):
     return man.drop(columns="_t1", errors="ignore")
 
 
-# AV-133 PET (pet.py) is unvalidated: agreement with PPMI's PET_SBR_Analysis (`pet --agreement`) has not been run.
-PET_AV133_VALIDATED = False
+# AV-133 PET (pet.py) agrees with PPMI's PET_SBR_Analysis in all three pipelines (12 Oct 2026, 170 QC-passing scans:
+# posterior putamen r 0.92-0.97; caudate r 0.79-0.95 with a fixed offset, so PIE's caudate is not on PPMI's scale)
+PET_AV133_VALIDATED = True
 
 
 def pet_av133_rows(derived, modality_dirs, man):
