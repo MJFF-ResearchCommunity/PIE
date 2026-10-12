@@ -195,7 +195,30 @@ def truenet_env():
                 PATH=os.pathsep.join([f"{FSLDIR}/bin", str(BIN), os.environ.get("PATH", "")]), OMP_NUM_THREADS="2")
 
 
-def run_truenet(flair_nii, t1_img, out_dir):
+def _prepare_from_fastsurfer(out, fastsurfer_dir, env, log):
+    """TrUE-Net inputs without ``fsl_anat`` (its nonlinear registration takes ~20 min and serves only the post-processing
+    WM mask): the FLAIR exactly as ``prepare_truenet_data`` prepares it (reorient, BET, FAST bias correction); the T1 =
+    FastSurfer's N4-corrected ``orig_nu`` in its brain mask, rigidly registered to the FLAIR brain (``flirt -dof 6``, as
+    the script does); the WM mask = FastSurfer's cerebral white matter + WM hypointensities (aseg 2, 41, 77) carried
+    by the same matrix. Writes sub_FLAIR, sub_T1 and sub_WMmask."""
+    from .freesurfer import run
+
+    fsl = Path(FSLDIR) / "bin"
+    mri = Path(fastsurfer_dir) / "mri"
+    t1n, mask = nib.load(mri / "orig_nu.mgz"), np.asanyarray(nib.load(mri / "mask.mgz").dataobj) > 0
+    aseg = np.asanyarray(nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz").dataobj)
+    nib.save(nib.Nifti1Image((np.asanyarray(t1n.dataobj) * mask).astype(np.float32), t1n.affine), out / "t1_brain_raw.nii.gz")
+    nib.save(nib.Nifti1Image(np.isin(aseg, [2, 41, 77]).astype(np.uint8), t1n.affine), out / "wm_raw.nii.gz")
+    for cmd in ([fsl / "fslreorient2std", out / "flair", out / "FLAIR"], [fsl / "bet", out / "FLAIR", out / "FLAIR_brain"],
+                [fsl / "fast", "-B", "--nopve", out / "FLAIR_brain"], [fsl / "imcp", out / "FLAIR_brain_restore", out / "sub_FLAIR"],
+                [fsl / "fslreorient2std", out / "t1_brain_raw", out / "T1_brain"], [fsl / "fslreorient2std", out / "wm_raw", out / "WM"],
+                [fsl / "flirt", "-dof", "6", "-in", out / "T1_brain", "-ref", out / "FLAIR_brain", "-out", out / "sub_T1", "-omat", out / "t1_2flair.mat"],
+                [fsl / "flirt", "-in", out / "WM", "-ref", out / "FLAIR_brain", "-applyxfm", "-init", out / "t1_2flair.mat", "-interp",
+                 "nearestneighbour", "-out", out / "sub_WMmask"]):
+        run(cmd, log, out, env=env, timeout=3600)
+
+
+def run_truenet(flair_nii, t1_img, out_dir, prep="fsl_anat", fastsurfer_dir=None):
     """TrUE-Net as distributed on one FLAIR (NIfTI path) + T1 (nibabel image), in a fresh ``out_dir``:
 
         prepare_truenet_data --FLAIR=<out>/flair --T1=<out>/t1 --outname=<out>/sub --nodistmaps
@@ -203,7 +226,8 @@ def run_truenet(flair_nii, t1_img, out_dir):
 
     (the script appends .nii.gz; distance maps only matter for training). Returns the probability map masked by the
     BIANCA WM mask, as a nibabel image on the prepared (reoriented, brain-extracted) FLAIR grid.
-    ``CUDA_VISIBLE_DEVICES=`` forces the CPU."""
+    ``CUDA_VISIBLE_DEVICES=`` forces the CPU. ``prep="fastsurfer"`` replaces the script by ``_prepare_from_fastsurfer``
+    (~2 min instead of ~25; agreement with the distributed preparation in the docs)."""
     from .freesurfer import run
 
     out = Path(out_dir).resolve()
@@ -215,8 +239,11 @@ def run_truenet(flair_nii, t1_img, out_dir):
     shutil.copy(flair_nii, out / "flair.nii.gz")
     nib.save(nib.Nifti1Image(np.asanyarray(t1_img.dataobj), t1_img.affine), out / "t1.nii.gz")
     log = out / "truenet.log"
-    run([BIN / "prepare_truenet_data", f"--FLAIR={out / 'flair'}", f"--T1={out / 't1'}", f"--outname={out / 'sub'}", "--nodistmaps"],
-        log, out, env=env, timeout=6 * 3600)
+    if prep == "fastsurfer":
+        _prepare_from_fastsurfer(out, fastsurfer_dir, env, log)
+    else:
+        run([BIN / "prepare_truenet_data", f"--FLAIR={out / 'flair'}", f"--T1={out / 't1'}", f"--outname={out / 'sub'}", "--nodistmaps"],
+            log, out, env=env, timeout=6 * 3600)
     missing = [f for f in ("sub_FLAIR", "sub_T1", "sub_WMmask") if not (out / f"{f}.nii.gz").exists()]
     if missing:                      # the script exits 0 whatever fails
         raise RuntimeError(f"prepare_truenet_data wrote no {', '.join(missing)}; see {log}")
@@ -226,7 +253,7 @@ def run_truenet(flair_nii, t1_img, out_dir):
     return nib.Nifti1Image(np.where(wm, np.asanyarray(prob.dataobj), 0).astype(np.float32), prob.affine)
 
 
-def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, method="truenet"):
+def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False, method="truenet", prep="fsl_anat"):
     import SimpleITK as sitk
 
     sitk.ProcessObject_SetGlobalDefaultNumberOfThreads(2)
@@ -264,7 +291,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     else:
         from importlib.metadata import version
 
-        prob = run_truenet(niis[0], t1, work / "truenet")
+        prob = run_truenet(niis[0], t1, work / "truenet", prep=prep, fastsurfer_dir=fastsurfer_dir)
         p = np.asanyarray(prob.dataobj)
         fl_grid = _sitk_native(p, prob.affine)
         dist_t1 = sitk.GetImageFromArray(ventricle_distance(aseg, vox).astype(np.float32))
@@ -275,7 +302,7 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
         wm, med, mad = normal_wm(fl_t1, aseg)
         fsl = Path(FSLDIR, "etc", "fslversion")
         feats.update(wm_mm3=float(wm.sum() * vox**3), flair_wm_median=med, flair_wm_mad=mad, wmh_prob_threshold=WMH_PROB,
-                     truenet_model=TRUENET_MODEL, truenet_version=version("truenet"),
+                     truenet_model=TRUENET_MODEL, truenet_version=version("truenet"), truenet_prep=prep,
                      fsl_version=fsl.read_text().strip() if fsl.exists() else "")
         feats["wmh_frac_wm"] = feats["wmh_mm3"] / max(feats["wm_mm3"], 1.0)
         les = sitk.GetArrayFromImage(sitk.Resample(_sitk_native((p >= WMH_PROB).astype(np.float32), prob.affine), t1_grid, tx,
@@ -292,9 +319,9 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
 
 
 def _job(args):
-    patno, rows, fs_dir, work_dir, keep, method = args
+    patno, rows, fs_dir, work_dir, keep, method, prep = args
     try:
-        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, method=method)
+        out = process_subject(patno, rows, fs_dir, work_dir, keep_nifti=keep, method=method, prep=prep)
         out["error"] = ""
     except Exception as e:
         out = {"patno": patno, "wmh_method": method, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -307,6 +334,8 @@ def main(argv=None):
     from .batch import add_common_args, filter_jobs, load_index, modality_jobs, run_batch
 
     ap = add_common_args(argparse.ArgumentParser())
+    ap.add_argument("--truenet-prep", choices=["fsl_anat", "fastsurfer"], default="fsl_anat", help="TrUE-Net input preparation: "
+                    "the distributed prepare_truenet_data (fsl_anat, ~25 min) or FastSurfer's N4 T1, mask and WM labels (~2 min)")
     ap.add_argument("--method", choices=METHODS, default="truenet",
                     help="truenet (needs FSL and the TrUE-Net weights) or the earlier intensity threshold")
     a = ap.parse_args(argv)
@@ -323,7 +352,7 @@ def main(argv=None):
     idx = load_index(work / "flair_index.csv", a.zips, flag_flair)
     idx["flair_3d"] = flag_flair_3d(idx)
     idx = idx[idx["selected"]]
-    jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.method) for p, rows, fsd in modality_jobs(idx, a, out_csv)]
+    jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.method, a.truenet_prep) for p, rows, fsd in modality_jobs(idx, a, out_csv)]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, log_every=20, pid_file=a.pid_file)
 
 

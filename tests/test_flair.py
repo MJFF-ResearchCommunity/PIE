@@ -174,3 +174,23 @@ def test_truenet_evaluate_smoke_on_cpu(tmp_path, monkeypatch):
     prob = flair.run_truenet(tmp_path / "f.nii.gz", nib.Nifti1Image(fl, np.eye(4)), tmp_path / "tn")
     p = np.asanyarray(prob.dataobj)
     assert p.shape == fl.shape and 0 <= p.min() and p.max() <= 1
+
+
+def test_fastsurfer_preparation_keeps_the_scripts_flair_steps_and_uses_fastsurfer_t1_and_wm(tmp_path, monkeypatch):
+    import nibabel as nib
+    import numpy as np
+
+    from pie.imaging import flair, freesurfer
+    mri = tmp_path / "fs" / "mri"
+    mri.mkdir(parents=True)
+    for name, data in (("orig_nu.mgz", np.ones((8, 8, 8), np.float32)), ("mask.mgz", np.ones((8, 8, 8), np.uint8)),
+                       ("aparc.DKTatlas+aseg.deep.mgz", np.full((8, 8, 8), 2, np.int16))):
+        nib.save(nib.MGHImage(data, np.eye(4)), mri / name)
+    cmds = []
+    monkeypatch.setattr(freesurfer, "run", lambda cmd, log, cwd, env=None, timeout=0: cmds.append([Path(str(cmd[0])).name] + [str(c) for c in cmd[1:]]))
+    out = tmp_path / "out"
+    out.mkdir()
+    flair._prepare_from_fastsurfer(out, tmp_path / "fs", {}, out / "log")
+    names = [c[0] for c in cmds]
+    assert names[:4] == ["fslreorient2std", "bet", "fast", "imcp"] and "flirt" in names and "fsl_anat" not in names
+    assert nib.load(out / "wm_raw.nii.gz").get_fdata().all() and any("nearestneighbour" in c for c in cmds[-1])
