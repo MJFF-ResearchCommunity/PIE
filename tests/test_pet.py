@@ -133,6 +133,28 @@ def test_loni_zip_to_frames_and_pet_bids_sidecar(tmp_path):
     assert side["TimeZero"] == "08:00:00" and side["ScanStart"] == 4800.0 and side["ReconMethodName"]
 
 
+@pytest.mark.skipif(not Path(DCM2NIIX).exists(), reason="dcm2niix not installed")
+def test_an_early_static_is_left_out_and_another_grid_is_resampled(tmp_path):
+    """2012-13 visits: separate ~50 and ~80 min acquisitions, the participant repositioned in between."""
+    with zipfile.ZipFile(tmp_path / "pet.zip", "w") as z:
+        for image_id, desc, early in (("I0000001", "EM50", True), ("I0000002", "EM80", False)):
+            for k, ds in enumerate(_dynamic(series=generate_uid(), nz=4, rows=8)):
+                if early:
+                    ds.AcquisitionTime = {"092000": "085000", "092500": "085500"}[ds.AcquisitionTime]
+                    ds.ImagePositionPatient = [v + 10.0 for v in ds.ImagePositionPatient]
+                ds.SeriesDescription = desc
+                buf = io.BytesIO()
+                pydicom.dcmwrite(buf, ds, enforce_file_format=True)
+                z.writestr(f"PPMI/9000001/{desc}/2013-01-01_09_20_00.0/{image_id}/{k:03d}.dcm", buf.getvalue())
+    rows = pet.index_pet([tmp_path / "pet.zip"]).sort_values("image_id").to_dict("records")
+    with ZipArchiveCache() as cache:
+        data, frames, _, side, _ = pet.load_scan(rows, tmp_path / "late", cache, from_min=pet.ANALYSIS_FROM_MIN)
+        assert data.shape == (8, 8, 4, 2) and frames["start_s"].tolist() == [4800.0, 5100.0] and side["PIERegriddedSeries"] == 0
+        data, frames, _, side, _ = pet.load_scan(rows, tmp_path / "all", cache)          # no timing rule: both, on the first grid
+    assert data.shape == (8, 8, 4, 4) and frames["start_s"].tolist() == [3000.0, 3300.0, 4800.0, 5100.0] and side["PIERegriddedSeries"] == 1
+    assert data[..., :2].min() > 0 and data[..., 2:].min() == 0           # the later series, moved 10 mm, covers only part of the first grid
+
+
 # ------------------------------------------------------------------------------------------ phantom end to end
 TRUTH = {"caudate_l": 3.0, "caudate_r": 2.6, "putamen_l_ant": 3.5, "putamen_l_post": 2.0, "putamen_r_ant": 2.5, "putamen_r_post": 1.4}
 OCC, CB = 1.0, 1.25
@@ -329,6 +351,19 @@ def test_sv2a_and_tau_suvr_against_their_reference_regions(tmp_path):
     assert abs(tau["suvr_superiorfrontal_l"] - 1.1 / CB) < 0.12
     sel = pet.select_series(pd.DataFrame([_index_rows(image_id="I1", desc="SV2A_PET_DYNAMIC"), _index_rows(image_id="I2", desc="AV133")]), tracer="sv2a")
     assert sel.loc[sel["selected"], "image_id"].tolist() == ["I1"]
+
+
+def test_select_series_reads_loni_names_and_drops_transmission_scans():
+    """LONI turns "6x5_PPMI_TAU (AC)" into "6x5_PPMI_TAU__AC_"; HR+ transmission scans are modality PT too."""
+    idx = pd.DataFrame([_index_rows(image_id="I1", desc="6x5_PPMI_TAU__AC_", tracer="", n_frames=6),
+                        _index_rows(image_id="I2", date="2021-01-01", desc="EM_80", tracer="F-18 Solution"),
+                        _index_rows(image_id="I3", date="2021-01-01", desc="TX_Scan_4min_4i_16s", tracer="Ge-68 Solid Solution", n_frames=3),
+                        _index_rows(image_id="I4", date="2022-01-01", desc="measured atten", tracer="", n_frames=3)])
+    pick = lambda tr: sorted(pet.select_series(idx, tracer=tr).loc[lambda d: d["selected"], "image_id"])
+    assert pick("tau") == ["I1"] and pick("av133") == ["I2"] and pick("sv2a") == []
+    both = pd.DataFrame([_index_rows(image_id="I1", desc="[BR-DY_NAC]_VMAT_Brain_Dyn", n_frames=3),
+                         _index_rows(image_id="I2", desc="[BR-DY_CTAC]_VMAT_Brain_Dyn")])
+    assert pet.select_series(both).loc[lambda d: d["selected"], "image_id"].tolist() == ["I2"]   # AC wins despite fewer frames
 
 
 def test_suvr_labels_pivot_regions_per_scan(tmp_path):

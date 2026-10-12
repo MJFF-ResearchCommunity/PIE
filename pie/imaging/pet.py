@@ -47,11 +47,16 @@ from pie.stats.agreement import agreement, icc21 as _icc21
 from .datscan import CAUDATE_L, CAUDATE_R, ITK_SEED, OCCIPITAL, PUTAMEN_L, PUTAMEN_R, _sitk_from_nib, sbr_from_arrays, synthetic_spect
 
 AV133 = r"AV.?133|VMAT|DTBZ|florbenazine"
-OTHER_TRACERS = r"DPA.?714|C05.?05|MK.?6240|UCB|SV2A|PE2I|PI.?2620|DOPA|FD4|PIB|AV.?45|AV.?1451|florbeta|flortaucipir"
+# names as LONI writes them ("6x5_PPMI_TAU__AC_"): "_" is a word character, so letter lookarounds instead of \b
+TAU = r"PI.?2620|(?<![a-z])tau(?![a-z])"
+OTHER_TRACERS = r"DPA.?714|C05.?05|MK.?6240|UCB|SV2A|PE2I|DOPA|FD4|PIB|AV.?45|AV.?1451|florbeta|flortaucipir|" + TAU
+TRANSMISSION = r"(?<![a-z])tx(?![a-z])|transmission|measured.?atten|Ge.?68"   # attenuation scans (HR+ Ge-68 rods), not tracer images
+NAC = r"(?<![a-z])NAC(?![a-z])"       # a reconstruction without attenuation correction, uploaded beside the CTAC one
 UNFILTERED = r"all.?pass|no.?filt|unfilt|filter.?(?:none|0)"
 FILTERED = r"gauss|hann|butter|filt|fwhm"
 CEREBELLUM = [8, 47]                   # FastSurfer left / right cerebellar cortex
-ANALYSIS_FROM_MIN = 60.0               # analysis frames start at or after this (protocol: 2 x 5 min from 80 +- 5 min)
+ANALYSIS_FROM_MIN = 70.0               # analysis frames start at or after this (protocol: 2 x 5 min from 80 +- 5 min; 2012-13
+                                       # visits add statics at ~50-65 min, which 60 let in)
 PROTOCOL_START_MIN = (75.0, 85.0)
 MOTION_CORRECT_MM = 1.0                # IND: frames "motion corrected where necessary"
 # a linear activity or count scale: SBRs are ratios, so Philips CNTS (Bq/mL factor in a private tag) is as good as Bq/mL
@@ -68,7 +73,7 @@ PROCESSING_VERSION = "2026-10-11-av133-v1"
 TRACER_CONFIG = {
     "av133": {"pattern": AV133, "from_min": ANALYSIS_FROM_MIN, "window": PROTOCOL_START_MIN, "csv": "pet_av133.csv"},
     "sv2a": {"pattern": r"SV2A|SynVesT|SDM.?8|UCB.?J", "from_min": 40.0, "window": (45.0, 70.0), "csv": "pet_sv2a.csv", "reference": "cs"},
-    "tau": {"pattern": r"PI.?2620|\btau\b", "from_min": 40.0, "window": (45.0, 70.0), "csv": "pet_tau.csv", "reference": "cerebellum_ventral"},
+    "tau": {"pattern": TAU, "from_min": 40.0, "window": (45.0, 70.0), "csv": "pet_tau.csv", "reference": "cerebellum_ventral"},
 }
 # FastSurfer aseg / DKT labels for the SUVR tracers, named after the PPMI region they approximate (Hammers-atlas names in
 # SV2A_PET_SUVR_Analysis; Braak VI after Schoell et al. 2016: pericalcarine, postcentral, precentral, paracentral)
@@ -152,24 +157,27 @@ def select_series(idx, prefer="unfiltered", tracer="av133"):
     DICOM tracer names no other PPMI tracer (sites often leave the scanner's FDG default, so FDG in the tracer field
     alone does not exclude: the PPMI table join decides the tracer). Order: the ``prefer``red post-filter class (the
     TOM asks for unfiltered images; ``postfilter`` from description + convolution kernel), then most frames, then most
-    files. A single-frame winner takes every single-frame series of its class with the same file count and kernel: the
+    files, with attenuation-corrected reconstructions ahead of NAC ones. A single-frame winner takes every single-frame series of its class with the same file count and kernel: the
     TOM allows sequential statics, one series per frame."""
     d = idx.copy()
     d["kernel"] = d["kernel"].fillna("").astype(str)
     d["postfilter"] = (d["desc"].astype(str) + " " + d["kernel"]).map(_postfilter)
     named = d["desc"].astype(str) + " " + d["tracer"].fillna("").astype(str)
+    pt = d["modality"].eq("PT") & ~named.str.contains(TRANSMISSION, case=False, regex=True)
     if tracer == "av133":
-        d["candidate"] = d["modality"].eq("PT") & ~named.str.contains(OTHER_TRACERS, case=False, regex=True)
-    else:      # SV2A and tau zips hold only their tracer in PPMI's downloads, but a name must say so
-        d["candidate"] = d["modality"].eq("PT") & named.str.contains(TRACER_CONFIG[tracer]["pattern"], case=False, regex=True)
+        d["candidate"] = pt & ~named.str.contains(OTHER_TRACERS, case=False, regex=True)
+    else:      # one PPMI download holds every tracer: SV2A and tau series must name theirs
+        d["candidate"] = pt & named.str.contains(TRACER_CONFIG[tracer]["pattern"], case=False, regex=True)
     rank = d["postfilter"].map({prefer: 0, "unknown": 1}).fillna(2)
+    nac = d["desc"].astype(str).str.contains(NAC, case=False, regex=True)
     d["selected"] = False
-    for _, g in d[d["candidate"]].assign(_rank=rank).groupby(["patno", "date"]):
-        g = g.sort_values(["_rank", "n_frames", "n_files"], ascending=[True, False, False])
+    for _, g in d[d["candidate"]].assign(_rank=rank, _nac=nac).groupby(["patno", "date"]):
+        g = g.sort_values(["_nac", "_rank", "n_frames", "n_files"], ascending=[True, True, False, False])
         best = g.iloc[0]
         keep = [best.name]
         if best["n_frames"] <= 1:
-            same = (g["n_frames"] <= 1) & g["postfilter"].eq(best["postfilter"]) & g["n_files"].eq(best["n_files"]) & g["kernel"].eq(best["kernel"])
+            same = ((g["n_frames"] <= 1) & g["postfilter"].eq(best["postfilter"]) & g["n_files"].eq(best["n_files"])
+                    & g["kernel"].eq(best["kernel"]) & g["_nac"].eq(best["_nac"]))
             keep = list(g.index[same])
         d.loc[keep, "selected"] = True
     return d
@@ -223,38 +231,54 @@ def series_frames(headers):
     return f[["series", "start_s", "duration_s", "n_slices"]]
 
 
-def load_scan(series_rows, work, cache):
+def load_scan(series_rows, work, cache, from_min=None):
     """Convert the selected series (``batch.convert_series``) and read their frame timing. Returns (data x,y,z,t
-    float32, frames, affine, PET-BIDS sidecar, first DICOM header). Frames and volumes are matched per series in time
-    order; dcm2niix's FrameDuration must agree. The sidecar keeps dcm2niix's PET-BIDS fields (TracerName,
-    InjectedRadioactivity, Units, DecayCorrection, ReconMethodName, ...) with FrameTimesStart / FrameDuration of the
-    stacked frames relative to TimeZero = injection (InjectionStart 0, ScanStart = first frame)."""
+    float32, frames, affine, PET-BIDS sidecar, first DICOM header). With ``from_min`` and known timing, a series whose
+    frames all start earlier is dropped when another reaches the analysis window: early PPMI visits hold separate
+    static acquisitions at ~50 and ~80 min. Series on another grid than the first (repositioned, or reconstructed with
+    another field-of-view offset) are resampled onto it in scanner coordinates (linear; ``PIERegriddedSeries`` in the
+    sidecar); ``mean_image``'s motion correction then aligns the frames. Frames and volumes are matched per series in
+    time order; dcm2niix's FrameDuration must agree. The sidecar keeps dcm2niix's
+    PET-BIDS fields (TracerName, InjectedRadioactivity, Units, DecayCorrection, ReconMethodName, ...) with
+    FrameTimesStart / FrameDuration of the stacked frames relative to TimeZero = injection (InjectionStart 0, ScanStart
+    = first frame)."""
     from .batch import convert_series
 
-    vols, frames, sidecar, affine, first = [], [], None, None, None
+    timed = []
     for r in series_rows:
-        niis = convert_series(r["zip"], r["prefix"], Path(work) / "nii", archive_cache=cache)
-        if len(niis) != 1:
-            raise ValueError(f"{r['image_id']}: dcm2niix wrote {len(niis)} images")
         with cache.open(r["zip"]) as z:
             heads = []
             for n in z.namelist():
                 if n.startswith(r["prefix"]) and n.endswith(".dcm"):
                     with z.open(n) as fh:
                         heads.append(pydicom.dcmread(fh, stop_before_pixels=True, force=True))
-        f = series_frames(heads)
+        timed.append((r, heads, series_frames(heads)))
+    if from_min is not None and all(f["start_s"].notna().all() for _, _, f in timed):
+        late = [t for t in timed if (t[2]["start_s"] >= from_min * 60).any()]
+        timed = late or timed
+    vols, frames, sidecar, affine, first, regridded = [], [], None, None, None, 0
+    for r, heads, f in timed:
+        niis = convert_series(r["zip"], r["prefix"], Path(work) / "nii", archive_cache=cache)
+        if len(niis) != 1:
+            raise ValueError(f"{r['image_id']}: dcm2niix wrote {len(niis)} images")
         img = nib.load(niis[0])
         data = np.asanyarray(img.dataobj, dtype=np.float32)
         data = data[..., None] if data.ndim == 3 else data
         meta = json.loads(Path(niis[0][:-7] + ".json").read_text()) if Path(niis[0][:-7] + ".json").exists() else {}
         dur, fts = (np.atleast_1d(meta.get(k, [])).astype(float) for k in ("FrameDuration", "FrameTimesStart"))
+        # dcm2niix's volumes must run in time order, as the frames do; all-equal FrameTimesStart (dcm2niix found no
+        # times, e.g. [0, 0] on 2013 GE statics whose headers do have them) says nothing about the order
         if (data.shape[-1] != len(f) or (len(dur) == len(f) and not np.allclose(dur, f["duration_s"], atol=1, equal_nan=True))
-                or (len(fts) > 1 and not (np.diff(fts) > 0).all())):     # dcm2niix's volumes must run in time order, as the frames do
+                or (len(fts) > 1 and np.ptp(fts) > 0 and not (np.diff(fts) > 0).all())):
             raise ValueError(f"{r['image_id']}: {data.shape[-1]} volumes but frames {f['duration_s'].tolist()} s in the headers")
         if affine is None:
             affine, sidecar, first = img.affine, meta, heads[0]
         elif data.shape[:3] != vols[0].shape[:3] or not np.allclose(img.affine, affine, atol=1e-3):
-            raise ValueError("stacked PET series are not on one grid")
+            from nibabel.processing import resample_from_to
+            grid = (vols[0].shape[:3], affine)
+            data = np.stack([np.asanyarray(resample_from_to(nib.Nifti1Image(data[..., k], img.affine), grid, order=1, cval=0.0).dataobj,
+                                           dtype=np.float32) for k in range(data.shape[-1])], axis=-1)
+            regridded += 1
         vols += [data[..., k] for k in range(data.shape[-1])]
         frames.append(f)
     frames = pd.concat(frames, ignore_index=True)
@@ -262,7 +286,7 @@ def load_scan(series_rows, work, cache):
     frames = frames.iloc[order].reset_index(drop=True)
     data = np.stack([vols[k] for k in order], axis=-1)
     inj = injection_time(first)
-    sidecar = dict(sidecar, TimeZero=inj.strftime("%H:%M:%S") if pd.notna(inj) else None, InjectionStart=0,
+    sidecar = dict(sidecar, PIERegriddedSeries=regridded, TimeZero=inj.strftime("%H:%M:%S") if pd.notna(inj) else None, InjectionStart=0,
                    ScanStart=float(frames["start_s"].iloc[0]), FrameTimesStart=frames["start_s"].tolist(),
                    FrameDuration=frames["duration_s"].tolist())
     return np.nan_to_num(data), frames, affine, sidecar, first
@@ -464,8 +488,8 @@ def process_scan(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False,
     date = series_rows[0]["date"]
     work = Path(work_dir) / str(patno) / date
     with ZipArchiveCache() as cache:
-        data, frames, affine, sidecar, header = load_scan(series_rows, work, cache)
-    cfg = TRACER_CONFIG[tracer]
+        cfg = TRACER_CONFIG[tracer]
+        data, frames, affine, sidecar, header = load_scan(series_rows, work, cache, cfg["from_min"])
     mean, info = mean_image(data, frames, affine, sampling_seed, cfg["from_min"], cfg["window"])
     pet = nib.Nifti1Image(mean, affine)
     mri = Path(fastsurfer_dir) / "mri"
@@ -474,7 +498,8 @@ def process_scan(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=False,
     tracer_name = str(sidecar.get("TracerName", ""))
     desc = ";".join(sorted({str(r["desc"]) for r in series_rows}))
     row = {"patno": patno, "image_id": ";".join(r["image_id"] for r in series_rows), "acquisition_date": date,
-           "series_desc": desc, "n_series": len(series_rows), "postfilter": series_rows[0].get("postfilter", ""),
+           "series_desc": desc, "n_series": len(series_rows), "n_series_used": int(frames["series"].nunique()),
+           "n_series_regridded": sidecar.get("PIERegriddedSeries", 0), "postfilter": series_rows[0].get("postfilter", ""),
            "tracer": tracer_name, "tracer_av133": bool(re.search(AV133, tracer_name + " " + desc, re.I)),
            "manufacturer": str(sidecar.get("Manufacturer", "")), "model": str(sidecar.get("ManufacturersModelName", "")),
            "recon": str(sidecar.get("ReconMethodName") or sidecar.get("ReconstructionMethod") or ""),

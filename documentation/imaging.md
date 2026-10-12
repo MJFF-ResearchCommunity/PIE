@@ -427,7 +427,7 @@ PIE measures every PET visit on the participant's earliest finished FastSurfer T
    `DecayCorrection`, `ReconMethodName`). Frame timing comes from every DICOM header: `FrameReferenceTime` − duration / 2
    within a series, anchored at its earliest `AcquisitionTime`, relative to `RadiopharmaceuticalStartTime`.
    Overlapping frames are refused, and the volume count and dcm2niix's durations must agree.
-3. `mean_image`: frames starting ≥ 60 min after injection (all of them when timing is unknown). Each is registered to
+3. `mean_image`: frames starting ≥ 70 min after injection (all of them when timing is unknown). Each is registered to
    the first (rigid MI). If any corner of a ±50 mm cube moves more than 1 mm (`motion_mm`), frames are resampled onto
    the first. Then the duration-weighted mean.
 4. `register_pet_to_t1`: rigid Mattes MI to `orig.mgz`, the metric restricted to the FastSurfer brain dilated 10 mm,
