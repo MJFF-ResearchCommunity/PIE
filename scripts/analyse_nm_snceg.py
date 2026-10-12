@@ -54,9 +54,11 @@ def load(nm_dir, ppmi):
     dims = lambda c: d[c].astype(str).str.split("x", expand=True).apply(pd.to_numeric, errors="coerce")
     steps.append(("slab_ge_24mm", (dims("shape") * dims("voxel_mm")).min(axis=1) >= 24 - 1e-6))
     steps.append(("snceg_sn_nonempty", pd.to_numeric(d.get("nms_sn_volume_mm3"), errors="coerce") > 0))
+    keep = pd.Series(True, index=d.index)       # masks are on the unfiltered rows: apply them cumulatively
     for name, ok in steps:
-        flow[f"excluded_{name}"] = int((~ok.fillna(False)).sum())
-        d = d[ok.fillna(False).to_numpy()]
+        flow[f"excluded_{name}"] = int((keep & ~ok.fillna(False)).sum())
+        keep &= ok.fillna(False)
+    d = d[keep.to_numpy()]
     cov = covariates(ppmi)
     d = d.merge(cov[["PATNO", "COHORT", "SEX"]], left_on="patno", right_on="PATNO")
     meta = _latest(ppmi, "Imaging", "MRI_Acquisition_Metadata")

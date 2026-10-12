@@ -132,6 +132,13 @@ Any deviation is logged here, with its date, before the script is run.
   `PYTHONPATH`, stopped at that import before reading any file or printing a number (the synthetic dry run never
   reaches it). The script is run once more, unchanged, with `PYTHONPATH=.`.
 
+- 2026-10-12T03:50: deviation, a bug in the frozen script. The second invocation stopped in `load()` ("Item wrong
+  length 458 instead of 422") before any statistic was computed or printed: the four exclusion masks are built on the
+  unfiltered rows, but the loop filtered the table after the first, so the second mask no longer matched. Fix: the same
+  masks applied cumulatively (`keep &= ok`), each step's count taken among the rows still in. That is the sequential
+  exclusion the loop was written to do; no criterion, threshold, group definition or statistic changes. The synthetic
+  dry run passes. New script sha256 `a8202753031e3add127a32b479b470794e186ba5fd8a7b3e6c949c0f990735b3`. Run once more.
+
 ## References
 
 - Lillebostad PAG et al. Deep-learning segmentation of the substantia nigra from multiparametric MRI. *Imaging
