@@ -1,9 +1,10 @@
 # Pre-registration: staged validation of PIE's neuromelanin measure (technical, biological, clinical)
 
-**Status: Stage 1 FROZEN 2026-10-12 and RUN (technical gate passed; primary `nms_sn_mean_cr`)** (the commit that adds this file, before any split-half value existed; the
-split-half slabs were being written when it was committed, and no measure had been computed on them). **Stage 2b
-FROZEN 2026-10-12**, before its prodromal slabs were built. Stages 2a, 2c and 3 are DRAFTS until their data are
-downloaded; each is frozen, with its script hash, before its data are opened.
+**Status: Stage 1 FROZEN 2026-10-12** (the commit that adds this file, before any split-half value existed; the
+split-half slabs were being written when it was committed, and no measure had been computed on them) **and RUN the same
+day: technical gate passed, primary `nms_sn_mean_cr`.** **Stage 2b FROZEN 2026-10-12**, before its prodromal slabs were
+built, **and RUN the same day: passed (AUROC 0.693 [0.625, 0.758]).** Stages 2a, 2c and 3 are DRAFTS until their data
+are downloaded; each is frozen, with its script hash, before its data are opened.
 
 ## Why staged
 
@@ -119,6 +120,17 @@ PPMI's acquisition metadata (Sep 2026) lists NM at ≥ 2 visits for 546 PD and 1
     iRBD, NM separated DaT-abnormal from DaT-normal at AUROC 0.73–0.75, Kim 2026, doi:10.1007/s11682-026-01176-0); no
     HC or PD participant is reused.
   - Script: `scripts/nm_staged.py prodromal-dat`, sha256 `3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f` at the freeze (synthetic dry run only).
+  - **Result (run once, 12 Oct 2026; script hash verified; features sha256 `4010ad32…c193` recorded before the
+    label join; result JSON sha256 `9cec65d0…fe2`): PASSED.** Primary `nms_sn_mean_cr` (from Stage 1).
+    - Flow: 433 sessions; 8 slabs failed (7 ambiguous acquisition identity, 1 empty reference region); 425 measured;
+      excluded 36 `QC["nm"]`, 117 slab < 24 mm, 1 measure missing; 271 prodromal; **267 with a DaT scan within 18
+      months**: 141 DaT-normal, 126 DaT-deficient (NSD-ISS D+). Vendor strata (normal / deficient): Siemens 114 / 107,
+      GE 23 / 16, Philips 4 / 3.
+    - **AUROC 0.693 [0.625, 0.758]** (DaT-normal > DaT-deficient, vendor-stratified).
+    - Secondary: 0.65 rule 0.615 [0.541, 0.688] (195 / 72); age- and sex-adjusted 0.685 [0.616, 0.750]; Spearman ρ
+      0.264 with percent-of-expected SBR (n 267), inside Park 2023's 0.25–0.33.
+    - Note: the slab ≥ 24 mm rule removed 117 sessions (27 %), more than in R1; the result holds for the sessions with
+      full nigral coverage.
 - **2c, side-matched DaT (exploratory, reused data).** Each hemisphere's NM against the same hemisphere's posterior
   putamen SBR, and the more-affected side, as Park 2023.
 
