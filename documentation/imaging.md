@@ -452,14 +452,14 @@ PIE measures every PET visit on the participant's earliest finished FastSurfer T
 On a phantom with known uptake, a 9° / 14 mm misalignment and 3 mm of inter-frame motion, the SBRs come back within
 10 % (+0.05). With the registration's optimiser switched off they miss by up to 0.45.
 
-**On PPMI (12 Oct 2026).** The readiness download held 210 AV-133 visits with a PIE T1: 57 ECAT-only (2012–14 HR+),
-29 rebuilt from slices, and the rest converted by dcm2niix. 208 were measured, 172 pass `qc_pass`, and 35 still fail
+**On PPMI (12 Oct 2026).** The readiness download held 214 AV-133 visits with a PIE T1 (4 after the missing T1s were added): 57 ECAT-only (2012–14 HR+),
+29 rebuilt from slices, and the rest converted by dcm2niix. 212 were measured, 176 pass `qc_pass`, and 35 still fail
 the template correlation (< 0.4). Agreement with PPMI on QC-passing scans, occipital reference:
 
 | Pipeline | Scans | Posterior putamen r (L / R) | CCC (L / R) | Anterior putamen r | Caudate r | Caudate bias |
 |---|---|---|---|---|---|---|
 | `core_lab_6voi` | 66 | 0.95 / 0.92 | 0.90 / 0.90 | 0.95 / 0.93 | 0.88 / 0.92 | −0.49 / −0.63 |
-| `ind_2014` | 81 | 0.94 / 0.95 | 0.93 / 0.95 | 0.89 / 0.88 | 0.79 / 0.79 | −0.40 / −0.48 |
+| `ind_2014` | 84 | 0.94 / 0.96 | 0.92 / 0.95 | 0.89 / 0.89 | 0.81 / 0.80 | −0.40 / −0.48 |
 | `subregional` | 23 | 0.97 / 0.95 | 0.96 / 0.92 | 0.98 / 0.99 | 0.95 / 0.95 | −0.53 / −0.62 |
 
 On the cerebellar reference (`sbrcb_*`, sub-regional rows, n 22) the putamen agrees at r 0.95–0.99. The caudate offset
