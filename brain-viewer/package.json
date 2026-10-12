@@ -10,8 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@niivue/niivue": "0.69.0",
     "@fontsource/dm-sans": "^5.2.0",
+    "@niivue/niivue": "0.69.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -22,6 +22,6 @@
     "@vitejs/plugin-react": "^4.4.0",
     "typescript": "~5.8.3",
     "vite": "^6.3.0",
-    "vitest": "^3.2.0"
+    "vitest": "^4.1.11"
   }
 }
