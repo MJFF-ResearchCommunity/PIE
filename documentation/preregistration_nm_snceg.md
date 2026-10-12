@@ -124,8 +124,13 @@ Any deviation is logged here, with its date, before the script is run.
 - 2026-10-12T03:37: pipeline finished (started 2026-10-11T20:01 on R1's inputs): 458 of 459 participants in
   `nm_native_features.csv`, sha256 `680e196626524bdece51000bd89c9be8e3117fb59e81d86857103abb4aa36c6c`, recorded
   before any cohort label was joined. Post-freeze commits touching the pipeline: `8ab8213` (`nm_template.box_path`
-  creates its folder; no effect on outputs). The analysis script imports no PIE module and its sha256 still matches the
-  freeze. No deviation; the script is run once next.
+  creates its folder; no effect on outputs). The script's sha256 still matches the freeze. No deviation; the script is
+  run once next.
+- 2026-10-12T03:45: correction and a failed start. The entry above said the script imports no PIE module; `load()`
+  imports `pie.imaging.labels` (`_latest`, `covariates`, `_age_at`). Since the freeze `labels.py` only gained
+  `suvr_labels` (lines added after line 268, none removed), so those three are unchanged. The first invocation, without
+  `PYTHONPATH`, stopped at that import before reading any file or printing a number (the synthetic dry run never
+  reaches it). The script is run once more, unchanged, with `PYTHONPATH=.`.
 
 ## References
 
