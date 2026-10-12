@@ -410,3 +410,26 @@ def test_ecat_series_are_indexed_selected_and_loaded(tmp_path):
     with ZipArchiveCache() as cache:
         data, frames, _, side, _ = pet.load_scan(rows, tmp_path / "work", cache, from_min=pet.ANALYSIS_FROM_MIN)
     assert data.shape == (10, 10, 3, 1) and side["Units"] == "Bq/mL" and frames["start_s"].iloc[0] > 70 * 60
+
+
+@pytest.mark.skipif(not Path(DCM2NIIX).exists(), reason="dcm2niix not installed")
+def test_slice_fallback_matches_dcm2niix_and_takes_over_when_it_writes_nothing(tmp_path, monkeypatch):
+    from nibabel.processing import resample_from_to
+
+    from pie.imaging import batch
+    with zipfile.ZipFile(tmp_path / "pet.zip", "w") as z:          # in-plane gradients, so a flipped row or column shows
+        for k, ds in enumerate(_dynamic(series=generate_uid(), nz=4, rows=8)):
+            j, i = np.mgrid[:8, :8]
+            ds.PixelData = (100 + 10 * int(round(ds.ImagePositionPatient[2] / 2)) + 3 * i + j).astype(np.uint16).tobytes()
+            buf = io.BytesIO()
+            pydicom.dcmwrite(buf, ds, enforce_file_format=True)
+            z.writestr(f"PPMI/9000001/AV133/2020-01-01_09_20_00.0/I0000001/{k:03d}.dcm", buf.getvalue())
+    rows = pet.select_series(pet.index_pet([tmp_path / "pet.zip"])).loc[lambda d: d["selected"]].to_dict("records")
+    with ZipArchiveCache() as cache:
+        ref, _, ref_aff, _, _ = pet.load_scan(rows, tmp_path / "a", cache)
+        monkeypatch.setattr(batch, "convert_series", lambda *a, **k: [])          # dcm2niix rejects the export
+        data, frames, aff, side, _ = pet.load_scan(rows, tmp_path / "b", cache)
+    assert side["PIEConverter"] == "pydicom" and side["Units"] == "Bq/mL" and frames["start_s"].tolist() == [4800.0, 5100.0]
+    for k in range(2):                                    # same values at the same scanner positions
+        moved = resample_from_to(nib.Nifti1Image(data[..., k], aff), nib.Nifti1Image(ref[..., k], ref_aff), order=0)
+        assert np.allclose(np.asanyarray(moved.dataobj), ref[..., k]) and ref[..., k].std() > 1

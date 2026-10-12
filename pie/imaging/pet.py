@@ -282,6 +282,37 @@ def read_ecat(path, flip=None):
     return data, img.affine @ f, frames, side, {"PatientWeight": float(h["patient_weight"]) or None}
 
 
+def dicom_volume(datasets):
+    """x,y,z,t float32 volume, RAS affine and a minimal PET-BIDS sidecar straight from PET slices (with pixel data), for
+    exports dcm2niix rejects: PPMI's 2012-14 HR+ DICOMs restart ImageIndex at 0 in every frame ("slice positions
+    repeated ... missing images?", 29 AV-133 visits). Frames by FrameReferenceTime, slices along the slice normal,
+    RescaleSlope / Intercept per slice."""
+    h0 = datasets[0]
+    o = np.array(h0.ImageOrientationPatient, dtype=float)
+    normal = np.cross(o[:3], o[3:])
+    by = {}
+    for h in datasets:
+        by.setdefault(float(h.get("FrameReferenceTime", 0) or 0), []).append(h)
+    frames = [sorted(by[k], key=lambda h: float(np.dot(normal, np.array(h.ImagePositionPatient, dtype=float)))) for k in sorted(by)]
+    if len({len(f) for f in frames}) != 1 or len(frames[0]) < 2:
+        raise ValueError(f"PET frames hold {sorted({len(f) for f in frames})} slices")
+    vol = np.stack([np.stack([h.pixel_array.T.astype(np.float32) * float(h.get("RescaleSlope", 1) or 1) + float(h.get("RescaleIntercept", 0) or 0)
+                              for h in f], axis=-1) for f in frames], axis=-1)
+    first, last = (np.array(frames[0][k].ImagePositionPatient, dtype=float) for k in (0, -1))
+    dr, dc = (float(v) for v in h0.PixelSpacing)
+    aff = np.eye(4)
+    aff[:3, 0], aff[:3, 1], aff[:3, 2], aff[:3, 3] = o[:3] * dc, o[3:] * dr, (last - first) / (len(frames[0]) - 1), first
+    aff[:2] *= -1                                                                  # DICOM LPS -> RAS
+    r = (h0.get("RadiopharmaceuticalInformationSequence") or [pydicom.Dataset()])[0]
+    side = {"Manufacturer": _text(h0.get("Manufacturer")), "ManufacturersModelName": _text(h0.get("ManufacturerModelName")),
+            "Units": "Bq/mL" if _text(h0.get("Units")).upper() == "BQML" else _text(h0.get("Units")),
+            "DecayCorrection": _text(h0.get("DecayCorrection")), "TracerName": _text(r.get("Radiopharmaceutical")),
+            "InjectedRadioactivity": float(r.get("RadionuclideTotalDose") or np.nan) / 1e6,
+            "RadionuclideHalfLife": float(r.get("RadionuclideHalfLife") or np.nan), "ReconMethodName": _text(h0.get("ReconstructionMethod")),
+            "PIEConverter": "pydicom"}
+    return vol, aff, side
+
+
 def load_scan(series_rows, work, cache, from_min=None):
     """Convert the selected series (``batch.convert_series``) and read their frame timing. Returns (data x,y,z,t
     float32, frames, affine, PET-BIDS sidecar, first DICOM header). With ``from_min`` and known timing, a series whose
@@ -323,19 +354,27 @@ def load_scan(series_rows, work, cache, from_min=None):
             data, img_affine, meta, head = heads
         else:
             niis = convert_series(r["zip"], r["prefix"], Path(work) / "nii", archive_cache=cache)
-            if len(niis) != 1:
+            head = heads[0]
+            if not niis:                          # an export dcm2niix rejects: build it from the slices
+                with cache.open(r["zip"]) as z:
+                    full = [pydicom.dcmread(z.open(n), force=True) for n in z.namelist() if n.startswith(r["prefix"]) and n.endswith(".dcm")]
+                data, img_affine, meta = dicom_volume(full)
+                if data.shape[-1] != len(f):
+                    raise ValueError(f"{r['image_id']}: {data.shape[-1]} volumes but {len(f)} frames in the headers")
+            elif len(niis) != 1:
                 raise ValueError(f"{r['image_id']}: dcm2niix wrote {len(niis)} images")
-            img = nib.load(niis[0])
-            img_affine, head = img.affine, heads[0]
-            data = np.asanyarray(img.dataobj, dtype=np.float32)
-            data = data[..., None] if data.ndim == 3 else data
-            meta = json.loads(Path(niis[0][:-7] + ".json").read_text()) if Path(niis[0][:-7] + ".json").exists() else {}
-            dur, fts = (np.atleast_1d(meta.get(k, [])).astype(float) for k in ("FrameDuration", "FrameTimesStart"))
-            # dcm2niix's volumes must run in time order, as the frames do; all-equal FrameTimesStart (dcm2niix found no
-            # times, e.g. [0, 0] on 2013 GE statics whose headers do have them) says nothing about the order
-            if (data.shape[-1] != len(f) or (len(dur) == len(f) and not np.allclose(dur, f["duration_s"], atol=1, equal_nan=True))
-                    or (len(fts) > 1 and np.ptp(fts) > 0 and not (np.diff(fts) > 0).all())):
-                raise ValueError(f"{r['image_id']}: {data.shape[-1]} volumes but frames {f['duration_s'].tolist()} s in the headers")
+            else:
+                img = nib.load(niis[0])
+                img_affine = img.affine
+                data = np.asanyarray(img.dataobj, dtype=np.float32)
+                data = data[..., None] if data.ndim == 3 else data
+                meta = json.loads(Path(niis[0][:-7] + ".json").read_text()) if Path(niis[0][:-7] + ".json").exists() else {}
+                dur, fts = (np.atleast_1d(meta.get(k, [])).astype(float) for k in ("FrameDuration", "FrameTimesStart"))
+                # dcm2niix's volumes must run in time order, as the frames do; all-equal FrameTimesStart (dcm2niix found
+                # no times, e.g. [0, 0] on 2013 GE statics whose headers do have them) says nothing about the order
+                if (data.shape[-1] != len(f) or (len(dur) == len(f) and not np.allclose(dur, f["duration_s"], atol=1, equal_nan=True))
+                        or (len(fts) > 1 and np.ptp(fts) > 0 and not (np.diff(fts) > 0).all())):
+                    raise ValueError(f"{r['image_id']}: {data.shape[-1]} volumes but frames {f['duration_s'].tolist()} s in the headers")
         if affine is None:
             affine, sidecar, first = img_affine, meta, head
         elif data.shape[:3] != vols[0].shape[:3] or not np.allclose(img_affine, affine, atol=1e-3):
