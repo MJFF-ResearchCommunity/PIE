@@ -129,6 +129,7 @@ def box_path():
     """Empty 0.5 mm NIfTI defining the MNI midbrain box (ANTs wants a reference image file)."""
     p = Path.home() / "nilearn_data" / "mni_midbrain_box_0.5mm.nii.gz"
     if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)       # a fresh machine (CI) has no nilearn_data yet
         aff = np.diag([BOX_MM, BOX_MM, BOX_MM, 1.0])
         aff[:3, 3] = BOX_ORIGIN_RAS
         nib.save(nib.Nifti1Image(np.zeros(BOX_SHAPE, np.float32), aff), p)
