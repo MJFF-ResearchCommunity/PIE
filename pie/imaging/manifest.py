@@ -108,7 +108,7 @@ def _masked_dates(s):
     return s.where(s.dt.year < 2100)
 
 
-DEFAULT_DIRS = {"dat": "datscan_full", "pet_av133": "pet"}     # modality -> directory under the derived root when it is not the modality name
+DEFAULT_DIRS = {"dat": "datscan_2026_10", "pet_av133": "pet"}     # modality -> directory under the derived root when it is not the modality name
 
 
 def _modality_dir(derived, modality, modality_dirs):

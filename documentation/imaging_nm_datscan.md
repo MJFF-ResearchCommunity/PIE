@@ -584,6 +584,18 @@ segmentation as the ROI atlas.
    - QC passed 236 of 237 (old pipeline 233).
    - On the 156 scans both pass, putamen r rose from 0.796 to 0.861 and caudate from 0.675 to 0.743.
    - Restricted to brain-only fits, putamen CCC rose from 0.79 to 0.87–0.89.
+   - **Full cohort** (`datscan_2026_10`, 1,459 scans): QC passed 1,452. The table below compares it with the September
+     run.
+
+   | Against | Scans | Putamen-min r (raw) | Putamen-min CCC | Caudate r (L / R) | Deficit κ (all / prodromal) |
+   |---|---|---|---|---|---|
+   | Xing, September run | 1,160 | 0.788 | 0.81 | 0.61 / 0.63 | 0.75 / 0.54 |
+   | Xing, October run | 1,161 | 0.851 | 0.87 | 0.74 / 0.76 | 0.80 / 0.65 |
+   | Invicro, October run | 882 | 0.887 | 0.89 | 0.78 / 0.79 | 0.85 / – |
+
+     The 14 % of scans whose best placement lies beyond the old ±2-voxel window still agree less well with Xing:
+     putamen-min r 0.57, against 0.92 for the rest (0.72 against Invicro). These are the scans the old window clipped.
+     `manifest.DEFAULT_DIRS["dat"]` now points at this run.
 
    `manifest.QC["dat"]` applies the legacy rule (correlation ≥ 0.4) to legacy rows. Brain-only rows need correlation
    ≥ 0.2, rotation ≤ 30°, translation ≤ 50 mm and a placement off the window edge. A clamped scale is only flagged:
@@ -633,7 +645,7 @@ edge), and a placement on the edge fails QC.
 No attenuation correction by default: a Chang implementation exists (`--attenuation`) but lowered agreement with
 PPMI's values. Absolute SBRs therefore sit below PPMI's. `datscan.calibrate(d, {pie_column: published_column},
 min_ref=15, by="hdr_model", method="deming", delta=1.0)` maps them onto a published scale.
-- It fits per camera model on the scans that have both values. A model with fewer than 15 such scans uses all models pooled.
+- It fits per camera model on the scans that have both values. A model with fewer than 15 such scans, or whose values correlate with the published ones below r 0.3 (`min_r`), uses all models pooled. Deming's slope divides by the covariance, so an uncorrelated group gets an arbitrary slope: in October 2026, Forte left caudate against Invicro (r 0.02–0.16 on 15 scans per fold) got slope 22, which pulled the region's CCC down to 0.52 (0.80 with the guard).
 - `method="deming"` is a linear map with errors in both variables (`datscan.deming(x, y, delta)`; `delta` is the y/x error-variance ratio). `method="equipercentile"` sends each value to the published value at the same percentile, so the mapped reference scans reproduce the published distribution exactly; values outside the reference range go to its ends.
 - Both keep the published spread. The OLS fit used until October 2026, which the pipeline never called, regressed towards the mean: the mapped putamen SD was 0.82 of the published SD.
 - The map is applied to every scan, so prodromal scans without published SBRs are calibrated too.
@@ -678,10 +690,10 @@ photopeak (`_prefer_photopeak_member`). `manifest.build_manifest` also reads thi
 ```bash
 venv_imaging/bin/python -m pie.imaging.datscan --index <derived>/spect_index.csv \
     --sessions <derived>/sessions.csv --fastsurfer-dir <derived>/fastsurfer \
-    --out-dir <derived>/datscan_full --workers 8      # -> datscan_sbr.csv + nifti/<IMAGE_ID>_datscan.nii.gz
+    --out-dir <derived>/datscan_2026_10 --workers 8      # -> datscan_sbr.csv + nifti/<IMAGE_ID>_datscan.nii.gz
 ```
 
-`manifest` reads `<derived>/datscan_full/datscan_sbr.csv` by default; for another `--out-dir` pass
+`manifest` reads `<derived>/datscan_2026_10/datscan_sbr.csv` by default (the September run is `datscan_full`); for another `--out-dir` pass
 `modality_dirs={"dat": <out-dir>}` to `build_manifest` / `assemble_features`.
 
 | Flag | Default | Meaning |
@@ -726,14 +738,14 @@ only, so its values are not comparable with older tables: check the 0.4 bar on t
 
 ### Validation
 
-`scripts/validate_datscan.py --sbr <derived>/datscan_full/datscan_sbr.csv --index <derived>/spect_index.csv
+`scripts/validate_datscan.py --sbr <derived>/datscan_2026_10/datscan_sbr.csv --index <derived>/spect_index.csv
 --ppmi-dir PPMI [--source xing|invicro] [--method deming|equipercentile] [--folds 5] [--threshold 0.65] [--patnos
 file]` (`--patnos` compares two runs on the same participants) matches
 QC-passing scans to the core lab on PATNO and month and calibrates per camera model on the other folds (split by
 PATNO). Per region it prints r of the raw values (overall, and inside versus at or past the old ±2-voxel edge), and
 CCC, ICC(2,1) and Bland–Altman bias and limits of the calibrated values. It then prints Cohen's kappa of the deficit
 call in prodromals and overall, and the run's edge, rotation and scale diagnostics. The agreement table above comes
-from the 8 September 2026 run, before the October 2026 registration changes; re-measure it with this script.
+from the 8 September 2026 run, before the October 2026 registration changes. The October full-cohort figures are in the registration section above.
 
 Baseline from the script on that run against Xing (1,160 QC-passing scans, Deming, 5 folds):
 - Putamen: CCC 0.81 / 0.82 (L / R), with ICC(2,1) the same. Bland–Altman limits are ±0.50 on Xing's scale.

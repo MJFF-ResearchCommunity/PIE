@@ -82,12 +82,12 @@ def test_dat_qc_rejects_failed_and_anticorrelated_registrations():
 
 def test_core_lab_sbr_is_assembled_for_the_scan_pie_reconstructed_xing_first(tmp_path):
     d, ppmi = tmp_path / "derived", tmp_path / "ppmi"
-    (d / "datscan_full").mkdir(parents=True)
+    (d / "datscan_2026_10").mkdir(parents=True)
     (ppmi / "Imaging").mkdir(parents=True)
     pd.DataFrame({"PATNO": [1, 2, 3], "IMAGEID": ["I1", "I2", "I3"], "SCAN_DATE": ["2022-01-01"] * 3,
                   "vol_Left_Putamen": [5000.0] * 3}).to_csv(d / "fastsurfer_idps.csv", index=False)
     pd.DataFrame({"patno": [1, 2, 3], "image_id": ["S1", "S2", "S3"], "reg_metric": [-0.8, -0.8, -0.1], "n_label_voxels": [500] * 3,
-                  "hdr_manufacturer": ["GE"] * 3, "hdr_model": ["Infinia"] * 3, "sbr_putamen_l": [1.0, 2.0, 3.0]}).to_csv(d / "datscan_full" / "datscan_sbr.csv", index=False)
+                  "hdr_manufacturer": ["GE"] * 3, "hdr_model": ["Infinia"] * 3, "sbr_putamen_l": [1.0, 2.0, 3.0]}).to_csv(d / "datscan_2026_10" / "datscan_sbr.csv", index=False)
     pd.DataFrame({"image_id": ["S1", "S2", "S3"], "member": [f"PPMI/{p}/DaTSCAN/2022-0{p}-15_10_00_00.0/S{p}/x.dcm" for p in (1, 2, 3)]}).to_csv(d / "spect_index.csv", index=False)
     sbr = lambda patnos, months, v: {"PATNO": patnos, "DATSCAN_DATE": months, "DATSCAN_ANALYZED": ["Yes"] * len(patnos),
                                      **{f"DATSCAN_{r}_{s}": [v] * len(patnos) for r in ("CAUDATE", "PUTAMEN") for s in "RL"}}

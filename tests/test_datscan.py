@@ -286,6 +286,19 @@ def test_calibration_keeps_the_reference_spread():
         assert abs(cal.mean() - d["ref"].mean()) < 0.01
 
 
+def test_an_uncorrelated_camera_uses_the_pooled_calibration():
+    """Deming's slope divides by the covariance: a camera whose values do not track the published ones must not get its own map."""
+    import pandas as pd
+
+    rng = np.random.default_rng(4)
+    true = rng.normal(2.0, 0.6, 200)
+    d = pd.DataFrame({"hdr_model": ["A"] * 180 + ["B"] * 20, "ref": true, "pie": 0.5 * true + rng.normal(0, 0.05, 200)})
+    d.loc[180:, "pie"] = rng.permutation(d.loc[180:, "pie"].to_numpy())       # camera B: right range, no relation
+    out = datscan.calibrate(d, {"pie": "ref"})
+    assert (out.loc[:179, "calibration"] == "A").all() and (out.loc[180:, "calibration"] == "POOLED").all()
+    assert out.loc[180:, "pie_cal"].std() < 2 * d["ref"].std()
+
+
 def test_a_failed_brain_only_fit_falls_back_to_the_legacy_registration(monkeypatch):
     calls = []
 

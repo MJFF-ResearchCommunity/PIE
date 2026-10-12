@@ -763,11 +763,13 @@ def deming(x, y, delta=1.0):
     return slope, y.mean() - slope * x.mean()
 
 
-def calibrate(d, targets, min_ref=15, by="hdr_model", method="deming", delta=1.0):
+def calibrate(d, targets, min_ref=15, by="hdr_model", method="deming", delta=1.0, min_r=0.3):
     """Map PIE SBR columns onto published SBRs per camera model (column ``by``). ``targets`` maps a PIE column (e.g.
     ``sbrwm_putamen_l``) to the published column on the same rows (e.g. Xing's ``PUTAMEN_L_REF_CWM``; keep reference
     regions matched: CWM to ``sbrwm_*``, occipital to ``sbr_*``). The map is fitted on the rows that have both values
-    (blank QC failures first), per model with >= ``min_ref`` of them, else on all models pooled, and applied to every
+    (blank QC failures first), per model with >= ``min_ref`` of them that correlate at r >= ``min_r`` (Deming's slope
+    divides by the covariance, so an uncorrelated group gives an arbitrary one: Forte caudate vs Invicro, r 0.02-0.16
+    on 15 scans, gave slope 22 in October 2026), else on all models pooled, and applied to every
     row (so cohorts without published values get calibrated values too). ``method``: ``deming`` (linear, errors in both
     variables, see ``deming``) or ``equipercentile`` (each value goes to the published value at the same percentile of
     the reference scans: the mapped reference rows reproduce the published distribution exactly; values outside the
@@ -783,7 +785,7 @@ def calibrate(d, targets, min_ref=15, by="hdr_model", method="deming", delta=1.0
         out[f"{col}_cal"] = np.nan
         for v, g in out.groupby(by, dropna=False):
             r = ref & (out[by] == v)
-            src = v if r.sum() >= min_ref else "POOLED"
+            src = v if r.sum() >= min_ref and np.corrcoef(x_all[r], y_all[r])[0, 1] >= min_r else "POOLED"
             x, y = x_all[r if src == v else ref], y_all[r if src == v else ref]
             if method == "equipercentile":
                 cal = np.interp(x_all[g.index], np.sort(x), np.sort(y))

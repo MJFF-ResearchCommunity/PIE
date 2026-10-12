@@ -1,6 +1,6 @@
 """Agreement of PIE's DaTscan SBRs with a PPMI core lab, cross-fitted.
 
-    venv_imaging/bin/python scripts/validate_datscan.py --sbr Imaging/derived/datscan_full/datscan_sbr.csv \
+    venv_imaging/bin/python scripts/validate_datscan.py --sbr Imaging/derived/datscan_2026_10/datscan_sbr.csv \
         --index Imaging/derived/spect_index.csv --ppmi-dir PPMI [--source xing] [--method deming] [--folds 5]
 
 QC-passing PIE scans (manifest.QC["dat"]) are matched to the core lab's on PATNO and scan month. PIE's SBRs (``sbrwm_*``

@@ -137,8 +137,8 @@ def test_manifest_finds_datscan_via_modality_dirs_and_flags_t1_mismatch(tmp_path
     assert m.loc[1, "dat_qc_pass"] and not m.loc[2, "dat_qc_pass"] and m.loc[2, "dat_t1_mismatch"]
     f = manifest.assemble_features(tmp_path, modality_dirs=dirs).set_index("PATNO")
     assert f.loc[1, "dat_sbr_putamen_l"] == 2.0 and np.isnan(f.loc[2, "dat_sbr_putamen_l"])
-    (tmp_path / "datscan_full").mkdir()
-    shutil.copy(tmp_path / "spect" / "datscan_sbr.csv", tmp_path / "datscan_full")
+    (tmp_path / "datscan_2026_10").mkdir()
+    shutil.copy(tmp_path / "spect" / "datscan_sbr.csv", tmp_path / "datscan_2026_10")
     assert "dat_qc_pass" in manifest.build_manifest(tmp_path)          # the default location still works
 
 
@@ -424,12 +424,12 @@ def test_assembly_quarantines_single_shell_free_water_and_masked_dates(tmp_path)
 
 def test_assembled_dat_block_carries_both_references_and_indices(tmp_path):
     _idps(tmp_path)
-    (tmp_path / "datscan_full").mkdir()
+    (tmp_path / "datscan_2026_10").mkdir()
     pd.DataFrame({"patno": [1], "image_id": ["I000021"], "error": [""], "reg_metric": [-0.6], "n_label_voxels": [500],
                   "hdr_manufacturer": ["GE"], "hdr_model": ["synthetic"], "sbr_putamen_l": [1.0], "sbr_putamen_r": [2.0],
                   "sbr_caudate_l": [2.0], "sbr_caudate_r": [2.0], "sbr_putamen_l_post": [0.8], "sbrwm_putamen_l": [0.5],
                   "sbrwm_putamen_r": [1.0], "sbrwm_caudate_l": [1.0], "sbrwm_caudate_r": [-0.1], "mean_occipital": [10.]})\
-        .to_csv(tmp_path / "datscan_full" / "datscan_sbr.csv", index=False)
+        .to_csv(tmp_path / "datscan_2026_10" / "datscan_sbr.csv", index=False)
     f = manifest.assemble_features(tmp_path).set_index("PATNO")
     assert f.loc[1, "dat_sbr_pc_ratio_l"] == 0.5 and abs(f.loc[1, "dat_sbr_ai_putamen"] - 100 / 1.5) < 1e-9
     assert f.loc[1, "dat_sbr_putamen_l_post"] == 0.8 and f.loc[1, "dat_sbrwm_pc_ratio_l"] == 0.5

@@ -8,7 +8,7 @@ LONI MRI zip(s) ──index──► one T1w per session ──dcm2niix──►
                                                                           │ (T1 anatomy, labels, MNI affine)
           DTI zips ──dwi──────────────► dwi/dwi_features.csv ◄────────────┤
      full-MRI zips ──nm / flair───────► nm/nm_features.csv, flair/flair_features.csv ◄┤
-  SPECT projections ──datscan─────────► datscan_full/datscan_sbr.csv ◄────┤
+  SPECT projections ──datscan──────► datscan_2026_10/datscan_sbr.csv ◄────┤
    AV-133 PET zips ──pet─────────────► pet/pet_av133.csv ◄───────────────┘
                            manifest.assemble_features ──► one wide row per subject (QC-failed values blanked)
 ```
@@ -509,9 +509,9 @@ blocks = feature_blocks(df.columns)      # {"dat": [...], "dat_core": [...], "dw
 ```
 
 `build_manifest(derived_dir, modality_dirs=None)` reads `<derived>/fastsurfer_idps.csv` (per subject the
-earliest session passing `QC["t1"]`, else the earliest), `datscan_full/datscan_sbr.csv` + `spect_index.csv`,
+earliest session passing `QC["t1"]`, else the earliest), `datscan_2026_10/datscan_sbr.csv` + `spect_index.csv`,
 and `dwi/`, `nm/`, `flair/` feature and index CSVs. `modality_dirs={"dat": path, "dwi": path, …}` relocates any of
-the four (`manifest.DEFAULT_DIRS` holds the `datscan_full` default); rows with an `error` are dropped. Columns:
+the four (`manifest.DEFAULT_DIRS` holds the `datscan_2026_10` default: the October 2026 registration); rows with an `error` are dropped. Columns:
 `PATNO`, `t1_image_id`, `t1_date`; per modality `<mod>_date`, `<mod>_batch`, `<mod>_qc_pass`, `<mod>_days_from_t1`;
 `dat_image_id`; for DWI/NM/FLAIR also `<mod>_date_source` (`recorded` from the row's `acquisition_date`, else
 `index_inferred`: the date with the most files among the index's `selected` series) and, when present,
@@ -590,7 +590,7 @@ metrics), like fMRIPrep's subject reports.
 ```bash
 venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived> --modality report --out <derived>/qc/reports --patnos ids.txt
 venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived>/dwi --modality dwi --out <derived>/qc/dwi --n 40 --worst reg_b0_t1_mi
-venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived>/datscan_full --modality datscan --out <derived>/qc/datscan \
+venv_imaging/bin/python -m pie.imaging.qc --work-dir <derived>/datscan_2026_10 --modality datscan --out <derived>/qc/datscan \
     --sessions <derived>/sessions.csv --fastsurfer-dir <derived>/fastsurfer --worst reg_metric
 ```
 
@@ -1082,7 +1082,7 @@ scans with topup (`--fsl`), and ideally eddy.
 | T1 volumes (FastSurfer) | Same-day MPRAGE + repeat (29 pairs; ICC(2,1), SEM, 95 % minimal detectable change) | putamen ICC 0.98 (MDC95 5.1–5.5 %), caudate 0.99 (3.7–4.6 %), thalamus 0.98–0.99 (2.3–3.9 %), hippocampus 0.99 (2.7–3.2 %), amygdala 0.97–0.98 (5.7–6.2 %), lateral ventricles 1.00 (1.7–2.4 %), brainstem 0.98 (4.3 %). `BrainSegVol` 0.87 (10 %): coverage differs between repeats |
 | T1 volumes | vs PPMI FS7, by vendor and field strength (1,080 baseline scans; median CCC over 15 structures) | all 0.87 (r 0.90); Siemens 0.88, Philips 0.82, GE 0.80; 3 T 0.86, 1.5 T 0.82. PIE's volumes run larger (putamen +235–246 mm³) |
 | T1 normative z (`normative.crossfit_zscores`, age + sex + TIV; 165 HC, 543 PD, 318 prodromal) | Controls' out-of-fold z | plain model: mean within 0.013 of 0, SD 1.01–1.03, residual age r ≤ 0.016, 5.0 % beyond ±2; with `site` + spline + heteroscedastic SD: SD 1.08–1.16 (too many parameters for 165 HC across 6 scanner groups; use it when sites have more controls). PD mean z: putamen −0.08 to −0.10 (ENIGMA-PD d −0.14), hippocampus −0.13 to −0.21. `mtl_preserved`: HC 90 %, PD 86 % |
-| DaT registration (Oct 2026): brain-only template, legacy fallback | vs Xing, raw r | **Tuning set** (240 random Xing-matched scans outside the validation set): old pipeline putamen-min 0.78 / caudate 0.55 → brain-only 0.90 / 0.81 (INFINIA 0.53 → 0.97); the head-outline template variants scored 0.71–0.83. Brain-only correlation bar set there: 0.2 (2nd percentile 0.23). **Validation set** (236 participants, vendor-stratified): brain-only fit passes 188 of 237; on the 128 Xing-matched passers putamen 0.80 → 0.87–0.90 (CCC 0.79 → 0.87–0.89), caudate 0.58–0.61 → 0.84–0.86, deficit κ 0.71 → 0.74. Its 31 matched failures (HERMES, BrightView, Forte, P3000XP) agree at 0.35 but at 0.75–0.79 with the legacy registration, so failures fall back to it (`quantify_with_fallback`): 236 of 237 pass, and on the 156 scans both pipelines pass putamen 0.796 → 0.861, caudate 0.675 → 0.743 |
+| DaT registration (Oct 2026): brain-only template, legacy fallback | vs Xing, raw r | **Tuning set** (240 random Xing-matched scans outside the validation set): old pipeline putamen-min 0.78 / caudate 0.55 → brain-only 0.90 / 0.81 (INFINIA 0.53 → 0.97); the head-outline template variants scored 0.71–0.83. Brain-only correlation bar set there: 0.2 (2nd percentile 0.23). **Validation set** (236 participants, vendor-stratified): brain-only fit passes 188 of 237; on the 128 Xing-matched passers putamen 0.80 → 0.87–0.90 (CCC 0.79 → 0.87–0.89), caudate 0.58–0.61 → 0.84–0.86, deficit κ 0.71 → 0.74. Its 31 matched failures (HERMES, BrightView, Forte, P3000XP) agree at 0.35 but at 0.75–0.79 with the legacy registration, so failures fall back to it (`quantify_with_fallback`): 236 of 237 pass, and on the 156 scans both pipelines pass putamen 0.796 → 0.861, caudate 0.675 → 0.743. **Full cohort** (1,459 scans, 1,452 pass QC; now the manifest default, `datscan_2026_10`): vs Xing (1,161 matched) putamen-min r 0.788 → 0.851, CCC 0.81 → 0.87, caudate 0.61–0.63 → 0.74–0.76, deficit κ 0.75 → 0.80 (prodromal 0.54 → 0.65); vs Invicro (882) putamen-min r 0.887, CCC 0.89, caudate CCC 0.80–0.82, deficit κ 0.85 |
 
 ## Measurement follow-up safeguards (September 2026)
 
