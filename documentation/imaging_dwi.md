@@ -312,6 +312,21 @@ The rebuild follows the pre-registered Addendum 1 (2026-09-28 DWI gate):
 marks it: `PIEGradientsRebuilt` in the sidecar, `gradients_rebuilt` on the row. Both pre-registrations use recovered
 sessions only as sensitivity analyses. Tests: `tests/test_dwi_gradients.py`.
 
+**On PPMI (11 Oct 2026).** Intact reference sessions came from the gate download, the equivalence download and PIE's
+own index, with at most 8 per protocol. 52 stripped series could be rebuilt by name:
+
+| Protocol | Stripped series | Intact references | Leave-one-out max | Other frame | MD r (min) | Result |
+|---|---|---|---|---|---|---|
+| DTI_RL, b1000 × 30 | 15 | 8 | 0.27° (patient) | 9.25° | > 0.9999 | rebuilt |
+| DTI_LR, b1000 × 30 | 15 | 8 | 0.27° (patient) | 8.97° | > 0.9999 | rebuilt |
+| DTI_B700/B1000/B2000_64dir_PA | 2 each | 8 each | ≤ 0.42° | same | > 0.9999 | rebuilt |
+| DTI_R_L, DTI_L_R, DTI_RL__R__L, DTI_LR__L__R | 16 | 0 | | | | not rebuilt |
+
+That makes 36 series rebuilt. The 30-direction protocols pin the frame down: the vectors are stored in patient
+coordinates, and the image frame misses by 9°. The 64-direction PA protocols were acquired without obliquity, so both
+frames agree. The four protocols named with underscores have no intact session under the same description. Matching
+them to DTI_RL/DTI_LR would loosen the pre-registered "same protocol" rule, so it was not done.
+
 ## QSIPrep / QSIRecon reference comparator (`dwi_qsiprep.py`, opt-in)
 
 QSIPrep (Cieslak et al. 2021, doi:10.1038/s41592-021-01185-5) is the community-standard diffusion preprocessing. PIE
