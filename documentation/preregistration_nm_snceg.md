@@ -116,6 +116,11 @@ Any deviation is logged here, with its date, before the script is run.
   It implements the rule as drafted. De novo PD = PD whose NM session is PPMI's BL visit, the R1 definition
   (`analyse_r1.py`); the age/sex adjustment uses residuals from an HC-only fit, so no PD label enters it.
 
+- 2026-10-11T20:01: the first start of the pipeline used the 27 Sep T1 tables of the new downloads only (the NM
+  hand-off's command), not R1's combined tables (`pie_validation/20260927_nm_final`). It was stopped after 3 slabs,
+  before snceg; nothing was inspected, and its work dir was deleted. The run restarted on R1's own inputs
+  (sessions, FastSurfer links, Siemens list), as `20260927_nm_final/run_r1.sh` used them.
+
 ## References
 
 - Lillebostad PAG et al. Deep-learning segmentation of the substantia nigra from multiparametric MRI. *Imaging
