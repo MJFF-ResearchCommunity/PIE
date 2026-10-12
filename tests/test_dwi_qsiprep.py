@@ -250,11 +250,11 @@ def test_agreement_stats_match_closed_forms():
     s = dq.agreement_stats(x, x + c)       # a pure offset: CCC uses population variances, ICC(2,1) sample variances
     assert s["ccc"] == pytest.approx(2 * x.var() / (2 * x.var() + c ** 2))
     assert s["icc21"] == pytest.approx(2 * x.var(ddof=1) / (2 * x.var(ddof=1) + c ** 2))
-    assert s["ba_bias"] == pytest.approx(c) and s["ba_loa_low"] == pytest.approx(c) and s["ba_loa_high"] == pytest.approx(c)
+    assert s["bias"] == pytest.approx(c) and s["loa_low"] == pytest.approx(c) and s["loa_high"] == pytest.approx(c)
     assert s["pearson_r"] == pytest.approx(1)
     same = dq.agreement_stats(x, x)
     assert same["ccc"] == pytest.approx(1) and same["icc21"] == pytest.approx(1)
-    assert np.isnan(dq.agreement_stats(x[:2], x[:2])["ccc"])
+    assert dq.agreement_stats(x[:2], x[:2]) == {"n": 2}                  # too few pairs: n only
 
 
 def test_agreement_pairs_dwiq_with_dwis_under_both_qc_rules():
@@ -265,6 +265,6 @@ def test_agreement_pairs_dwiq_with_dwis_under_both_qc_rules():
     out = dq.agreement(pie, qsi).set_index("qsiprep")
     assert set(out.index) == {"dwiq_md_sn_posterior_mean", "dwiq_tensor_md_sn_posterior_mean"}
     assert (out["pie"] == "dwis_md_sn_posterior_mean").all() and (out["n"] == 7).all()
-    assert out.loc["dwiq_md_sn_posterior_mean", "ba_bias"] == pytest.approx(1e-5)
+    assert out.loc["dwiq_md_sn_posterior_mean", "bias"] == pytest.approx(1e-5)
     with pytest.raises(ValueError, match="--study"):
         dq.agreement(pie.drop(columns="dwis_qc_pass"), qsi)

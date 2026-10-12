@@ -42,6 +42,8 @@ import numpy as np
 import pandas as pd
 import pydicom
 
+from pie.stats.agreement import agreement, icc21 as _icc21
+
 from .datscan import CAUDATE_L, CAUDATE_R, ITK_SEED, OCCIPITAL, PUTAMEN_L, PUTAMEN_R, _sitk_from_nib, sbr_from_arrays, synthetic_spect
 
 AV133 = r"AV.?133|VMAT|DTBZ|florbenazine"
@@ -514,34 +516,6 @@ def qc_pass(d, reference="occipital"):
     return (col("error", "").fillna("").eq("") & col("units_ok", False).astype(str).str.lower().eq("true")
             & (num("reg_template_r") >= 0.4) & (num("cov_striatum") >= 0.99) & (num(f"cov_{reference}") >= 0.95)
             & ~(num("motion_mm") > 5) & sbr.notna().all(axis=1))
-
-
-def _icc21(data):
-    """ICC(2,1), two-way random effects, absolute agreement, single rater (Shrout & Fleiss 1979): rows = subjects."""
-    n, k = data.shape
-    m = data.mean()
-    ssr, ssc = k * ((data.mean(axis=1) - m) ** 2).sum(), n * ((data.mean(axis=0) - m) ** 2).sum()
-    msr, msc = ssr / (n - 1), ssc / (k - 1)
-    mse = (((data - m) ** 2).sum() - ssr - ssc) / ((n - 1) * (k - 1))
-    return float((msr - mse) / (msr + (k - 1) * mse + k * (msc - mse) / n))
-
-
-def agreement(pie, ref):
-    """Agreement of PIE values with reference values on the same scans: n, Pearson r, ICC(2,1), Lin's concordance
-    correlation (1989, population moments), Bland-Altman bias (PIE - reference) and 95 % limits of agreement, means."""
-    x, y = np.asarray(ref, dtype=float), np.asarray(pie, dtype=float)
-    ok = np.isfinite(x) & np.isfinite(y)
-    x, y = x[ok], y[ok]
-    if len(x) < 3:
-        return {"n": int(len(x))}
-    diff = y - x
-    sd = diff.std(ddof=1)
-    ccc = 2 * np.mean((x - x.mean()) * (y - y.mean())) / (x.var() + y.var() + (x.mean() - y.mean()) ** 2)
-    with np.errstate(invalid="ignore", divide="ignore"):                       # a constant column: r undefined (NaN)
-        r = float(np.corrcoef(x, y)[0, 1])
-    return {"n": int(len(x)), "pearson_r": r, "icc21": _icc21(np.column_stack([y, x])),
-            "ccc": float(ccc), "bias": float(diff.mean()), "loa_low": float(diff.mean() - 1.96 * sd),
-            "loa_high": float(diff.mean() + 1.96 * sd), "pie_mean": float(y.mean()), "ppmi_mean": float(x.mean())}
 
 
 def qc_pass_suvr(d):

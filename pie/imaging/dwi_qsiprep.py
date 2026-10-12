@@ -318,23 +318,9 @@ def compare_subject(patno, qsiprep_dir, fastsurfer_dir, recon_dir=None):
 
 
 def agreement_stats(x, y):
-    """Lin's concordance correlation, ICC(2,1) (two-way random, absolute agreement, single measure; Shrout & Fleiss 1979)
-    and Bland-Altman bias and 95 % limits of y - x, with Pearson's r."""
-    x, y = np.asarray(x, float), np.asarray(y, float)
-    n = len(x)
-    if n < 3:
-        return {"n": n, **dict.fromkeys(("ccc", "icc21", "ba_bias", "ba_loa_low", "ba_loa_high", "pearson_r"), np.nan)}
-    d = y - x
-    sd = d.std(ddof=1)
-    ccc = 2 * np.cov(x, y, ddof=0)[0, 1] / (x.var() + y.var() + (x.mean() - y.mean()) ** 2)
-    X, k = np.c_[x, y], 2
-    gm = X.mean()
-    msr = k * ((X.mean(axis=1) - gm) ** 2).sum() / (n - 1)
-    msc = n * ((X.mean(axis=0) - gm) ** 2).sum() / (k - 1)
-    mse = (((X - gm) ** 2).sum() - msr * (n - 1) - msc * (k - 1)) / ((n - 1) * (k - 1))
-    icc = (msr - mse) / (msr + (k - 1) * mse + k * (msc - mse) / n)
-    return {"n": n, "ccc": float(ccc), "icc21": float(icc), "ba_bias": float(d.mean()), "ba_loa_low": float(d.mean() - 1.96 * sd),
-            "ba_loa_high": float(d.mean() + 1.96 * sd), "pearson_r": float(np.corrcoef(x, y)[0, 1])}
+    """``pie.stats.agreement.agreement`` of y against x (Lin's CCC, ICC(2,1), Bland-Altman bias and limits, Pearson r)."""
+    from pie.stats.agreement import agreement as _agreement
+    return _agreement(y, x)
 
 
 def agreement(pie, qsi, pairs=None, qc=True):

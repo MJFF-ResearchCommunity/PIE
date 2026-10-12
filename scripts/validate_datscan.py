@@ -20,22 +20,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pie.imaging import datscan, labels, manifest
+from pie.stats.agreement import ccc, icc21 as _icc21
 
 REGIONS = [f"{r}_{s}" for r in ("putamen", "caudate") for s in "lr"]
 
 
-def ccc(a, b):
-    return 2 * np.mean((a - a.mean()) * (b - b.mean())) / (a.var() + b.var() + (a.mean() - b.mean()) ** 2)
-
-
 def icc21(a, b):
-    """Shrout & Fleiss ICC(2,1): two-way random effects, absolute agreement, single measurement."""
-    y = np.column_stack([a, b])
-    n, k = y.shape
-    rows, cols, g = y.mean(axis=1), y.mean(axis=0), y.mean()
-    msr, msc = k * ((rows - g) ** 2).sum() / (n - 1), n * ((cols - g) ** 2).sum() / (k - 1)
-    mse = ((y - rows[:, None] - cols[None, :] + g) ** 2).sum() / ((n - 1) * (k - 1))
-    return (msr - mse) / (msr + (k - 1) * mse + k * (msc - mse) / n)
+    return _icc21(np.column_stack([a, b]))
 
 
 def main(argv=None):
