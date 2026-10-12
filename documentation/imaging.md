@@ -521,14 +521,25 @@ the PPMI region they approximate (`SUVR_REGIONS`):
 - the Braak VI composite (Schöll 2016: pericalcarine, postcentral, precentral, paracentral).
 
 The references are:
-- `cs`, the centrum semiovale: cerebral white matter at least 8 mm from any other label, above the lateral
-  ventricles;
+- `cs`, the centrum semiovale: cerebral white matter, with WM hypointensities, at least `CS_MARGIN_MM` (4 mm) from any
+  other label, above the lateral ventricles (8 mm left 0–549 voxels on FastSurfer WM);
 - `cerebellum_ventral`: cerebellar cortex below its median height, at least 6 mm from the cerebrum.
 
 Outputs and checks:
 - `pet_sv2a.csv` / `pet_tau.csv` hold the values; `qc_pass_suvr` checks units, reference coverage and motion;
 - `--agreement` compares each region with PPMI's of the same name (`labels.suvr_labels`, `agreement_table_suvr`);
-- **status:** phantom-tested; no SV2A or tau images downloaded yet.
+- **status (12 Oct 2026): run on PPMI, not validated.** The readiness download held 6 of PPMI's 18 SV2A scans and 21
+  of 23 tau scans; 6 and 15 have a PIE T1.
+  - **SV2A:** 3 of 6 pass QC (3 moved > 5 mm). The images convert cleanly (dcm2niix and `dicom_volume` agree, r 1.000;
+    frame-to-frame r 0.94). But PIE's grey-matter SUVRs run about 0.45 times PPMI's (1.4–2.4 against 3–5), a fixed
+    scale. That points to the reference: PPMI's centrum semiovale is evidently cleaner of grey-matter spill-in than the
+    4 mm FastSurfer margin. Three matched scans can neither validate nor tune it. Needs PPMI's SV2A analysis method and
+    the 12 scans missing from the download.
+  - **Tau:** 11 of 15 pass QC, 9 match a PPMI scan, and Braak VI agrees at r −0.55 over a narrow range (PPMI
+    0.6–1.2). The frames correlate poorly with each other (median r 0.44) and hold extreme hot voxels (19 times the
+    99th percentile), and registration MI is weak (−0.08). Not usable as is.
+  - Two "[BR-DY_CTAC] Tau Brain Dyn" series look like AV-133 scans with the wrong name (2 frames from 80 min, in
+    months where PPMI lists AV-133 and no tau). Neither tracer's selection takes them.
 
 Tests: `tests/test_pet.py`.
 
@@ -1078,7 +1089,7 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 | | Schaefer cortex + CIT168 subcortex | SOTA default ("4S") | Yes (`atlases.schaefer400_mni2009c`, `striatal_rois`) |
 | | Striatal seed FC, basal-ganglia network (ICA + dual regression) | Canonical, poorly reproducible | Yes |
 | | ALFF / fALFF / ReHo | SOTA | XCP-D's ALFF (as mALFF) and ReHo via `xcpd_features`; `fmri_connectivity.local_measures` adds fALFF (unvalidated) |
-| PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | AV-133: `pet.py` follows PPMI's 2014 IND method on the subject's FastSurfer ROIs (occipital and cerebellar references); `labels.pet_labels` reads PPMI's values per pipeline. Not yet run: no AV-133 images downloaded, no agreement measured. No partial-volume correction. SV2A and tau: `pet.py --tracer sv2a|tau` SUVRs (phantom-tested; images not yet downloaded) |
+| PET | AV-133 (VMAT2) striatal SBR; SV2A SUVR; tau (PI-2620) SUVR | PPMI core-lab tables (`PET_SBR_Analysis`, `SV2A_PET_SUVR_Analysis`, `TAU_PET_Analysis`) | AV-133: `pet.py` follows PPMI's 2014 IND method on the subject's FastSurfer ROIs (occipital and cerebellar references); `labels.pet_labels` reads PPMI's values per pipeline. Validated 12 Oct 2026 against all three PPMI pipelines: posterior putamen r 0.92–0.97; caudate r 0.79–0.95 with a fixed offset. No partial-volume correction. SV2A and tau: `pet.py --tracer sv2a|tau` run on PPMI but not validated (SV2A at ~0.45 of PPMI's scale on 3 scans; tau frames inconsistent) |
 | CT | Safety head CT before the screening lumbar puncture | Not an imaging endpoint: the `Safety_Head_CT_Scan` form (`CTSCAN`, yes/no) records whether one was done; PPMI does not distribute the images | Nothing to process |
 | All | In-fold harmonisation, per-modality batch | Gold | Batch columns in the manifest; training-fold ridge residualisation on age, sex and batch in `pie.experiment.prediction.ImageDesign` (the study's method); ComBat, spline-age ComBat and longitudinal ComBat in `harmonize.py` |
 
