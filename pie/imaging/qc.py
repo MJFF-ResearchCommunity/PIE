@@ -84,8 +84,9 @@ def _load(p):
 
 def render_subject(modality, subj_dir, out_png, fastsurfer_dir=None, row=None):
     d = Path(subj_dir)
-    if modality == "t1":
-        t1, seg = _load(d / "mri" / "orig.mgz"), _load(d / "mri" / "aparc.DKTatlas+aseg.deep.mgz")
+    if modality == "t1":           # FastSurfer's conformed images are LIA: reorient to RAS so the views are what they say
+        ras = lambda p: np.asanyarray(nib.as_closest_canonical(nib.load(p)).dataobj)
+        t1, seg = ras(d / "mri" / "orig.mgz"), ras(d / "mri" / "aparc.DKTatlas+aseg.deep.mgz")
         montage(t1, [(np.isin(seg, [11, 12, 50, 51]), "cyan"), (np.isin(seg, [10, 49]), "magenta"), (np.isin(seg, [17, 53]), "lime"),
                      (np.isin(seg, [4, 43]), "yellow"), (seg >= 1000, "red")], out_png, title=d.name)
     elif modality == "dwi":
