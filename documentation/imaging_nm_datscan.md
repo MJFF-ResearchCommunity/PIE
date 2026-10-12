@@ -36,8 +36,10 @@ Neuromelanin-sensitive MRI shows the pigmented dopaminergic neurons of the subst
 - **Default measure (11 Oct 2026): snceg** (`nm_native --snceg`): the SN contrast ratio against each side's crus on the
   slices holding that side's segmented SN (`nms_sn_mean_cr`), and the segmented SN volume (`nms_sn_volume_mm3`),
   assembled as `nm_primary_cr` and `nm_primary_volume_mm3`. It is the only NM measure that reproduced a published PPMI
-  result (R2). On PPMI's 2D GRE-MT it is not validated (`NM_VALIDATED` stays False); a Siemens-only re-test is
-  pre-registered in [preregistration_nm_snceg.md](preregistration_nm_snceg.md). `nm.py`'s ring contrast
+  result (R2, TSE-FS). On PPMI's 2D GRE-MT it failed the pre-registered Siemens re-test (12 Oct 2026: AUROC 0.631
+  [0.555, 0.707] against the 0.743 anchor; [preregistration_nm_snceg.md](preregistration_nm_snceg.md)), so
+  `NM_VALIDATED` stays False: on GRE-MT the contrast ratio is a weak marker (above chance), the volume carries no
+  signal, and neither is a validated diagnostic measure. `nm.py`'s ring contrast
   (`nm_sn_*_cnr`) is kept, under its old names, as a diagnostic.
 - **Native-space threshold volume (`nm_native`, Langley method).** It did not reproduce (R1, R1-v2 and R1b below), so it is exploratory until the authors' regions are available.
 - **snceg segmentation.** This is the state-of-the-art alternative, and it reproduced its published PPMI TSE-FS result (R2).
@@ -55,6 +57,7 @@ Neuromelanin-sensitive MRI shows the pigmented dopaminergic neurons of the subst
 | R1-v2 | as R1 | as R1 | **Not reproduced.** Version 2 (JHU ICBM-DTI-81 cerebral peduncle as the reference, as in Langley's text), same slabs: HC 112 ± 73 vs PD 106 ± 62 mm³; d 0.18 [−0.09, 0.46]; AUROC 0.50 |
 | R1b [Hwang 2023] | Emory Siemens, AUROC 0.756 / 0.749 | CI contains the published AUROC | **Not reproduced** (v1): 0.475 and 0.513 on the authors' own Dryad release (doi:10.6086/D1709N, CC0). **v2**: cohort 1 0.558 [0.361, 0.737], not reproduced; cohort 2 0.671 [0.540, 0.792], reproduced by the CI rule. Volumes are 4–6 times below the published scale |
 | R2 [Lillebostad 2025] | PPMI Siemens TSE-FS, snceg CR vs crus, AUROC 0.743 | CI contains 0.743, lower bound > 0.5 | **Reproduced.** AUROC 0.710 [0.611, 0.799] (TSE-FS echo 1, earliest TSE-FS session, same-day T1) |
+| GRE-MT re-test, v7 (pre-registered 11 Oct 2026) | PPMI Siemens 2D GRE-MT (R1 sample), snceg CR vs crus, anchor 0.743 | CI contains 0.743, lower bound > 0.5 | **Failed.** AUROC 0.631 [0.555, 0.707], 66 HC / 342 de novo PD; snceg volume 0.504 (no signal); see [the pre-registration](preregistration_nm_snceg.md#result-2026-10-12-the-single-run) |
 
 Langley's threshold volume is not reproduced with public substitute regions, on PPMI or on the authors' own data. Their SNc atlas, its dilation and their peduncle ROI are not public. They were requested from the authors on 27 September 2026, and a version 3 waits on that material; nothing is tuned against these results in the meantime. snceg on the PPMI TSE-FS scans reproduces its published result. On the R1 GRE-MT scans, the snceg contrast ratio against the crus separated de novo PD from HC at d 0.39 [0.15, 0.65], AUROC 0.60. That is descriptive, because there is no published GRE-MT target.
 

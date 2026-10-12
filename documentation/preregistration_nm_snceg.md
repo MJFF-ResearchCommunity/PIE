@@ -139,6 +139,33 @@ Any deviation is logged here, with its date, before the script is run.
   exclusion the loop was written to do; no criterion, threshold, group definition or statistic changes. The synthetic
   dry run passes. New script sha256 `a8202753031e3add127a32b479b470794e186ba5fd8a7b3e6c949c0f990735b3`. Run once more.
 
+## Result (2026-10-12, the single run)
+
+**FAIL.** Primary, `nms_sn_mean_cr`, de novo PD vs HC: AUROC **0.631**, DeLong 95 % CI [0.555, 0.707] (bootstrap
+[0.555, 0.704]); 66 HC, 342 PD. The CI excludes 0.743, so the pass rule fails although the lower bound is above 0.50.
+The secondary anchor 0.72 is excluded too.
+
+| Flow | n |
+|---|---|
+| Slabs with measures | 458 |
+| Excluded: NM QC | 36 |
+| Excluded: not Siemens | 0 |
+| Excluded: slab < 24 mm | 2 |
+| Excluded: snceg SN empty | 9 |
+| Groups | PD de novo 343, HC 66, PD later 2 |
+
+| Secondary | HC / PD | AUROC [DeLong 95 % CI] |
+|---|---|---|
+| `nms_sn_volume_mm3` | 66 / 343 | 0.504 [0.430, 0.578] |
+| `nms_sn_mean_cr_allslices` | 66 / 343 | 0.634 [0.559, 0.710] |
+| Primary, age and sex adjusted | 66 / 342 | 0.618 [0.543, 0.694] |
+| Primary, all PD | 66 / 344 | 0.632 [0.556, 0.708] |
+
+Reading: on PPMI's 2D GRE-MT, snceg's contrast ratio separates de novo PD from HC above chance, and slightly better
+than the old pipeline on the same sample (0.60), but well below its published PPMI TSE result (0.743), which it did
+reproduce on TSE-FS (R2, 0.710). The snceg volume carries no signal on GRE-MT. Output:
+`pie_validation/20261011_readiness/nm_snceg_analysis/nm_snceg_result.json` (local).
+
 ## References
 
 - Lillebostad PAG et al. Deep-learning segmentation of the substantia nigra from multiparametric MRI. *Imaging
