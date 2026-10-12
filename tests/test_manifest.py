@@ -214,3 +214,15 @@ def test_long_export_has_bids_style_identifiers_and_drops_blanked_values(tmp_pat
     assert set(out["block"]) == {"t1", "dat"} and (tmp_path / "deriv" / "dataset_description.json").exists()
     out = export_long(df.fillna({"vol_Left_Putamen": 4000.0}), tmp_path / "deriv2")
     assert out.loc[out.participant_id == "sub-ADNI295", "session_id"].item() == "ses-20100501"
+
+
+def test_a_missing_acquisition_field_does_not_erase_the_batch_label(tmp_path):
+    d = tmp_path
+    pd.DataFrame({"PATNO": [1], "IMAGEID": ["A"], "SCAN_DATE": ["2020-01-01"], "vol_Left_Putamen": [5000.0]}).to_csv(d / "fastsurfer_idps.csv", index=False)
+    (d / "nm").mkdir()
+    pd.DataFrame({"patno": [1], "error": [""], "manufacturer": ["GE"], "voxel_mm": ["0.4x0.4x3.0"], "tr_s": [0.6], "te_s": [0.004],
+                  "mt_flag": [np.nan], "n_sn_l": [30], "n_sn_r": [30], "repeat_motion_mm_max": [1.0], "sn_slab_coverage_l": [1.0],
+                  "sn_slab_coverage_r": [1.0], "nm_ref_l_sd": [1.0], "nm_ref_l_mean": [10.0], "nm_ref_r_sd": [1.0], "nm_ref_r_mean": [10.0]}
+                 ).to_csv(d / "nm" / "nm_features.csv", index=False)
+    m = build_manifest(d)
+    assert m.loc[0, "nm_acquisition_batch"] == "GE|0.4x0.4x3.0|0.6|0.004|NA"        # pandas 3 kept NaN and erased it

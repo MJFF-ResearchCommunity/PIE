@@ -233,6 +233,12 @@ def _read(path, baseline_t1=None, per_visit=False):
     return d.assign(_b=~on_baseline).sort_values("_b", kind="stable").drop_duplicates("patno").drop(columns=["_b", "_t1"]).copy()
 
 
+def _txt(s):
+    """Text for batch labels with missing values spelled "NA": pandas 3 keeps NaN through astype(str), and a NaN in one
+    field made a whole concatenated label missing (302 of 649 NM rows lost nm_acquisition_batch)."""
+    return s.astype(object).where(s.notna(), "NA").astype(str)
+
+
 def _vendor(s):
     return s.astype(str).str.upper().str.extract(r"(SIEMENS|GE|PHILIPS|PICKER|MARCONI|ADAC)")[0].fillna("OTHER")
 
@@ -280,7 +286,7 @@ def build_manifest(derived_dir, modality_dirs=None, per_visit=False):
             si["date"] = si["member"].str.split("/").str[3].str[:10]
             dates = si.drop_duplicates("image_id").set_index("image_id")["date"].to_dict()
         dat["dat_date"] = _masked_dates(dat["image_id"].astype(str).map(dates))
-        dat["dat_batch"] = _vendor(dat["hdr_manufacturer"]) + "_" + dat["hdr_model"].astype(str).str[:12]
+        dat["dat_batch"] = _vendor(dat["hdr_manufacturer"]) + "_" + _txt(dat["hdr_model"]).str[:12]
         extra = ["fs_image_id"] if "fs_image_id" in dat else []     # the T1 the stored SPECT transform refers to
         man = man.merge(dat[["patno", *T, "image_id", "dat_date", "dat_batch", "dat_qc_pass"] + extra]
                         .rename(columns={"patno": "PATNO", "image_id": "dat_image_id", "fs_image_id": "dat_fs_image_id"}), on=K, how="left")
@@ -289,13 +295,13 @@ def build_manifest(derived_dir, modality_dirs=None, per_visit=False):
     dwi = _read(dwi_dir / "dwi_features.csv", base, per_visit)
     if dwi is not None:
         dwi["dwi_qc_pass"] = QC["dwi"](dwi)
-        dwi["dwi_batch"] = _vendor(dwi["manufacturer"]) + "_" + dwi["shells"].astype(str).str.replace(" ", "-") + "_" + dwi["fw_method"].astype(str)
+        dwi["dwi_batch"] = _vendor(dwi["manufacturer"]) + "_" + _txt(dwi["shells"]).str.replace(" ", "-") + "_" + _txt(dwi["fw_method"])
         dwi["dwi_batch"] += np.where(dwi.get("eddy", pd.Series(False, index=dwi.index)).astype(str).str.lower().eq("true"), "_eddy", "")
         flag = lambda c: dwi.get(c, pd.Series(False, index=dwi.index)).astype(str).str.lower().eq("true")
         dwi["dwi_correction"] = np.where(flag("eddy"), "eddy", np.where(flag("topup"), "topup", "rigid"))
         # the study's batch: vendor | shells | voxel size | number of volumes (direction count)
-        dwi["dwi_acquisition_batch"] = _vendor(dwi["manufacturer"]) + "|" + dwi["shells"].astype(str) + "|" + \
-            dwi.get("voxel_mm", pd.Series("", index=dwi.index)).astype(str) + "|" + dwi.get("n_volumes", pd.Series("", index=dwi.index)).astype(str)
+        dwi["dwi_acquisition_batch"] = _vendor(dwi["manufacturer"]) + "|" + _txt(dwi["shells"]) + "|" + \
+            _txt(dwi.get("voxel_mm", pd.Series("", index=dwi.index))) + "|" + _txt(dwi.get("n_volumes", pd.Series("", index=dwi.index)))
         extra = _modality_metadata(dwi, "dwi", dwi_dir / "dwi_index.csv", subjects, "selected")
         man = man.merge(dwi[["patno", *T, "dwi_date", "dwi_batch", "dwi_acquisition_batch", "dwi_correction", "dwi_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on=K, how="left")
     # NM
@@ -303,10 +309,10 @@ def build_manifest(derived_dir, modality_dirs=None, per_visit=False):
     nmf = _read(nm_dir / "nm_features.csv", base, per_visit)
     if nmf is not None:
         nmf["nm_qc_pass"] = QC["nm"](nmf)
-        nmf["nm_batch"] = _vendor(nmf["manufacturer"]) + "_" + nmf["voxel_mm"].astype(str)
+        nmf["nm_batch"] = _vendor(nmf["manufacturer"]) + "_" + _txt(nmf["voxel_mm"])
         # the study's batch: vendor | voxel | TR | TE | MT preparation (the NM contrast depends on all of them)
-        num = lambda c: pd.to_numeric(nmf.get(c, pd.Series(np.nan, index=nmf.index)), errors="coerce").round(4).astype(str)
-        nmf["nm_acquisition_batch"] = (_vendor(nmf["manufacturer"]) + "|" + nmf["voxel_mm"].astype(str) + "|" + num("tr_s") + "|"
+        num = lambda c: _txt(pd.to_numeric(nmf.get(c, pd.Series(np.nan, index=nmf.index)), errors="coerce").round(4))
+        nmf["nm_acquisition_batch"] = (_vendor(nmf["manufacturer"]) + "|" + _txt(nmf["voxel_mm"]) + "|" + num("tr_s") + "|"
                                        + num("te_s") + "|" + num("mt_flag"))
         extra = _modality_metadata(nmf, "nm", nm_dir / "nm_index.csv", subjects, "selected")
         man = man.merge(nmf[["patno", *T, "nm_date", "nm_batch", "nm_acquisition_batch", "nm_qc_pass"] + extra].rename(columns={"patno": "PATNO"}), on=K, how="left")
