@@ -1075,6 +1075,14 @@ The DWI nigral values agree poorly with manual ROIs because a 2 mm, affine-mappe
 is several millimetres from the anatomy on PPMI-1 data; free-water results should come from PPMI 2.0 multi-shell
 scans with topup (`--fsl`), and ideally eddy.
 
+### Real-data validity checks (October 2026)
+
+| Measure | Check | Result |
+|---|---|---|
+| T1 volumes (FastSurfer) | Same-day MPRAGE + repeat (29 pairs; ICC(2,1), SEM, 95 % minimal detectable change) | putamen ICC 0.98 (MDC95 5.1–5.5 %), caudate 0.99 (3.7–4.6 %), thalamus 0.98–0.99 (2.3–3.9 %), hippocampus 0.99 (2.7–3.2 %), amygdala 0.97–0.98 (5.7–6.2 %), lateral ventricles 1.00 (1.7–2.4 %), brainstem 0.98 (4.3 %). `BrainSegVol` 0.87 (10 %): coverage differs between repeats |
+| T1 volumes | vs PPMI FS7, by vendor and field strength (1,080 baseline scans; median CCC over 15 structures) | all 0.87 (r 0.90); Siemens 0.88, Philips 0.82, GE 0.80; 3 T 0.86, 1.5 T 0.82. PIE's volumes run larger (putamen +235–246 mm³) |
+| DaT, registration fix (Oct 2026) | vs Xing, same 159 scans, old vs new pipeline, raw r | caudate 0.60–0.65 → 0.76–0.79; putamen 0.76–0.79 → 0.76–0.80; fan-beam scale-fit scans 0.74 → 0.81 (0.67 → 0.88 when not clamped); parallel-hole 0.82 → 0.73. The brain-only correlation metric needs its own QC bar: the old 0.4 failed 126 of 237 scans |
+
 ## Measurement follow-up safeguards (September 2026)
 
 The September 2026 reassessment moved several safeguards into the package. The DWI ones (run concatenation keyed
