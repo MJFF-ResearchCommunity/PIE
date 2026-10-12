@@ -121,6 +121,12 @@ Any deviation is logged here, with its date, before the script is run.
   before snceg; nothing was inspected, and its work dir was deleted. The run restarted on R1's own inputs
   (sessions, FastSurfer links, Siemens list), as `20260927_nm_final/run_r1.sh` used them.
 
+- 2026-10-12T03:37: pipeline finished (started 2026-10-11T20:01 on R1's inputs): 458 of 459 participants in
+  `nm_native_features.csv`, sha256 `680e196626524bdece51000bd89c9be8e3117fb59e81d86857103abb4aa36c6c`, recorded
+  before any cohort label was joined. Post-freeze commits touching the pipeline: `8ab8213` (`nm_template.box_path`
+  creates its folder; no effect on outputs). The analysis script imports no PIE module and its sha256 still matches the
+  freeze. No deviation; the script is run once next.
+
 ## References
 
 - Lillebostad PAG et al. Deep-learning segmentation of the substantia nigra from multiparametric MRI. *Imaging
