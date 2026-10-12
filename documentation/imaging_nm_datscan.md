@@ -570,7 +570,24 @@ segmentation as the ROI atlas.
 
    On a synthetic head with scalp uptake beyond the skull and a hot neck, the old template reproduced the axial
    shrinkage (0.73). The brain-only fit gave 0.91, and 1.00–1.02 without the hot neck, and it recovered a 1.2 or
-   1.4 transaxial magnification to within 1 %. None of this has been re-run on PPMI yet: see "Validation" below.
+   1.4 transaxial magnification to within 1 %.
+
+   **On PPMI (11 Oct 2026).** Against Xing, on a tuning set of 240 random scans outside the validation set, the
+   brain-only fit raised the lowest-putamen r from 0.78 to 0.90 and caudate from 0.55 to 0.81. Its correlation bar
+   (0.2, the 2nd percentile) was set on that set. On the vendor-stratified validation set it failed on 49 of 237
+   scans: HERMES, BrightView, Forte and P3000XP, where the head outline still helps. **`quantify_with_fallback`**
+   (what `process_series` runs) therefore re-registers those with **`LEGACY`**: the pre-October head-outline template
+   at its effective ~30 mm, correlation over the whole image, ±2-voxel placement. The legacy fit is kept when its own
+   correlation reaches 0.4; rows carry `reg_template` (`brain` / `legacy_head`) and `reg_fallback`.
+
+   Results:
+   - QC passed 236 of 237 (old pipeline 233).
+   - On the 156 scans both pass, putamen r rose from 0.796 to 0.861 and caudate from 0.675 to 0.743.
+   - Restricted to brain-only fits, putamen CCC rose from 0.79 to 0.87–0.89.
+
+   `manifest.QC["dat"]` applies the legacy rule (correlation ≥ 0.4) to legacy rows. Brain-only rows need correlation
+   ≥ 0.2, rotation ≤ 30°, translation ≤ 50 mm and a placement off the window edge. A clamped scale is only flagged:
+   those fits agreed at r 0.75, as well as the old pipeline did.
 4. **`quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0,
    search_vox=None, scale_fit=False)`** → `sbr_with_transform` → **`sbr_from_arrays(S, L, dilate=0,
    ref_dilate=0, search_vox=None, ap=None, spacing_mm=None)`**: DKT labels resampled onto the SPECT grid (through

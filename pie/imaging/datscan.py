@@ -305,7 +305,7 @@ def _clean_spect(img, cap=1.5, head_litres=4.0):
     return nib.Nifti1Image(data, img.affine)
 
 
-def synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0, striatum=(CAUDATE_L, CAUDATE_R, PUTAMEN_L, PUTAMEN_R)):
+def synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0, striatum=(CAUDATE_L, CAUDATE_R, PUTAMEN_L, PUTAMEN_R), head=False):
     """A subject-specific, brain-only DaT-like template on the T1 grid: striatum 1.0, rest of brain 0.25, zero outside
     the brain, smoothed to SPECT resolution. Correlation against it aligns the striatal hot spots and the brain's
     non-specific uptake with the labels. Until October 2026 it also held scalp and neck (0.12 from the T1 intensity) and
@@ -314,9 +314,19 @@ def synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0, striatum=(CAUDATE_L, CAUDAT
     scans and fan-beam axial scales shrank to a median 0.72."""
     lab = np.asanyarray(aparc_img.dataobj)
     syn = np.where(lab > 0, 0.25, 0.0).astype(np.float32)
+    if head:          # the legacy template (``LEGACY``): non-brain head tissue at 0.12 from the T1 intensity
+        t1 = np.asanyarray(t1_img.dataobj).astype(np.float32)
+        syn[(t1 > 0.15 * np.percentile(t1[t1 > 0], 99)) & (lab == 0)] = 0.12
     syn[np.isin(lab, striatum)] = 1.0
     vox = float(np.mean(nib.affines.voxel_sizes(t1_img.affine)))
     return nib.Nifti1Image(ndimage.gaussian_filter(syn, sigma=fwhm_mm / 2.3548 / vox), t1_img.affine)
+
+
+# The pre-October 2026 registration, kept as the fallback for scans the brain-only template fails (``quantify_with_fallback``):
+# head-outline template at the ~30 mm it effectively had, correlation over the whole image, +-2-voxel placement. On the
+# 236-participant validation set its SBRs agreed with Xing at r 0.75 on the 31 scans where the brain-only fit failed QC
+# (r 0.35), and new-or-fallback gave putamen r 0.856 on all 159 matched scans against 0.785 for the old pipeline alone.
+LEGACY = {"head": True, "fwhm_mm": 30.0, "mask": False, "search_vox": 2}
 
 
 # Per-axis scale bounds of ``scale_fit`` registrations, in the T1 frame (x left-right, y anterior-posterior, z axial). A
@@ -330,7 +340,7 @@ def synthetic_spect(t1_img, aparc_img, fwhm_mm=10.0, striatum=(CAUDATE_L, CAUDAT
 SCALE_BOUNDS = ((0.85, 1.8), (0.85, 1.8), (0.85, 1.15))
 
 
-def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc_img=None, scale_fit=False):
+def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc_img=None, scale_fit=False, legacy=False):
     """Rigid registration of the SPECT volume to the subject's T1 space via a brain-only synthetic DaT template
     (see ``synthetic_spect``), normalised correlation sampled inside the brain and a ~7 mm rim only (template >
     0.01, 4 % of the brain level), so scalp, face and neck uptake cannot steer it. The volume is already in patient
@@ -350,8 +360,9 @@ def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc
     if flip_lr:
         spect_img = nib.Nifti1Image(np.asanyarray(spect_img.dataobj)[::-1], spect_img.affine)
     moving = _sitk_from_nib(_clean_spect(spect_img))
-    fixed = sitk.Shrink(_sitk_from_nib(synthetic_spect(t1_img, aparc_img)), [2, 2, 2])
-    mask = fixed > 0.01
+    template = synthetic_spect(t1_img, aparc_img, LEGACY["fwhm_mm"], head=True) if legacy else synthetic_spect(t1_img, aparc_img)
+    fixed = sitk.Shrink(_sitk_from_nib(template), [2, 2, 2])
+    mask = None if legacy else fixed > 0.01
     # rigid, or rigid + per-axis scale (no shear) when ``scale_fit``: fan-beam acquisitions (Marconi/Picker
     # Prism, collimator FANB) reconstructed as parallel-beam come out magnified transaxially, which a rigid fit
     # cannot absorb. Parallel-hole vendors with a correct pixel size lose a little accuracy with free scales, so
@@ -363,7 +374,8 @@ def register_to_t1(spect_img, t1_img, flip_lr=False, rz=0.0, search=False, aparc
     def method(sampling):
         reg = sitk.ImageRegistrationMethod()
         reg.SetMetricAsCorrelation()
-        reg.SetMetricFixedMask(mask)
+        if mask is not None:
+            reg.SetMetricFixedMask(mask)
         reg.SetMetricSamplingStrategy(reg.RANDOM)
         reg.SetMetricSamplingPercentage(sampling, seed=ITK_SEED)
         reg.SetInterpolator(sitk.sitkLinear)
@@ -514,7 +526,8 @@ def transform_from_row(row):
     return tx
 
 
-def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0, search_vox=None, scale_fit=False):
+def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, dilate=0, ref_dilate=0, search_vox=None, scale_fit=False,
+             legacy=False):
     """Register SPECT -> T1 space (synthetic-template correlation), resample the FastSurfer labels onto the
     SPECT grid and compute SBRs (see ``sbr_from_arrays``). Returns SBRs, ROI means, the registration
     metric (negative normalised correlation; more negative is better) and QC fields: the transform's rotation
@@ -522,7 +535,9 @@ def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, 
     beyond the centre-of-mass start (``reg_t{x,y,z}_mm``, LPS), its scales and ``reg_scale_at_bound``."""
     from scipy.spatial.transform import Rotation
 
-    tx, metric, moving, info = register_to_t1(spect_img, t1_img, flip_lr, rz=rz, search=search, aparc_img=aparc_img, scale_fit=scale_fit)
+    tx, metric, moving, info = register_to_t1(spect_img, t1_img, flip_lr, rz=rz, search=search, aparc_img=aparc_img, scale_fit=scale_fit,
+                                              legacy=legacy)
+    search_vox = LEGACY["search_vox"] if legacy and search_vox is None else search_vox
     p = tx.GetParameters()       # ScaleVersor3D: versor xyz, translation xyz, scale xyz (fixed -> moving)
     reg = {"reg_params": " ".join(f"{v:.6g}" for v in p), "reg_center": " ".join(f"{v:.6g}" for v in tx.GetFixedParameters()[:3])}
     # through the stored values, so --requantify reproduces these SBRs exactly
@@ -530,6 +545,7 @@ def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, 
                              ref_dilate=ref_dilate, search_vox=search_vox)
     rot = Rotation.from_quat([*p[:3], np.sqrt(max(0.0, 1.0 - sum(v * v for v in p[:3])))])
     out["reg_metric"] = metric
+    out["reg_template"] = "legacy_head" if legacy else "brain"
     out["flip_lr"] = bool(flip_lr)
     out.update(reg)
     out["reg_scale_x"], out["reg_scale_y"], out["reg_scale_z"] = (float(v) for v in p[6:9])
@@ -538,6 +554,23 @@ def quantify(spect_img, t1_img, aparc_img, flip_lr=False, rz=0.0, search=False, 
     out["reg_rot_x_deg"], out["reg_rot_y_deg"], out["reg_rot_z_deg"] = (float(v) for v in rot.as_euler("xyz", degrees=True))
     out["reg_tx_mm"], out["reg_ty_mm"], out["reg_tz_mm"] = (float(v) for v in np.array(p[3:6]) - info["t0"])
     return out
+
+
+def brain_fit_failed(q):
+    """The brain-only fit failed by the manifest's rules: correlation under 0.2, rotation over 30 deg, or the hottest
+    placement on the edge of its window."""
+    return bool(-q["reg_metric"] < 0.2 or q.get("reg_rot_deg", 0) > 30 or q.get("shift_edge", False))
+
+
+def quantify_with_fallback(spect_img, t1_img, aparc_img, **kw):
+    """``quantify`` with the brain-only template; when that fit fails (``brain_fit_failed``), the ``LEGACY`` registration,
+    kept when its own correlation reaches the legacy bar (0.4). ``reg_template`` says which one the row carries and
+    ``reg_fallback`` that the brain-only fit failed."""
+    q = quantify(spect_img, t1_img, aparc_img, **kw)
+    if not brain_fit_failed(q):
+        return {**q, "reg_fallback": False}
+    leg = quantify(spect_img, t1_img, aparc_img, legacy=True, **kw)
+    return {**(leg if -leg["reg_metric"] >= 0.4 else q), "reg_fallback": True}
 
 
 def requantify_row(row, fastsurfer_subject_dir):
@@ -583,7 +616,7 @@ def process_series(zip_path, member, out_dir, fastsurfer_subject_dir=None, fwhm_
     if fastsurfer_subject_dir:
         mri = Path(fastsurfer_subject_dir) / "mri"
         t1, aparc = nib.load(mri / "orig.mgz"), nib.load(mri / "aparc.DKTatlas+aseg.deep.mgz")
-        row.update(quantify(img, t1, aparc, flip_lr=flip_lr, scale_fit=row.get("hdr_scale_fit", False)))
+        row.update(quantify_with_fallback(img, t1, aparc, flip_lr=flip_lr, scale_fit=row.get("hdr_scale_fit", False)))
         row["fs_image_id"] = Path(fastsurfer_subject_dir).name   # the T1 the transform refers to (needed to requantify)
     return row
 

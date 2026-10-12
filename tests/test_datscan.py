@@ -219,8 +219,12 @@ def test_dat_qc_fails_implausible_transforms_and_keeps_old_tables():
     ok = {"reg_metric": -0.7, "n_label_voxels": 500, "reg_rot_deg": 10.0, "reg_tx_mm": 5.0, "reg_ty_mm": -3.0, "reg_tz_mm": 20.0,
           "reg_scale_at_bound": False, "shift_edge": False}
     rows = [ok, dict(ok, reg_rot_deg=40.0), dict(ok, reg_tz_mm=60.0), dict(ok, reg_scale_at_bound=True), dict(ok, shift_edge=True),
-            dict(ok, reg_metric=-0.3)]
-    assert manifest.QC["dat"](pd.DataFrame(rows)).tolist() == [True, False, False, False, False, False]
+            dict(ok, reg_metric=-0.3), dict(ok, reg_metric=-0.15)]
+    # a clamped scale is flagged, not failed; the brain-only correlation bar is 0.2
+    assert manifest.QC["dat"](pd.DataFrame(rows)).tolist() == [True, False, False, True, False, True, False]
+    legacy = pd.DataFrame([dict(ok, reg_template="legacy_head", reg_metric=-0.3, shift_edge=True),
+                           dict(ok, reg_template="legacy_head", reg_metric=-0.5, shift_edge=True), dict(ok, reg_template="brain")])
+    assert manifest.QC["dat"](legacy).tolist() == [False, True, True]                   # the fallback keeps the legacy rule
     old = pd.DataFrame({"reg_metric": [-0.7], "n_label_voxels": [500]})                 # tables written before the columns
     assert manifest.QC["dat"](old).tolist() == [True]
 
@@ -280,3 +284,17 @@ def test_calibration_keeps_the_reference_spread():
         cal = datscan.calibrate(d, {"pie": "ref"}, method=method)["pie_cal"]
         assert lo < cal.std() / d["ref"].std() < 1.06, method
         assert abs(cal.mean() - d["ref"].mean()) < 0.01
+
+
+def test_a_failed_brain_only_fit_falls_back_to_the_legacy_registration(monkeypatch):
+    calls = []
+
+    def fake_quantify(spect, t1, aparc, legacy=False, **kw):
+        calls.append(legacy)
+        return {"reg_metric": -0.6 if legacy else -0.1, "reg_rot_deg": 5.0, "shift_edge": False, "sbr_putamen_l": 2.0 if legacy else 0.5}
+
+    monkeypatch.setattr(datscan, "quantify", fake_quantify)
+    q = datscan.quantify_with_fallback(None, None, None)
+    assert calls == [False, True] and q["sbr_putamen_l"] == 2.0 and q["reg_fallback"]
+    monkeypatch.setattr(datscan, "quantify", lambda *a, legacy=False, **k: {"reg_metric": -0.5, "reg_rot_deg": 5.0, "shift_edge": False})
+    assert not datscan.quantify_with_fallback(None, None, None)["reg_fallback"]
