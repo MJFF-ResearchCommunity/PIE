@@ -446,34 +446,55 @@ def mean_image(data, frames, affine, sampling_seed=ITK_SEED, from_min=ANALYSIS_F
 
 
 # ------------------------------------------------------------------------------------------ registration / SBR
-def register_pet_to_t1(pet_img, t1_img, aparc_img, sampling_seed=ITK_SEED):
-    """Rigid Mattes MI registration of the PET mean (moving, native voxel order) to the conformed T1 (fixed), the metric
-    restricted to the FastSurfer brain dilated 10 mm (skull margin kept, neck and face out), started from the
-    centres of mass. Returns (transform T1 point -> PET point, metric; more negative is better)."""
+# multi-start registration: centre-of-mass start shifted along the scanner axis (mm) and pitched about left-right (deg).
+# A single start converged to a wrong pose on ~25 % of PPMI AV-133 scans (12 Oct 2026, template_r < 0.4, mostly 2012-14
+# HR+ exports); on 53 of them 15 starts (pitch -15..15) raised agreement with PPMI from posterior putamen r 0.42-0.61 to
+# 0.83 and caudate r 0.22-0.28 to 0.77-0.81, chosen by MI alone, most often at +15 deg, so the grid reaches +30
+REG_STARTS = [(dz, pitch) for dz in (-30.0, -15.0, 0.0, 15.0, 30.0) for pitch in (-15.0, 0.0, 15.0, 30.0)]
+
+
+def register_pet_to_t1(pet_img, t1_img, aparc_img, sampling_seed=ITK_SEED, starts=REG_STARTS):
+    """Rigid Mattes MI registration of the PET mean (moving, native voxel order, clipped at its 99.5th percentile so hot
+    end planes neither pull the start nor squeeze the histogram) to the conformed T1 (fixed), the metric restricted to
+    the FastSurfer brain dilated 10 mm (skull margin kept, neck and face out). Every start in ``starts`` (offsets from
+    the centres of mass) gets a coarse registration (4x shrunk); the best coarse metric is refined over three levels.
+    Returns (transform T1 point -> PET point, metric; more negative is better)."""
     import SimpleITK as sitk
 
     from .dwi import _sitk_native
 
     fixed = _sitk_from_nib(t1_img)
-    moving = _sitk_native(np.asanyarray(pet_img.dataobj).astype(np.float32), pet_img.affine)
+    arr = np.asanyarray(pet_img.dataobj).astype(np.float32)
+    pos = arr[arr > 0]
+    moving = _sitk_native(np.clip(arr, 0, np.percentile(pos, 99.5)) if pos.size else arr, pet_img.affine)
     lab = _sitk_from_nib(nib.Nifti1Image(np.asanyarray(aparc_img.dataobj).astype(np.float32), aparc_img.affine))
     mask = sitk.BinaryDilate(lab > 0.5, [max(1, int(round(10.0 / s))) for s in fixed.GetSpacing()])
-    init = sitk.CenteredTransformInitializer(sitk.Mask(fixed, mask), moving, sitk.Euler3DTransform(),
+    base = sitk.CenteredTransformInitializer(sitk.Mask(fixed, mask), moving, sitk.Euler3DTransform(),
                                              sitk.CenteredTransformInitializerFilter.MOMENTS)
-    reg = sitk.ImageRegistrationMethod()
-    reg.SetMetricAsMattesMutualInformation(32)
-    reg.SetMetricFixedMask(mask)
-    reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.2, seed=int(sampling_seed))
-    reg.SetInterpolator(sitk.sitkLinear)
-    reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-4, numberOfIterations=300, relaxationFactor=0.6)
-    reg.SetOptimizerScalesFromPhysicalShift()
-    reg.SetShrinkFactorsPerLevel([4, 2, 1])
-    reg.SetSmoothingSigmasPerLevel([4, 2, 1])
-    reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-    reg.SetInitialTransform(init, inPlace=False)
-    tx = reg.Execute(fixed, moving)
-    return tx, float(reg.GetMetricValue())
+
+    def run(init, shrink, iterations):
+        reg = sitk.ImageRegistrationMethod()
+        reg.SetMetricAsMattesMutualInformation(32)
+        reg.SetMetricFixedMask(mask)
+        reg.SetMetricSamplingStrategy(reg.RANDOM)
+        reg.SetMetricSamplingPercentage(0.2, seed=int(sampling_seed))
+        reg.SetInterpolator(sitk.sitkLinear)
+        reg.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=1e-4, numberOfIterations=iterations, relaxationFactor=0.6)
+        reg.SetOptimizerScalesFromPhysicalShift()
+        reg.SetShrinkFactorsPerLevel(shrink)
+        reg.SetSmoothingSigmasPerLevel(shrink)
+        reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+        reg.SetInitialTransform(init, inPlace=False)
+        tx = reg.Execute(fixed, moving)
+        return sitk.Euler3DTransform(tx.GetNthTransform(0) if tx.GetName() == "CompositeTransform" else tx), float(reg.GetMetricValue())
+
+    coarse = []
+    for dz, pitch in starts:
+        init = sitk.Euler3DTransform(base)
+        init.SetTranslation(tuple(np.array(base.GetTranslation()) + np.array([0.0, 0.0, dz])))
+        init.SetRotation(np.radians(pitch), 0.0, 0.0)
+        coarse.append(run(init, [4], 100))
+    return run(min(coarse, key=lambda c: c[1])[0], [4, 2, 1], 300)
 
 
 def quantify(pet_img, t1_img, aparc_img, sampling_seed=ITK_SEED):

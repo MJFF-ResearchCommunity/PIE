@@ -442,3 +442,14 @@ def test_units_are_judged_from_the_stored_text():
     d = pd.DataFrame([dict(base, units=u) for u in ("Bq/cc", "BQML", "PROPCPS", "")])
     assert pet.qc_pass(d).tolist() == [True, True, False, False]
     assert pet.qc_pass_suvr(d.assign(cov_reference=1.0, n_reference=500)).tolist() == [True, True, False, False]
+
+
+def test_multistart_registration_keeps_the_best_start():
+    """A 70-degree start beside the plain centre-of-mass one: the coarse metric must pick the plain one."""
+    t1, lab, up = _phantom()
+    f, aff = _acquire(up, (5.0, 0.0, 0.0), (0.0, 0.0, 10.0))
+    img = nib.Nifti1Image(f, aff)
+    _, m_bad = pet.register_pet_to_t1(img, t1, lab, starts=[(0.0, 70.0)])
+    tx, m = pet.register_pet_to_t1(img, t1, lab, starts=[(0.0, 70.0), (0.0, 0.0)])
+    _, m_good = pet.register_pet_to_t1(img, t1, lab, starts=[(0.0, 0.0)])
+    assert np.isclose(m, m_good, rtol=1e-6) and m < m_bad - 0.1           # threaded sums differ in the last digits
