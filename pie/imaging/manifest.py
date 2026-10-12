@@ -220,7 +220,7 @@ def _read(path, baseline_t1=None, per_visit=False):
         return None
     d = pd.read_csv(p, low_memory=False, dtype={"fs_image_id": str})
     if "error" in d:
-        d = d[d["error"].fillna("") == ""]
+        d = d[d["error"].fillna("") == ""].copy()       # a copy: wide tables (~1,000 DWI columns) are fragmented otherwise
     if "patno" not in d:
         return d.copy()
     if baseline_t1 is None:
