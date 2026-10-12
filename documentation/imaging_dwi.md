@@ -290,6 +290,28 @@ It is not yet in the default path: the evaluation against PPMI's hand-drawn nigr
 263 scans on the September 2026 download): `sn_fa`, `sn_rostral_fa`, `sn_caudal_fa`, `sn_md`, `peduncle_fa` per PATNO
 and scan month. Use it to check any change to nigral ROI placement.
 
+## Series with stripped gradient tags (`dwi_gradients.py`, `--rebuilt-gradients`)
+
+Some PPMI 2.0 Siemens downloads lost every private diffusion tag in export: the CSA headers (0029,1010 / 0029,1020)
+and the b-value and direction tags (0019,100C / 0019,100E). dcm2niix then writes no bval/bvec, and `convert` drops the
+run. In the September 2026 gate download these were 31 sessions ("no diffusion-weighted run"). In 25 of them,
+`SequenceName` still encodes each volume (`*ep_b1000#11`: b = 1000, direction 11 of the protocol's table). XA30
+series named `*epse2d1_128` encode nothing and cannot be rebuilt this way.
+
+The rebuild follows the pre-registered Addendum 1 (2026-09-28 DWI gate):
+- **Per-volume codes:** `volume_table` reads b and the direction index per volume, in `AcquisitionNumber` order (the
+  order dcm2niix stacks classic Siemens DICOM).
+- **Reference vectors:** `reference_directions` takes each index's vector from intact sessions of the same protocol,
+  in the frame where those sessions agree (patient or image axes).
+- **Rebuild:** `rebuild` writes FSL bvals/bvecs for the stripped series.
+- **Acceptance:** on at least 5 intact sessions, the SequenceName order must reproduce dcm2niix's bvals; leave-one-out
+  vectors must match within 1°; and MD from rebuilt vs real gradients must correlate at r ≥ 0.99. A protocol that
+  fails gets nothing rebuilt.
+
+`dwi --rebuilt-gradients <dir>` gives a stripped series its `<image_id>.bval/.bvec` when the volume count matches, and
+marks it: `PIEGradientsRebuilt` in the sidecar, `gradients_rebuilt` on the row. Both pre-registrations use recovered
+sessions only as sensitivity analyses. Tests: `tests/test_dwi_gradients.py`.
+
 ## QSIPrep / QSIRecon reference comparator (`dwi_qsiprep.py`, opt-in)
 
 QSIPrep (Cieslak et al. 2021, doi:10.1038/s41592-021-01185-5) is the community-standard diffusion preprocessing. PIE
