@@ -1,8 +1,9 @@
 # Pre-registration: staged validation of PIE's neuromelanin measure (technical, biological, clinical)
 
 **Status: Stage 1 FROZEN 2026-10-12** (the commit that adds this file, before any split-half value existed; the
-split-half slabs were being written when it was committed, and no measure had been computed on them). Stages 2 and 3
-are DRAFTS until their data are downloaded; each is frozen, with its script hash, before its data are opened.
+split-half slabs were being written when it was committed, and no measure had been computed on them). **Stage 2b
+FROZEN 2026-10-12**, before its prodromal slabs were built. Stages 2a, 2c and 3 are DRAFTS until their data are
+downloaded; each is frozen, with its script hash, before its data are opened.
 
 ## Why staged
 
@@ -73,8 +74,21 @@ PPMI's acquisition metadata (Sep 2026) lists NM at ≥ 2 visits for 546 PD and 1
   (`SCANNER_CHANGE_AFTER_BASELINE`). Pass: mean annual change < 0 with the 95 % CI excluding 0. Anchor: −2 %/yr for the
   contrast ratio in PPMI PD (Lillebostad, Lundervold, Tzoulis, EAN 2025 ePoster EPO-131). Prodromal change is
   descriptive.
-- **2b, prodromal between HC and PD (secondary).** PIE holds 431 prodromal NM sessions never used in a group test;
-  ordering HC > prodromal > de novo PD (Jonckheere–Terpstra), as in Langley 2025. HC and PD reuse is declared.
+- **2b, NM against DaT within prodromal participants (FROZEN 2026-10-12, before any prodromal slab was built).**
+  PIE holds 433 prodromal NM sessions that no NM analysis has used. They are processed at v7 like R1 (job
+  `nm_prodromal.sh`: slabs, SyN, every candidate with and without N4); the feature table's sha256 is recorded before
+  any label is joined.
+  - Groups: PPMI's DaT SBR nearest the NM session (`labels.dat_labels`, within 18 months), DaT-deficient by the
+    NSD-ISS D+ rule (lowest putamen ≤ 75 % of the age/sex expectation, `dat_d_nsdiss`) or not.
+  - Statistic: AUROC (DaT-normal > DaT-deficient) of the Stage 1 primary measure, stratified by vendor (pairs only
+    within a vendor), bootstrap 95 % CI (2,000 resamples within vendor × group, seed 20261012).
+  - **Pass: CI lower bound > 0.50.** Exclusions as Stage 1 (QC, slab < 24 mm, measure missing), any vendor.
+  - Secondary: the 0.65 deficit rule (`dat_deficit_sbr`); age- and sex-adjusted (fit on all prodromal rows, no DaT
+    label); Spearman ρ with percent-of-expected SBR.
+  - Rationale: nigral neuromelanin loss should accompany striatal dopamine-transporter loss before diagnosis (within
+    iRBD, NM separated DaT-abnormal from DaT-normal at AUROC 0.73–0.75, Kim 2026, doi:10.1007/s11682-026-01176-0); no
+    HC or PD participant is reused.
+  - Script: `scripts/nm_staged.py prodromal-dat`, sha256 `3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f` at the freeze (synthetic dry run only).
 - **2c, side-matched DaT (exploratory, reused data).** Each hemisphere's NM against the same hemisphere's posterior
   putamen SBR, and the more-affected side, as Park 2023.
 
@@ -84,7 +98,7 @@ PPMI's metadata lists NM for 41 HC and 411 de novo PD (NM at BL/SC) that no PIE 
 `~/pie_validation/20261012_nm_staged/`, not in the repository). Only 10 of these HC and 75 of these PD have a
 processed T1 in PIE, so their T1s are downloaded with them.
 
-- **Measure:** the Stage 1 primary measure, unchanged.
+- **Measure:** the Stage 1 primary measure, unchanged. Script: `scripts/nm_staged.py fresh-clinical` (draft).
 - **Statistic:** AUROC (HC > de novo PD) stratified by vendor (pairs compared only within a vendor, pooled), with a
   stratified bootstrap 95 % CI; Siemens-only AUROC as a secondary.
 - **Proposed pass rule (the user decides before the data are opened):** CI lower bound > 0.50, the point estimate
