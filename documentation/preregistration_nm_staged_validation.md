@@ -1,6 +1,6 @@
 # Pre-registration: staged validation of PIE's neuromelanin measure (technical, biological, clinical)
 
-**Status: Stage 1 FROZEN 2026-10-12** (the commit that adds this file, before any split-half value existed; the
+**Status: Stage 1 FROZEN 2026-10-12 and RUN (technical gate passed; primary `nms_sn_mean_cr`)** (the commit that adds this file, before any split-half value existed; the
 split-half slabs were being written when it was committed, and no measure had been computed on them). **Stage 2b
 FROZEN 2026-10-12**, before its prodromal slabs were built. Stages 2a, 2c and 3 are DRAFTS until their data are
 downloaded; each is frozen, with its script hash, before its data are opened.
@@ -63,6 +63,36 @@ is noise-plus-segmentation reliability, an upper bound on scan–rescan reliabil
 tracking neuromelanin; Stages 2 and 3 test that.
 
 Script: `scripts/nm_split_half.py`, sha256 `f3ca5807815c5c920b711e912b358ac7d4502555a89ed4f49c787d76a6ce9079` at the freeze (synthetic dry run only before the real run). Run once; every number reported.
+
+### Stage 1 result (run once, 12 Oct 2026; script hash verified; result JSON sha256 `13176314cea1ada7f4820f0eeca71642ad819cc81ace2a616b39b20caef3e4e7`)
+
+**Technical gate PASSED. Primary measure: `nms_sn_mean_cr` (the current default, kept by the tie rule).**
+
+Flow: 459 slabs; excluded 37 `QC["nm"]`, 0 not Siemens, 2 slab < 24 mm, 4 halves not made, 10 a candidate missing on
+a half; **406 analysed**.
+
+| Candidate | ICC(A,1) halves | Projected (m = 2.5) [95 % CI] | Own rows | Missing | η² scanner model |
+|---|---|---|---|---|---|
+| `nms_sn_mean_cr` | 0.873 | **0.945** [0.928, 0.957] | 0.945 | 0.024 | 0.014 |
+| `nms_sn_mean_cr_mode` | 0.506 | 0.719 [0.641, 0.773] | 0.719 | 0.024 | 0.012 |
+| `nmf_sn_mean_cr` | 0.899 | 0.957 [0.943, 0.966] | 0.958 | 0.022 | 0.011 |
+| `nmf_sn_mean_cr_mode` | 0.653 | 0.825 [0.781, 0.859] | 0.829 | 0.022 | 0.010 |
+| `nms_sn_mean_cr_n4` | 0.847 | 0.933 [0.900, 0.954] | 0.933 | 0.024 | 0.012 |
+| `nms_sn_mean_cr_mode_n4` | 0.514 | 0.726 [0.656, 0.778] | 0.726 | 0.024 | 0.009 |
+| `nmf_sn_mean_cr_n4` | 0.876 | 0.947 [0.922, 0.963] | 0.948 | 0.022 | 0.009 |
+| `nmf_sn_mean_cr_mode_n4` | 0.651 | 0.823 [0.776, 0.856] | 0.826 | 0.022 | 0.009 |
+
+The best projected ICC (`nmf_sn_mean_cr`, 0.957) beat the default by 0.012, inside the 0.02 tie margin, so the
+default stands. Full-slab Spearman agreement with the default: 0.88 (`nmf_sn_mean_cr`), 0.91 (with N4), 0.76–0.83 (the
+mode variants).
+
+Unexpected, reported as found: the crus-mode reference **lowered** reliability (0.72–0.83 against 0.93–0.96 with the
+mean), the opposite of Lesh 2025, whose gain was for manual tracing. A kernel-density peak over a small crus mask is a
+noisier statistic than its mean when the mask is automated. N4 did not help either. Scanner model explains about 1 %
+of the variance of every candidate.
+
+Limit (as stated above): halves share the session, registration and segmentation, so 0.945 is an upper bound on
+scan–rescan reliability. Stage 2b uses `nms_sn_mean_cr`.
 
 ## Stage 2: biological validation (draft; new data)
 
