@@ -101,7 +101,7 @@ def main(argv=None):
     out = pd.DataFrame(out)
     print(out.round(3).to_string(index=False))
     g = m.dropna(subset=["pie_putamen_min", "ref_putamen_min", "metric"])
-    tert = pd.qcut(g["metric"], 3, labels=["low", "mid", "high"])
+    tert = pd.qcut(g["metric"].rank(method="first"), 3, labels=["low", "mid", "high"])     # ranks: ties (synthetic data) still split
     print("putamen_min raw r by registration-metric tertile:", {str(t): round(float(np.corrcoef(x["pie_putamen_min"], x["ref_putamen_min"])[0, 1]), 3)
                                                                  for t, x in g.groupby(tert, observed=True)},
           "metric cut points", g["metric"].quantile([1 / 3, 2 / 3]).round(3).tolist())
