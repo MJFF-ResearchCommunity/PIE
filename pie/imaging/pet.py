@@ -51,7 +51,12 @@ AV133 = r"AV.?133|VMAT|DTBZ|florbenazine"
 TAU = r"PI.?2620|(?<![a-z])tau(?![a-z])"
 OTHER_TRACERS = r"DPA.?714|C05.?05|MK.?6240|UCB|SV2A|PE2I|DOPA|FD4|PIB|AV.?45|AV.?1451|florbeta|flortaucipir|" + TAU
 TRANSMISSION = r"(?<![a-z])tx(?![a-z])|transmission|measured.?atten|Ge.?68"   # attenuation scans (HR+ Ge-68 rods), not tracer images
-NAC = r"(?<![a-z])NAC(?![a-z])"       # a reconstruction without attenuation correction, uploaded beside the CTAC one
+NAC = r"(?<![a-z])NAC(?![a-z])"
+EARLY = r"initial|early"                # IND-era AV-133 visits: an "Initial" (~50 min) and a "Delay" (~80 min) scan
+# voxel axes nibabel's diagonal ECAT affine has backwards (``read_ecat``): none for PPMI's HR+ files (12 Oct 2026). On 8
+# AV-133 visits the 180-degree alternatives registered worse (MI -0.10 vs -0.28, template r 0.26-0.36 vs 0.63); on 53
+# the left-right asymmetry matched PPMI's at r 0.96 (posterior putamen), so x is not mirrored either
+ECAT_FLIP = ()       # a reconstruction without attenuation correction, uploaded beside the CTAC one
 UNFILTERED = r"all.?pass|no.?filt|unfilt|filter.?(?:none|0)"
 FILTERED = r"gauss|hann|butter|filt|fwhm"
 CEREBELLUM = [8, 47]                   # FastSurfer left / right cerebellar cortex
@@ -107,15 +112,34 @@ def _text(v):
     return "\\".join(map(str, v)) if isinstance(v, (list, pydicom.multival.MultiValue)) else str(v if v is not None else "")
 
 
+def _ecat_text(h, key):
+    return h[key].item().decode(errors="replace").strip("\x00 ")
+
+
+def _ecat_lag_s(h):
+    """Scan start - dose start in seconds; NaN when the dose time is missing, equal to the scan time (14 of 78 PPMI HR+
+    AV-133 files) or implausible (> 6 h)."""
+    lag = float(h["scan_start_time"]) - float(h["dose_start_time"])
+    return lag if 30 <= lag <= 6 * 3600 else np.nan
+
+
 def _probe(zip_path, prefixes):
-    """Header fields of the first DICOM of every series prefix in one zip (no pixel data)."""
+    """Header fields of the first DICOM (or the ECAT file) of every series prefix in one zip (no pixel data). ECAT rows
+    add ``start_min`` (scan start after injection)."""
     out, first = {}, {}
     with zipfile.ZipFile(zip_path) as z:
         for n in z.namelist():
             p = n.rsplit("/", 1)[0] + "/"
-            if p in prefixes and n.endswith(".dcm"):
+            if p in prefixes and (n.endswith(".dcm") or n.lower().endswith(".v")):
                 first.setdefault(p, n)
         for p, n in first.items():
+            if n.lower().endswith(".v"):
+                with z.open(n) as fh:
+                    h = nib.ecat.EcatHeader.from_fileobj(fh)
+                out[p] = {"modality": "PT", "tracer": f"{_ecat_text(h, 'isotope_name')} {_ecat_text(h, 'radiopharmaceutical')}",
+                          "n_frames": int(h["num_frames"]), "units": _ecat_text(h, "data_units"), "kernel": "", "image_type": "ECAT7",
+                          "manufacturer": "CTI/Siemens", "model": f"ECAT {int(h['system_type'])}", "start_min": _ecat_lag_s(h) / 60}
+                continue
             with z.open(n) as fh:
                 h = pydicom.dcmread(fh, stop_before_pixels=True, force=True)
             r = (h.get("RadiopharmaceuticalInformationSequence") or [pydicom.Dataset()])[0]
@@ -157,7 +181,8 @@ def select_series(idx, prefer="unfiltered", tracer="av133"):
     DICOM tracer names no other PPMI tracer (sites often leave the scanner's FDG default, so FDG in the tracer field
     alone does not exclude: the PPMI table join decides the tracer). Order: the ``prefer``red post-filter class (the
     TOM asks for unfiltered images; ``postfilter`` from description + convolution kernel), then most frames, then most
-    files, with attenuation-corrected reconstructions ahead of NAC ones. A single-frame winner takes every single-frame series of its class with the same file count and kernel: the
+    files, with attenuation-corrected reconstructions ahead of NAC ones and acquisitions known to start before the
+    tracer's analysis window (``start_min``, or "Initial" in the name) behind the rest. A single-frame winner takes every single-frame series of its class with the same file count and kernel: the
     TOM allows sequential statics, one series per frame."""
     d = idx.copy()
     d["kernel"] = d["kernel"].fillna("").astype(str)
@@ -170,14 +195,16 @@ def select_series(idx, prefer="unfiltered", tracer="av133"):
         d["candidate"] = pt & named.str.contains(TRACER_CONFIG[tracer]["pattern"], case=False, regex=True)
     rank = d["postfilter"].map({prefer: 0, "unknown": 1}).fillna(2)
     nac = d["desc"].astype(str).str.contains(NAC, case=False, regex=True)
+    start = pd.to_numeric(d.get("start_min", pd.Series(np.nan, index=d.index)), errors="coerce")
+    early = (start < TRACER_CONFIG[tracer]["from_min"]) | d["desc"].astype(str).str.contains(EARLY, case=False, regex=True)
     d["selected"] = False
-    for _, g in d[d["candidate"]].assign(_rank=rank, _nac=nac).groupby(["patno", "date"]):
-        g = g.sort_values(["_nac", "_rank", "n_frames", "n_files"], ascending=[True, True, False, False])
+    for _, g in d[d["candidate"]].assign(_rank=rank, _nac=nac, _early=early).groupby(["patno", "date"]):
+        g = g.sort_values(["_nac", "_early", "_rank", "n_frames", "n_files"], ascending=[True, True, True, False, False])
         best = g.iloc[0]
         keep = [best.name]
         if best["n_frames"] <= 1:
             same = ((g["n_frames"] <= 1) & g["postfilter"].eq(best["postfilter"]) & g["n_files"].eq(best["n_files"])
-                    & g["kernel"].eq(best["kernel"]) & g["_nac"].eq(best["_nac"]))
+                    & g["kernel"].eq(best["kernel"]) & g["_nac"].eq(best["_nac"]) & g["_early"].eq(best["_early"]))
             keep = list(g.index[same])
         d.loc[keep, "selected"] = True
     return d
@@ -231,6 +258,30 @@ def series_frames(headers):
     return f[["series", "start_s", "duration_s", "n_slices"]]
 
 
+def read_ecat(path, flip=None):
+    """An ECAT 7 file (CTI/Siemens HR+; 2012-14 PPMI AV-133 uploads) -> (data x,y,z,t float32, affine, frames, PET-BIDS-like
+    sidecar, header dict for ``_suv``). nibabel applies each frame's scale factor; its affine is a plain diagonal, so
+    ``flip`` (default ``ECAT_FLIP``) lists the voxel axes that run the other way. Frames start at scan start - dose
+    start + frame start (NaN when the dose time is unusable, ``_ecat_lag_s``). The injected dose is left out: SUV is NaN."""
+    flip = ECAT_FLIP if flip is None else flip
+    img = nib.ecat.load(str(path))
+    h, subs = img.header, img.get_subheaders().subheaders
+    data = np.asanyarray(img.get_fdata(), dtype=np.float32)
+    data = data[..., None] if data.ndim == 3 else data
+    f = np.eye(4)
+    for ax in flip:
+        f[ax, ax], f[ax, 3] = -1.0, data.shape[ax] - 1.0
+    lag = _ecat_lag_s(h)
+    frames = pd.DataFrame({"series": str(path), "start_s": [lag + int(s["frame_start_time"]) / 1000 for s in subs],
+                           "duration_s": [int(s["frame_duration"]) / 1000 for s in subs], "n_slices": data.shape[2]})
+    units = _ecat_text(h, "data_units")
+    side = {"Manufacturer": "CTI/Siemens", "ManufacturersModelName": f"ECAT {int(h['system_type'])}",
+            "Units": "Bq/mL" if units.lower() in ("bq/cc", "bq/ml") else units, "TracerName": _ecat_text(h, "radiopharmaceutical"),
+            "RadionuclideHalfLife": float(h["isotope_halflife"]) or None, "PIESourceFormat": "ECAT7", "PIEEcatFlip": list(flip),
+            "DecayCorrection": "START" if float(subs[0]["decay_corr_fctr"]) > 1 else "NONE"}
+    return data, img.affine @ f, frames, side, {"PatientWeight": float(h["patient_weight"]) or None}
+
+
 def load_scan(series_rows, work, cache, from_min=None):
     """Convert the selected series (``batch.convert_series``) and read their frame timing. Returns (data x,y,z,t
     float32, frames, affine, PET-BIDS sidecar, first DICOM header). With ``from_min`` and known timing, a series whose
@@ -247,9 +298,19 @@ def load_scan(series_rows, work, cache, from_min=None):
     timed = []
     for r in series_rows:
         with cache.open(r["zip"]) as z:
+            names = [n for n in z.namelist() if n.startswith(r["prefix"])]
+            ecat = next((n for n in names if n.lower().endswith(".v")), None)
+            if ecat:                              # ECAT 7: read directly (dcm2niix does not convert it)
+                out = Path(work) / "ecat" / f"{r['image_id']}.v"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(ecat) as src, open(out, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                data, aff, f, meta, head = read_ecat(out)
+                timed.append((r, (data, aff, meta, head), f))
+                continue
             heads = []
-            for n in z.namelist():
-                if n.startswith(r["prefix"]) and n.endswith(".dcm"):
+            for n in names:
+                if n.endswith(".dcm"):
                     with z.open(n) as fh:
                         heads.append(pydicom.dcmread(fh, stop_before_pixels=True, force=True))
         timed.append((r, heads, series_frames(heads)))
@@ -258,25 +319,29 @@ def load_scan(series_rows, work, cache, from_min=None):
         timed = late or timed
     vols, frames, sidecar, affine, first, regridded = [], [], None, None, None, 0
     for r, heads, f in timed:
-        niis = convert_series(r["zip"], r["prefix"], Path(work) / "nii", archive_cache=cache)
-        if len(niis) != 1:
-            raise ValueError(f"{r['image_id']}: dcm2niix wrote {len(niis)} images")
-        img = nib.load(niis[0])
-        data = np.asanyarray(img.dataobj, dtype=np.float32)
-        data = data[..., None] if data.ndim == 3 else data
-        meta = json.loads(Path(niis[0][:-7] + ".json").read_text()) if Path(niis[0][:-7] + ".json").exists() else {}
-        dur, fts = (np.atleast_1d(meta.get(k, [])).astype(float) for k in ("FrameDuration", "FrameTimesStart"))
-        # dcm2niix's volumes must run in time order, as the frames do; all-equal FrameTimesStart (dcm2niix found no
-        # times, e.g. [0, 0] on 2013 GE statics whose headers do have them) says nothing about the order
-        if (data.shape[-1] != len(f) or (len(dur) == len(f) and not np.allclose(dur, f["duration_s"], atol=1, equal_nan=True))
-                or (len(fts) > 1 and np.ptp(fts) > 0 and not (np.diff(fts) > 0).all())):
-            raise ValueError(f"{r['image_id']}: {data.shape[-1]} volumes but frames {f['duration_s'].tolist()} s in the headers")
+        if isinstance(heads, tuple):
+            data, img_affine, meta, head = heads
+        else:
+            niis = convert_series(r["zip"], r["prefix"], Path(work) / "nii", archive_cache=cache)
+            if len(niis) != 1:
+                raise ValueError(f"{r['image_id']}: dcm2niix wrote {len(niis)} images")
+            img = nib.load(niis[0])
+            img_affine, head = img.affine, heads[0]
+            data = np.asanyarray(img.dataobj, dtype=np.float32)
+            data = data[..., None] if data.ndim == 3 else data
+            meta = json.loads(Path(niis[0][:-7] + ".json").read_text()) if Path(niis[0][:-7] + ".json").exists() else {}
+            dur, fts = (np.atleast_1d(meta.get(k, [])).astype(float) for k in ("FrameDuration", "FrameTimesStart"))
+            # dcm2niix's volumes must run in time order, as the frames do; all-equal FrameTimesStart (dcm2niix found no
+            # times, e.g. [0, 0] on 2013 GE statics whose headers do have them) says nothing about the order
+            if (data.shape[-1] != len(f) or (len(dur) == len(f) and not np.allclose(dur, f["duration_s"], atol=1, equal_nan=True))
+                    or (len(fts) > 1 and np.ptp(fts) > 0 and not (np.diff(fts) > 0).all())):
+                raise ValueError(f"{r['image_id']}: {data.shape[-1]} volumes but frames {f['duration_s'].tolist()} s in the headers")
         if affine is None:
-            affine, sidecar, first = img.affine, meta, heads[0]
-        elif data.shape[:3] != vols[0].shape[:3] or not np.allclose(img.affine, affine, atol=1e-3):
+            affine, sidecar, first = img_affine, meta, head
+        elif data.shape[:3] != vols[0].shape[:3] or not np.allclose(img_affine, affine, atol=1e-3):
             from nibabel.processing import resample_from_to
             grid = (vols[0].shape[:3], affine)
-            data = np.stack([np.asanyarray(resample_from_to(nib.Nifti1Image(data[..., k], img.affine), grid, order=1, cval=0.0).dataobj,
+            data = np.stack([np.asanyarray(resample_from_to(nib.Nifti1Image(data[..., k], img_affine), grid, order=1, cval=0.0).dataobj,
                                            dtype=np.float32) for k in range(data.shape[-1])], axis=-1)
             regridded += 1
         vols += [data[..., k] for k in range(data.shape[-1])]

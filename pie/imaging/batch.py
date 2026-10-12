@@ -25,7 +25,7 @@ from .convert import DCM2NIIX
 
 def index_series(zips):
     """One row per DICOM series in LONI zips: zip, prefix (PPMI/<patno>/<desc>/<date>/<image_id>/), patno, desc,
-    date, image_id, n_files."""
+    date, image_id, n_files. An ECAT 7 file (``.v``, early PPMI PET) counts as a one-file series."""
     rows = []
     for zp in zips:
         if Path(zp).is_dir():          # a BIDS dataset
@@ -34,7 +34,7 @@ def index_series(zips):
         with zipfile.ZipFile(zp) as z:
             counts = {}
             for n in z.namelist():
-                if n.endswith(".dcm"):
+                if n.endswith(".dcm") or n.lower().endswith(".v"):
                     key = "/".join(n.split("/")[:5])
                     counts[key] = counts.get(key, 0) + 1
         for key, c in counts.items():

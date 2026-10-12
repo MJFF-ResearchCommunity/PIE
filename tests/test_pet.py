@@ -374,3 +374,39 @@ def test_suvr_labels_pivot_regions_per_scan(tmp_path):
                  ).to_csv(tmp_path / "Imaging" / "SV2A_PET_SUVR_Analysis_08Sep2026.csv", index=False)
     w = suvr_labels(tmp_path, "sv2a")
     assert len(w) == 1 and w["PUTAMEN_L"].item() == 5.0 and w["PET_SCAN_DATE"].dt.year.item() == 2023
+
+
+# ------------------------------------------------------------------------------------------ ECAT 7 (2012-14 HR+ uploads)
+TINYPET = Path(nib.__file__).parent / "tests" / "data" / "tinypet.v"
+
+
+def _ecat(path, lag_s):
+    img = nib.ecat.load(str(TINYPET))
+    img.header["dose_start_time"] = int(img.header["scan_start_time"]) - lag_s
+    img.to_filename(str(path))
+    return path
+
+
+@pytest.mark.skipif(not TINYPET.exists(), reason="nibabel's test data are not installed")
+def test_read_ecat_timing_units_and_flip(tmp_path):
+    data, aff, frames, side, head = pet.read_ecat(_ecat(tmp_path / "a.v", 4500), flip=())
+    assert data.shape == (10, 10, 3, 1) and side["Units"] == "Bq/mL" and side["PIESourceFormat"] == "ECAT7"
+    assert np.isclose(frames["start_s"].iloc[0], 4500 + 1500.016) and frames["duration_s"].tolist() == [300.0]
+    _, flipped, _, _, _ = pet.read_ecat(tmp_path / "a.v", flip=(0, 2))
+    corner = lambda a, ijk: nib.affines.apply_affine(a, ijk)
+    assert np.allclose(corner(flipped, (0, 0, 0)), corner(aff, (9, 0, 2)))           # voxel (0,0,0) is the far end on x and z
+    assert np.isnan(pet.read_ecat(_ecat(tmp_path / "b.v", 0))[2]["start_s"]).all()   # dose time = scan time: unknown
+
+
+@pytest.mark.skipif(not TINYPET.exists(), reason="nibabel's test data are not installed")
+def test_ecat_series_are_indexed_selected_and_loaded(tmp_path):
+    with zipfile.ZipFile(tmp_path / "pet.zip", "w") as z:
+        for image_id, desc, lag in (("I0000001", "AV_133_Initial", 2900), ("I0000002", "AV_133_Delay", 4500)):
+            z.write(_ecat(tmp_path / f"{image_id}.v", lag), f"PPMI/9000001/{desc}/2013-01-01_09_20_00.0/{image_id}/{desc}.v")
+    idx = pet.select_series(pet.index_pet([tmp_path / "pet.zip"]))
+    assert idx["n_files"].tolist() == [1, 1] and (idx["image_type"] == "ECAT7").all()
+    rows = idx[idx["selected"]].to_dict("records")
+    assert [r["desc"] for r in rows] == ["AV_133_Delay"]                     # not the ~50 min "Initial" scan
+    with ZipArchiveCache() as cache:
+        data, frames, _, side, _ = pet.load_scan(rows, tmp_path / "work", cache, from_min=pet.ANALYSIS_FROM_MIN)
+    assert data.shape == (10, 10, 3, 1) and side["Units"] == "Bq/mL" and frames["start_s"].iloc[0] > 70 * 60
