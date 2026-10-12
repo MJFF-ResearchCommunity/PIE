@@ -433,3 +433,12 @@ def test_slice_fallback_matches_dcm2niix_and_takes_over_when_it_writes_nothing(t
     for k in range(2):                                    # same values at the same scanner positions
         moved = resample_from_to(nib.Nifti1Image(data[..., k], aff), nib.Nifti1Image(ref[..., k], ref_aff), order=0)
         assert np.allclose(np.asanyarray(moved.dataobj), ref[..., k]) and ref[..., k].std() > 1
+
+
+def test_units_are_judged_from_the_stored_text():
+    """PMOD exports say Bq/cc; rows written before it joined RATIO_UNITS carry units_ok False and must pass now."""
+    base = {"error": "", "units_ok": False, "reg_template_r": 0.8, "cov_striatum": 1.0, "cov_occipital": 1.0, "motion_mm": 1.0,
+            **{f"sbr_{r}": 1.0 for r in pet.REGIONS}}
+    d = pd.DataFrame([dict(base, units=u) for u in ("Bq/cc", "BQML", "PROPCPS", "")])
+    assert pet.qc_pass(d).tolist() == [True, True, False, False]
+    assert pet.qc_pass_suvr(d.assign(cov_reference=1.0, n_reference=500)).tolist() == [True, True, False, False]

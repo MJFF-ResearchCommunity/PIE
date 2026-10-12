@@ -60,12 +60,15 @@ ECAT_FLIP = ()       # a reconstruction without attenuation correction, uploaded
 UNFILTERED = r"all.?pass|no.?filt|unfilt|filter.?(?:none|0)"
 FILTERED = r"gauss|hann|butter|filt|fwhm"
 CEREBELLUM = [8, 47]                   # FastSurfer left / right cerebellar cortex
+# centrum semiovale margin from grey matter and ventricles: FastSurfer WM is rarely 8 mm from cortex (8 mm left 0-549
+# voxels above the ventricles on PPMI T1s, failing 5 of 6 SV2A scans); 4 mm keeps 8-24 mL, about one PET FWHM
+CS_MARGIN_MM = 4.0
 ANALYSIS_FROM_MIN = 70.0               # analysis frames start at or after this (protocol: 2 x 5 min from 80 +- 5 min; 2012-13
                                        # visits add statics at ~50-65 min, which 60 let in)
 PROTOCOL_START_MIN = (75.0, 85.0)
 MOTION_CORRECT_MM = 1.0                # IND: frames "motion corrected where necessary"
 # a linear activity or count scale: SBRs are ratios, so Philips CNTS (Bq/mL factor in a private tag) is as good as Bq/mL
-RATIO_UNITS = {"bq/ml", "bqml", "g/ml", "gml", "cnts", "counts"}
+RATIO_UNITS = {"bq/ml", "bqml", "bq/cc", "bqcc", "g/ml", "gml", "cnts", "counts"}   # Bq/cc: PMOD exports (64 PPMI AV-133 series)
 REGIONS = ["caudate_l", "caudate_r", "putamen_l_ant", "putamen_r_ant", "putamen_l_post", "putamen_r_post"]
 PPMI_COLUMNS = dict(zip(REGIONS, ["PET_LCAUD_S", "PET_RCAUD_S", "PET_LPUTANT_S", "PET_RPUTANT_S", "PET_LPUTPOST_S", "PET_RPUTPOST_S"]))
 TRACERS = {"AV-133": r"AV.?133", "DPA-714": r"DPA.?714", "C05-05": r"C05.?05"}
@@ -519,14 +522,14 @@ def quantify(pet_img, t1_img, aparc_img, sampling_seed=ITK_SEED):
 
 
 def suvr_reference(L, ijk_world_z, name, spacing_mm=1.0):
-    """Reference masks on the T1 label grid: ``cs`` = centrum semiovale, cerebral white matter at least 8 mm from any
-    other label, above the lateral ventricles' top (SV2A); ``cerebellum_ventral`` = cerebellar cortex below its median
+    """Reference masks on the T1 label grid: ``cs`` = centrum semiovale, cerebral white matter (with WM hypointensities)
+    at least ``CS_MARGIN_MM`` from any other label, above the lateral ventricles' top (SV2A); ``cerebellum_ventral`` = cerebellar cortex below its median
     height, at least 6 mm from the cerebrum (tau)."""
     from scipy import ndimage
 
     if name == "cs":
-        wm = np.isin(L, [2, 41])
-        core = ndimage.distance_transform_edt(wm) * spacing_mm >= 8
+        wm = np.isin(L, [2, 41, 77])
+        core = ndimage.distance_transform_edt(wm) * spacing_mm >= CS_MARGIN_MM
         vent = np.isin(L, [4, 43])
         top = ijk_world_z[vent].max() if vent.any() else -np.inf
         return core & (ijk_world_z > top)
@@ -574,7 +577,7 @@ def _suv(mean, sidecar, header, start_s):
         return float(mean)
     dose, weight = float(sidecar.get("InjectedRadioactivity") or np.nan) * 1e6, float(header.get("PatientWeight") or np.nan)
     corr = str(sidecar.get("DecayCorrection", "")).upper()
-    if units not in ("Bq/mL", "BQML") or corr not in ("START", "ADMIN") or not (dose > 0 and weight > 0):
+    if units.lower() not in ("bq/ml", "bqml", "bq/cc", "bqcc") or corr not in ("START", "ADMIN") or not (dose > 0 and weight > 0):
         return np.nan
     half = float(sidecar.get("RadionuclideHalfLife") or 6586.2)               # 18F
     dose = dose * 2 ** (-start_s / half) if corr == "START" and np.isfinite(start_s) else dose
@@ -634,6 +637,14 @@ def _job(args):
 
 
 # ------------------------------------------------------------------------------------------ QC / agreement
+def _units_ok(d):
+    """A ratio-safe scale, judged from the stored ``units`` text (so rows written before a RATIO_UNITS change are judged
+    by the current list), else the stored ``units_ok``."""
+    if "units" in d:
+        return d["units"].fillna("").astype(str).str.lower().isin(RATIO_UNITS)
+    return d.get("units_ok", pd.Series(False, index=d.index)).astype(str).str.lower().eq("true")
+
+
 def qc_pass(d, reference="occipital"):
     """Suggested QC rule (thresholds to confirm on the first real batch): no error, an activity or count scale, registration
     correlation with the synthetic template >= 0.4 (the DaTscan rule), the striatum and the reference region inside the
@@ -642,7 +653,7 @@ def qc_pass(d, reference="occipital"):
     col = lambda c, fill: d[c] if c in d else pd.Series(fill, index=d.index)
     num = lambda c: pd.to_numeric(col(c, np.nan), errors="coerce")
     sbr = d.reindex(columns=[f"sbr_{r}" for r in REGIONS]).apply(pd.to_numeric, errors="coerce")
-    return (col("error", "").fillna("").eq("") & col("units_ok", False).astype(str).str.lower().eq("true")
+    return (col("error", "").fillna("").eq("") & _units_ok(d)
             & (num("reg_template_r") >= 0.4) & (num("cov_striatum") >= 0.99) & (num(f"cov_{reference}") >= 0.95)
             & ~(num("motion_mm") > 5) & sbr.notna().all(axis=1))
 
@@ -652,7 +663,7 @@ def qc_pass_suvr(d):
     least 50 reference voxels, inter-frame motion <= 5 mm (single-frame scans pass)."""
     col = lambda c, fill: d[c] if c in d else pd.Series(fill, index=d.index)
     num = lambda c: pd.to_numeric(col(c, np.nan), errors="coerce")
-    return (col("error", "").fillna("").eq("") & col("units_ok", False).astype(str).str.lower().eq("true")
+    return (col("error", "").fillna("").eq("") & _units_ok(d)
             & (num("cov_reference") >= 0.95) & (num("n_reference") >= 50) & ~(num("motion_mm") > 5))
 
 
