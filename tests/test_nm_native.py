@@ -451,3 +451,50 @@ def test_process_subject_adds_the_peduncle_version_beside_version_1(tmp_path, mo
 
 
 _real_region, _real_langley = N.region_labels, N.langley_labels
+
+
+def test_mode_reference_ignores_a_bright_partial_volume_edge_of_the_crus():
+    """The crus mode (Cassidy et al. 2019) stays on the crus's own intensity when a rim of brighter partial-volume voxels
+    pulls its mean up; the mean-referenced ratio is pulled down with it."""
+    rng = np.random.default_rng(0)
+    shape = (40, 40, 8)
+    codes = np.full(shape, 100, np.int16)
+    codes[20:] += 100
+    codes[5:15, 25:35, 2:6] = 100 + N.CRUS
+    codes[25:35, 25:35, 2:6] = 200 + N.CRUS
+    nm = 100 + rng.normal(0, 3, shape)
+    for x0 in (5, 25):
+        nm[x0:x0 + 10, 33:35, 2:6] = 160                                  # a bright rim: 20 % of each crus
+    sn = np.zeros(shape, bool)
+    sn[5:10, 5:15, 2:6] = sn[25:30, 5:15, 2:6] = True
+    nm[sn] = 130
+    out = N.snceg_features(nib.Nifti1Image(nm, np.diag([0.5, 0.5, 2.0, 1.0])), sn, codes)
+    assert abs(out["nms_crus_l_mode"] - 100) < 2 and out["nms_sn_mean_cr_mode"] == pytest.approx(0.3, abs=0.02)
+    assert out["nms_sn_mean_cr"] < 0.2
+
+
+def test_n4_flattens_a_receive_field_gradient_and_keeps_the_voxel_order():
+    rng = np.random.default_rng(1)
+    x = np.linspace(0, 1, 60)[:, None, None]
+    head = np.zeros((60, 50, 10), np.float32)
+    head[5:55, 5:45] = 100
+    head[20:25, 20:30] = 130                                               # an off-centre bright block marks orientation
+    img = nib.Nifti1Image((head * (0.7 + 0.6 * x) + rng.normal(0, 1, head.shape) * (head > 0)).astype(np.float32),
+                          np.diag([0.5, 0.5, 1.5, 1.0]))
+    out = np.asarray(N.n4(img).dataobj)
+    ratio = lambda v: v[45:50, 30:40].mean() / v[10:15, 30:40].mean()      # the same tissue at both ends of the gradient
+    assert ratio(np.asarray(img.dataobj)) > 1.4 and abs(ratio(out) - 1) < 0.1
+    assert out[20:25, 20:30].mean() / out[30:35, 20:30].mean() > 1.15       # the block is still where it was
+
+
+def test_process_subject_adds_the_fixed_snc_measure_and_measures_another_slab(tmp_path, monkeypatch):
+    work, fs = _study_subject(tmp_path)
+    bion = _bion()
+    monkeypatch.setattr(N, "region_labels", lambda *a: _real_region(bion))
+    row = N.process_subject(work, 1, fs)
+    assert {"nmf_sn_mean_cr", "nmf_sn_mean_cr_mode", "nmf_sn_volume_mm3"} <= set(row) and np.isfinite(row["nmf_sn_mean_cr_mode"])
+    img = nib.load(work / "1" / "nm_mean.nii.gz")
+    nib.save(nib.Nifti1Image(np.asarray(img.dataobj) * 2.0, img.affine), work / "1" / "nm_half_a.nii.gz")
+    half = N.process_subject(work, 1, fs, image="nm_half_a.nii.gz")
+    assert half["nmf_sn_volume_mm3"] == row["nmf_sn_volume_mm3"]           # same grid, same labels
+    assert half["nmf_sn_mean_cr"] == pytest.approx(row["nmf_sn_mean_cr"])   # a gain cancels in a ratio

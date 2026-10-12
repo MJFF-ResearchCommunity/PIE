@@ -5,6 +5,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -419,3 +420,29 @@ def test_syn_cache_fits_the_studys_registration_under_its_own_cache_name(tmp_pat
     assert seen["fixed"].spacing == (2.0, 2.0, 2.0) and seen["moving"].spacing == (2.0, 2.0, 2.0)
     assert 0.99 < seen["fixed"].max() <= 1.0 and 0.99 < seen["moving"].max() <= 1.0
     assert all("syncc2mm" in Path(p).name for p in out["fwd"]) and nm_template.syn_cached(tmp_path)
+
+
+def test_half_averages_share_the_full_averages_anchor_and_grid(tmp_path):
+    """Split-half reliability: repeats 1 + 3 and 2 + 4 averaged separately, both registered to repeat 1, so a moved
+    repeat lands on the same anatomy as in the full average and the halves need no registration of their own."""
+    import json
+    from scipy import ndimage
+
+    rng = np.random.default_rng(5)
+    big = (100 + 400 * ndimage.gaussian_filter(rng.normal(size=(48, 40, 10)), 2)).astype(np.float32)
+    paths, reps = [], []
+    for i, x0 in enumerate((4, 0, 4, 4)):                  # the second repeat is displaced 2 mm (4 voxels) in x
+        reps.append(big[x0:x0 + 40] + rng.normal(0, 2, (40, 40, 10)).astype(np.float32))
+        p = tmp_path / f"rep{i}.nii.gz"
+        nib.save(nib.Nifti1Image(reps[-1], np.diag([0.5, 0.5, 2.0, 1.0])), p)
+        p.with_suffix("").with_suffix(".json").write_text(json.dumps({"AcquisitionTime": f"10:0{i}:00", "AcquisitionNumber": i + 1}))
+        paths.append(p)
+    full = nm.average_repeats(paths, sampling_seed=1)[0]
+    a, _, na, _, _ = nm.average_repeats(paths, sampling_seed=1, subset=nm.HALVES["a"])
+    b, _, nb, motion_b, _ = nm.average_repeats(paths, sampling_seed=1, subset=nm.HALVES["b"])
+    inner = (slice(6, 34), slice(4, 36), slice(1, 9))
+    assert na == nb == 2 and a.shape == b.shape == full.shape and np.allclose(a.affine, full.affine)
+    assert np.allclose(np.asarray(a.dataobj)[inner], ((reps[0] + reps[2]) / 2)[inner], atol=2)
+    assert 1.5 < motion_b < 2.5 and np.corrcoef(np.asarray(b.dataobj)[inner].ravel(), big[4:44][inner].ravel())[0, 1] > 0.98
+    with pytest.raises(ValueError, match="subset"):
+        nm.average_repeats(paths[:3], sampling_seed=1, subset=nm.HALVES["b"])

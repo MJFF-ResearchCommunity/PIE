@@ -227,14 +227,20 @@ def _largest(mask):
     return lab == 1 + int(np.argmax(sizes))
 
 
-def _mode(v, bins=64):
-    """Mode of a sample by histogram over its 1st-99th percentile range (Cassidy 2019 uses the crus mode)."""
+def _mode(v, grid=256):
+    """Mode of a sample: the peak of its Gaussian kernel density (Scott's bandwidth) over the 1st-99th percentile range,
+    the kernel-smoothed histogram mode Cassidy et al. 2019 take of the crus. A raw 64-bin histogram (before 12 Oct 2026)
+    was noisy on the few hundred voxels of a native crus."""
+    from scipy.stats import gaussian_kde
+
     v = v[np.isfinite(v) & (v > 0)]
     if len(v) < 20:
         return np.nan
     lo, hi = np.percentile(v, [1, 99])
-    h, e = np.histogram(v, bins=bins, range=(lo, hi))
-    return float(0.5 * (e[np.argmax(h)] + e[np.argmax(h) + 1]))
+    if hi <= lo:
+        return float(lo)
+    x = np.linspace(lo, hi, grid)
+    return float(x[np.argmax(gaussian_kde(v)(x))])
 
 
 def build_template(work_dir, patnos, min_frac=0.5):

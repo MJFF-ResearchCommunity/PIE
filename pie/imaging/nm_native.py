@@ -195,7 +195,12 @@ def snceg_features(nm_img, sn, codes, prefix="nms_"):
     side and bilateral; the crus reference excludes segmented voxels (Lillebostad et al. 2025). Each side's reference is
     its own crus on the slices that hold its segmented SN (>= 20 voxels, else NaN), so a through-slab intensity gradient
     cancels; the crus over all slices and both sides (the reference before 11 Oct 2026) is kept as
-    ``*_cr_allslices`` and ``crus_mean`` / ``crus_sd`` (diagnostics)."""
+    ``*_cr_allslices`` and ``crus_mean`` / ``crus_sd`` (diagnostics). ``*_cr_mode`` takes that side's crus mode
+    (``nm_template._mode``) in place of its mean, the reference statistic of Cassidy et al. 2019 and Wengler et al. 2020,
+    robust to partial-volume voxels at the crus edge. ``sn`` can be any nigral mask: ``process_subject`` also passes
+    the CIT168 SNc (``nmf_``)."""
+    from .nm_template import _mode
+
     nm = np.asarray(nm_img.dataobj, float)
     region, sides = _side_masks(codes)
     vox = float(abs(np.linalg.det(nm_img.affine[:3, :3])))
@@ -206,11 +211,14 @@ def snceg_features(nm_img, sn, codes, prefix="nms_"):
     out = {f"{prefix}sn_volume_mm3": float(sn.sum() * vox), f"{prefix}crus_mean": mu, f"{prefix}crus_sd": sd}
     for s, m in sides.items():
         v = sn & m
-        smu, ssd = stats(crus & m & np.expand_dims(v.any(axis=inplane), inplane))
+        ref = crus & m & np.expand_dims(v.any(axis=inplane), inplane)
+        smu, ssd = stats(ref)
+        mode = _mode(nm[ref]) if np.isfinite(smu) else np.nan
         i = float(nm[v].mean()) if v.any() else np.nan
         out.update({f"{prefix}sn_volume_{s}_mm3": float(v.sum() * vox), f"{prefix}crus_{s}_mean": smu, f"{prefix}crus_{s}_sd": ssd,
-                    f"{prefix}sn_{s}_cr": i / smu - 1, f"{prefix}sn_{s}_cnr": (i - smu) / ssd, f"{prefix}sn_{s}_cr_allslices": i / mu - 1})
-    for m in ("cr", "cnr", "cr_allslices"):
+                    f"{prefix}crus_{s}_mode": mode, f"{prefix}sn_{s}_cr": i / smu - 1, f"{prefix}sn_{s}_cnr": (i - smu) / ssd,
+                    f"{prefix}sn_{s}_cr_mode": i / mode - 1, f"{prefix}sn_{s}_cr_allslices": i / mu - 1})
+    for m in ("cr", "cnr", "cr_mode", "cr_allslices"):
         out[f"{prefix}sn_mean_{m}"] = (out[f"{prefix}sn_l_{m}"] + out[f"{prefix}sn_r_{m}"]) / 2
     return out
 
@@ -380,25 +388,52 @@ def _tse_job(args):
 
 
 # ------------------------------------------------------------------------------------------ driver
-def process_subject(work_dir, patno, fastsurfer_dir, snceg=False, min_cov=0.9, langley_peduncle=False):
+SNC = 7                            # CIT168 label of the SNc (``nm._mni_codes``)
+
+
+def n4(nm_img):
+    """The slab after ANTs N4 bias-field correction inside its head mask (``ants.get_mask``): a receive-field gradient
+    across the midbrain would otherwise enter the SN/crus contrast unevenly (vendor asymmetries, Wengler et al. 2021)."""
+    import ants
+
+    with tempfile.TemporaryDirectory(prefix="pie_nm_n4_") as d:
+        nib.save(nib.Nifti1Image(np.asarray(nm_img.dataobj, np.float32), nm_img.affine), f"{d}/nm.nii.gz")
+        img = ants.image_read(f"{d}/nm.nii.gz")
+        ants.image_write(ants.n4_bias_field_correction(img, mask=ants.get_mask(img)), f"{d}/n4.nii.gz")
+        return nib.Nifti1Image(np.asarray(nib.load(f"{d}/n4.nii.gz").dataobj, np.float32), nm_img.affine)
+
+
+def process_subject(work_dir, patno, fastsurfer_dir, snceg=False, min_cov=0.9, langley_peduncle=False, image="nm_mean.nii.gz",
+                    bias_correct=False):
     """<work>/<patno>/nm_mean.nii.gz + slab_to_t1.tfm (``nm --keep-nifti``) and the cached SyN (``nm_template syn``)
     -> native region labels (saved), coverage, Langley volume and optionally snceg measures. A side whose search region
     or crus is less than ``min_cov`` inside the slab is missing. ``langley_peduncle`` adds version 2 of the Langley
     volume (``nmlp_*``: the JHU cerebral peduncle as reference, ``langley_labels``, regions saved as
     langley_regions_nm.nii.gz): whatever part of the peduncle the slab holds is the reference (>= 20 voxels, else NaN),
-    and a side whose search region is less than ``min_cov`` inside the slab is missing."""
+    and a side whose search region is less than ``min_cov`` inside the slab is missing.
+    Every run adds ``nmf_*``: ``snceg_features`` on the CIT168 SNc (``SNC``) pulled onto the slab in place of a
+    segmentation, a fixed-mask contrast with no threshold or model (Shaff et al. 2024, doi:10.1002/hbm.26544).
+    ``image``: another slab on nm_mean's grid to measure (``nm --split-half`` writes nm_half_a/b.nii.gz); snceg segments
+    it afresh (snceg_sn_<stem>.nii.gz). ``bias_correct``: measure intensities on the ``n4``-corrected slab; snceg
+    still segments the uncorrected one, as published."""
     import SimpleITK as sitk
 
+    from .nm import _mni_codes
     from .nm_template import syn_cached, syn_paths
 
     d = Path(work_dir) / str(patno)
     if not syn_cached(fastsurfer_dir):
         raise FileNotFoundError("no SyN cache; run nm_template syn first")
-    nm_img = nib.load(d / "nm_mean.nii.gz")
+    nm_path = d / image
+    nm_img = nib.load(nm_path)
     warp, affine = syn_paths(fastsurfer_dir)["fwd"]
+    tx = sitk.ReadTransform(str(d / "slab_to_t1.tfm"))
     groups = {"search_l": [101, 102, 103, 100 + RING], "search_r": [201, 202, 203, 200 + RING], "crus_l": [100 + CRUS], "crus_r": [200 + CRUS]}
-    codes, cov = pull_labels(region_labels(), nm_img, sitk.ReadTransform(str(d / "slab_to_t1.tfm")), warp, affine, codes=groups)
-    nib.save(nib.Nifti1Image(codes, nm_img.affine), d / "native_regions_nm.nii.gz")
+    codes, cov = pull_labels(region_labels(), nm_img, tx, warp, affine, codes=groups)
+    if image == "nm_mean.nii.gz":
+        nib.save(nib.Nifti1Image(codes, nm_img.affine), d / "native_regions_nm.nii.gz")
+    snc = pull_labels(_mni_codes(), nm_img, tx, warp, affine)[0] % 100 == SNC
+    nm_img = n4(nm_img) if bias_correct else nm_img
     row = {f"native_cov_{k}": v for k, v in cov.items()}
     ok = {s: cov[f"search_{s}"] >= min_cov and cov[f"crus_{s}"] >= min_cov for s in "lr"}
     row.update(langley_features(nm_img, codes))
@@ -415,12 +450,15 @@ def process_subject(work_dir, patno, fastsurfer_dir, snceg=False, min_cov=0.9, l
             if cov[f"search_{s}"] < min_cov:
                 prow[f"nmlp_sn_volume_{s}_mm3"] = prow["nmlp_sn_volume_mm3"] = np.nan
         row.update(prow)
+    row.update(snceg_features(nm_img, snc, codes, prefix="nmf_"))
     if snceg:
-        sn = snceg_mask(d / "nm_mean.nii.gz", d / "snceg_sn_nm.nii.gz")
+        out = d / ("snceg_sn_nm.nii.gz" if image == "nm_mean.nii.gz" else f"snceg_sn_{image.split('.')[0]}.nii.gz")
+        fresh = out.exists() and out.stat().st_mtime > nm_path.stat().st_mtime
+        sn = np.asarray(nib.load(out).dataobj) > 0 if fresh else snceg_mask(nm_path, out)
         row.update(snceg_features(nm_img, sn, codes))
     for key in list(row):
         side = "l" if "_l_" in key or key.endswith("_l_mm3") else "r" if "_r_" in key or key.endswith("_r_mm3") else None
-        if key.startswith(("nml_sn", "nms_sn")) and ((side and not ok[side]) or (side is None and not all(ok.values()))):
+        if key.startswith(("nml_sn", "nms_sn", "nmf_sn")) and ((side and not ok[side]) or (side is None and not all(ok.values()))):
             row[key] = np.nan
     return row
 
@@ -468,9 +506,9 @@ def study_subject(work_dir, patno, fastsurfer_dir, labels=None):
 
 def _job(args):
     work, patno, fs_dir, snceg, *rest = args
-    study, peduncle = (list(rest) + [False, False])[:2]
+    study, peduncle, image, bias_correct = (list(rest) + [False, False, "nm_mean.nii.gz", False])[:4]
     try:
-        row = process_subject(work, patno, fs_dir, snceg=snceg, langley_peduncle=peduncle)
+        row = process_subject(work, patno, fs_dir, snceg=snceg, langley_peduncle=peduncle, image=image, bias_correct=bias_correct)
         return {"patno": patno, "error": "", **row, **(study_subject(work, patno, fs_dir) if study else {})}
     except Exception as e:
         return {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -490,6 +528,10 @@ def main(argv=None):
                     "cerebral peduncle as the reference (langley_labels)")
     ap.add_argument("--study", action="store_true", help="also the study's measure (study_subject: Biondetti territories vs "
                     "the complete background, the study's QC); needs nm --keep-nifti without --denoise for the study's quantity")
+    ap.add_argument("--image", default="nm_mean.nii.gz", help="measure this slab of each subject's work dir instead "
+                    "(on nm_mean's grid, e.g. nm_half_a.nii.gz from nm --split-half); table nm_native_features_<stem>.csv")
+    ap.add_argument("--n4", action="store_true", help="measure intensities after N4 bias-field correction (n4); "
+                    "table suffix _n4")
     ap.add_argument("--prepare-tse", action="store_true", help="first stage for dual-echo TSE input: convert, pick the echo, "
                     "register; writes <work>/nm_features.csv (then run nm_template syn and this CLI without the flag)")
     ap.add_argument("--zips", nargs="+", help="with --prepare-tse: the PPMI zips holding the TSE series")
@@ -514,11 +556,15 @@ def main(argv=None):
     region_labels()                    # build the atlas bridge once before the workers start
     if a.langley_peduncle:
         langley_labels()               # and the JHU peduncle bridge
+    if a.study and a.image != "nm_mean.nii.gz":
+        raise SystemExit("--study measures nm_mean.nii.gz only")
+    stem = "" if a.image == "nm_mean.nii.gz" else "_" + a.image.split(".")[0]
+    out_csv = work / f"nm_native_features{stem}{'_n4' if a.n4 else ''}.csv"
     with ProcessPoolExecutor(max_workers=a.workers) as ex:
-        rows = list(ex.map(_job, [(str(work), p, str(fs), a.snceg, a.study, a.langley_peduncle) for p, fs in subjects]))
+        rows = list(ex.map(_job, [(str(work), p, str(fs), a.snceg, a.study, a.langley_peduncle, a.image, a.n4) for p, fs in subjects]))
     out = pd.DataFrame(rows)
-    out.to_csv(work / "nm_native_features.csv", index=False)
-    print(f"{int((out['error'] == '').sum())}/{len(out)} subjects -> {work / 'nm_native_features.csv'}", flush=True)
+    out.to_csv(out_csv, index=False)
+    print(f"{int((out['error'] == '').sum())}/{len(out)} subjects -> {out_csv}", flush=True)
 
 
 if __name__ == "__main__":

@@ -139,18 +139,23 @@ def _mppca_centre(stack, frac=0.5):
     return out
 
 
-def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=False):
+def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=False, subset=None):
     """Align/average one compatible reconstruction per acquisition; return image, metadata, count, motion and the
     repeat support: per voxel of the image, the share of repeats whose field of view reaches it (1 = every repeat).
     Each voxel is the mean of the repeats that reach it (coverage-weighted, since 11 Oct 2026).
     ``denoise``: MP-PCA (Veraart et al. 2016, DIPY ``mppca``, 5-voxel patches) over the stacked repeats before
     alignment, as in the published PPMI nigral-volume pipeline (Langley et al. 2025), on the slab's central in-plane
     half (``_mppca_centre``). On a phantom it cut the error of the average about threefold in uniform tissue but only
-    by ~20 % around a bright nigra-like block, whose contrast it kept within 10 %."""
+    by ~20 % around a bright nigra-like block, whose contrast it kept within 10 %.
+    ``subset``: average only these repeats (0-based, in selection order), still registered to repeat 0 and on its grid,
+    so half-averages share the full average's frame (``split_half_subject``); not with ``denoise``."""
     import SimpleITK as sitk
 
     selected, info = compatible_repeats(niis)
     group = [(r['image'], r['path']) for r in selected]
+    use = set(range(len(group))) if subset is None else set(subset)
+    if not use <= set(range(len(group))) or (denoise and subset is not None):
+        raise ValueError(f'repeat subset {sorted(use)} needs {max(use) + 1} repeats (have {len(group)}) and no denoising')
     # a clean magnitude slab reaches its maximum in a few voxels; a scanner-clipped one (PPMI: 12-bit ceiling 4095) in
     # a large fraction of the brain, which destroys the nigral contrast
     clipped = max(float((a == a.max()).mean()) if a.max() > 0 else 0.0 for a in (np.asanyarray(img.dataobj) for img, _ in group))
@@ -159,10 +164,12 @@ def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=F
         group = [(nib.Nifti1Image(stack[..., i], img.affine), path) for i, (img, path) in enumerate(group)]
     ref_img = group[0][0]
     ref = _sitk_native(np.asanyarray(ref_img.dataobj).astype(np.float32), ref_img.affine)
-    acc = sitk.GetArrayFromImage(ref).astype(np.float64)
-    support = np.ones_like(acc)
+    acc = sitk.GetArrayFromImage(ref).astype(np.float64) * (0 in use)
+    support = np.full_like(acc, float(0 in use))
     motion = [0.0]
     for index, (img, _) in enumerate(group[1:], 1):
+        if index not in use:
+            continue
         mov = _sitk_native(np.asanyarray(img.dataobj).astype(np.float32), img.affine)
         tx = _register_volume(ref, mov, sampling=0.2, iterations=60, sampling_seed=sampling_seed)
         acc += sitk.GetArrayFromImage(sitk.Resample(mov, ref, tx, sitk.sitkLinear, 0.0))
@@ -175,8 +182,8 @@ def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=F
         motion.append(float(np.linalg.norm(np.array(tx.GetParameters())[3:6])))
     # coverage-weighted: each voxel is averaged over the repeats that reach it (the anchor reaches all), so a moved
     # repeat's missing edge does not darken it (dividing by the number of repeats did, by 1/n per missing repeat)
-    mean = (acc / support).astype(np.float32)
-    support = (support / len(group)).transpose(2, 1, 0).astype(np.float32)
+    mean = np.divide(acc, support, out=np.zeros_like(acc), where=support > 0).astype(np.float32)
+    support = (support / len(use)).transpose(2, 1, 0).astype(np.float32)
     if transforms_dir is not None:
         Path(transforms_dir).mkdir(parents=True, exist_ok=True)
         nib.save(nib.Nifti1Image(support, ref_img.affine), Path(transforms_dir) / 'repeat_support_fraction.nii.gz')
@@ -184,7 +191,7 @@ def average_repeats(niis, sampling_seed=ITK_SEED, transforms_dir=None, denoise=F
     meta['PIERepeatSelection'] = dict(info, volumes=[{k: v for k, v in r.items() if k != 'image'} for r in selected])
     meta['PIEDenoise'] = 'mppca' if denoise and len(group) >= 3 else 'none'
     meta['PIEClippedFraction'] = clipped
-    return nib.Nifti1Image(np.transpose(mean, (2, 1, 0)), ref_img.affine), meta, len(group), float(max(motion)), support
+    return nib.Nifti1Image(np.transpose(mean, (2, 1, 0)), ref_img.affine), meta, len(use), float(max(motion)), support
 
 
 # ------------------------------------------------------------------------------------------ registration / ROIs
@@ -567,6 +574,39 @@ def process_subject(patno, series_rows, fastsurfer_dir, work_dir, keep_nifti=Fal
     return row
 
 
+HALVES = {"a": (0, 2), "b": (1, 3)}     # repeats 1 + 3 and 2 + 4: equal halves, both anchored on repeat 1
+
+
+def split_half_subject(patno, series_rows, work_dir, sampling_seed=ITK_SEED):
+    """Split-half reliability input: the session's repeats re-read and averaged as two disjoint halves (``HALVES``) on
+    the full average's grid and anchor, written as <work>/<patno>/nm_half_{a,b}.nii.gz beside ``process_subject``'s
+    nm_mean.nii.gz (same slab -> T1 transform). Measure each with ``nm_native --image``; a half holds 2 of the usual 5
+    repeats, so Spearman-Brown with factor n_repeats / 2 projects its reliability to the full average."""
+    work = Path(work_dir) / str(patno)
+    niis = []
+    with ZipArchiveCache() as zips:
+        for r in series_rows:
+            niis += [r["nifti"]] if r.get("nifti") else convert(r["zip"], r["prefix"], work / "nii_split", archive_cache=zips)
+    row = {"patno": patno}
+    try:
+        for half, subset in HALVES.items():
+            img, _, _, motion, _ = average_repeats(niis, sampling_seed=sampling_seed, subset=subset)
+            nib.save(img, work / f"nm_half_{half}.nii.gz")
+            row[f"half_{half}_motion_mm_max"] = motion
+        row["n_repeats"] = len(compatible_repeats(niis)[0])
+    finally:
+        shutil.rmtree(work / "nii_split", ignore_errors=True)
+    return row
+
+
+def _split_job(args):
+    patno, rows, work_dir = args
+    try:
+        return {**split_half_subject(patno, rows, work_dir), "error": ""}
+    except Exception as e:
+        return {"patno": patno, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
 def _job(args):
     patno, rows, fs_dir, work_dir, keep, denoise = args
     os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = "2"      # the SyN (nm_template._syn_job's setting): workers x 2 threads
@@ -587,6 +627,8 @@ def main(argv=None):
     ap.add_argument("--denoise", action="store_true", help="MP-PCA over the repeats before averaging (Langley et al. 2025)")
     ap.add_argument("--refeature", action="store_true", help="recompute the feature columns of every finished subject from the saved "
                     "slab and label maps (--keep-nifti outputs); the previous table is kept as *.pre_refeature.csv")
+    ap.add_argument("--split-half", action="store_true", help="for every finished slab, write two half-averages of its "
+                    "repeats (split_half_subject) for split-half reliability; table nm_split_half.csv")
     a = ap.parse_args(argv)
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -617,6 +659,11 @@ def main(argv=None):
         return
     idx = load_index(work / "nm_index.csv", a.zips, flag_nm)
     idx = idx[idx["selected"]]
+    if a.split_half:                   # subjects with a finished slab, the same series rows as their full average
+        out_csv = work / "nm_split_half.csv"
+        jobs = [(p, rows, str(work)) for p, rows, _ in modality_jobs(idx, a, out_csv) if (work / str(p) / "nm_mean.nii.gz").exists()]
+        run_batch(filter_jobs(jobs, a.patnos, a.limit), _split_job, out_csv, workers=a.workers, pid_file=a.pid_file)
+        return
     out_csv = work / "nm_features.csv"
     jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.denoise) for p, rows, fsd in modality_jobs(idx, a, out_csv)]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, pid_file=a.pid_file)
