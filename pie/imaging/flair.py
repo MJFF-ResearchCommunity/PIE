@@ -347,6 +347,10 @@ def main(argv=None):
         methods = set(prev["wmh_method"].fillna("threshold")) if "wmh_method" in prev else {"threshold"}
         if methods != {a.method}:
             raise SystemExit(f"{out_csv} holds {', '.join(sorted(methods))} rows: give --method {a.method} its own --work-dir")
+        # nor TrUE-Net preparations: on 10 PPMI FLAIRs the FastSurfer one gave 11 % smaller volumes (rows before truenet_prep: fsl_anat)
+        preps = set(prev["truenet_prep"].dropna()) if "truenet_prep" in prev else {"fsl_anat"}
+        if a.method == "truenet" and preps - {a.truenet_prep}:
+            raise SystemExit(f"{out_csv} holds TrUE-Net rows prepared with {', '.join(sorted(preps))}: give --truenet-prep {a.truenet_prep} its own --work-dir")
     if a.method == "truenet":
         truenet_env()                                     # fail now, not once per subject
     idx = load_index(work / "flair_index.csv", a.zips, flag_flair)

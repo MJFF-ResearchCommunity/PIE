@@ -319,10 +319,17 @@ not chosen as primary because both are MS-trained. **TrUE-Net is not yet validat
    - Periventricular: within 10 mm of FastSurfer's lateral ventricles. The distance map is computed on the T1 grid
      and carried to the FLAIR grid by step 2's registration, which also supplies the QC metric. TrUE-Net's own FLIRT
      is used only for its input.
-   - Runtime: `fsl_anat` (FNIRT to MNI, for the WM mask) dominates. On FSL's MNI152 T1, `prepare_truenet_data` had
-     not finished after 9 minutes: the FLAIR steps were done and FNIRT was still running. It has not been timed on PPMI
-     scans, so time `--limit 2` before a full run. `truenet` uses the GPU when there is one;
-     `CUDA_VISIBLE_DEVICES=` forces the CPU.
+   - Runtime: `fsl_anat` (FNIRT to MNI, for the WM mask) dominates. On PPMI FLAIRs, sharing the CPU with five other
+     jobs, a subject took 41–60 min, against 9–13 min with `--truenet-prep fastsurfer`; both include `truenet evaluate`
+     on the CPU. `truenet` uses the GPU when there is one; `CUDA_VISIBLE_DEVICES=` forces the CPU.
+   - `--truenet-prep fastsurfer` (`_prepare_from_fastsurfer`; rows record `truenet_prep`) skips `fsl_anat`. The
+     FLAIR is prepared exactly as the script does it. The T1 is FastSurfer's N4-corrected `orig_nu` in its brain mask,
+     with the same rigid FLIRT to the FLAIR. The WM mask is FastSurfer's cerebral WM plus WM hypointensities
+     (aseg 2, 41, 77) instead of `make_bianca_mask`.
+     - Comparison on 10 random PPMI participants (9 with 3D FLAIR), same FLAIRs (`truenet_prep_check.py`, 12 Oct
+       2026): lesion-mask Dice median 0.875 (0.82–0.92). Volumes agree at r 0.993 and CCC 0.971. The FastSurfer
+       preparation is smaller on all 10, by 53 mm³ on average (11 %; limits −126 to +20 mm³).
+     - Use one preparation for a whole cohort. Resuming a work directory with the other one stops with an error.
    - Needs FSL (`$FSLDIR`, else `~/fsl`) and a work directory without spaces, because the FSL script breaks on them.
      Put it on the NVMe; the zips may stay on the Seagate.
    - Weights: `third_party/weights/truenet/{mwsc,ukbb}` from the FSL conda package `fsl-truenet_data` 2508.0

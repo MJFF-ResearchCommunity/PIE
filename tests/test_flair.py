@@ -143,6 +143,9 @@ def test_resuming_refuses_to_mix_methods(tmp_path):
     pd.DataFrame({"patno": [1], "error": [""], "wmh_mm3": [1.0]}).to_csv(tmp_path / "flair_features.csv", index=False)
     with pytest.raises(SystemExit, match="threshold rows"):       # rows from before wmh_method are threshold rows
         flair.main(["--zips", "z", "--sessions", "s", "--fastsurfer-dir", "f", "--work-dir", str(tmp_path)])
+    pd.DataFrame({"patno": [1], "error": [""], "wmh_method": ["truenet"]}).to_csv(tmp_path / "flair_features.csv", index=False)
+    with pytest.raises(SystemExit, match="prepared with fsl_anat"):   # nor preparations (rows before truenet_prep: fsl_anat)
+        flair.main(["--zips", "z", "--sessions", "s", "--fastsurfer-dir", "f", "--work-dir", str(tmp_path), "--truenet-prep", "fastsurfer"])
 
 
 def _truenet_ready():
