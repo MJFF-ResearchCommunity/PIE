@@ -384,54 +384,6 @@ def synthseg(nifti, out_dir, threads=2, env=None):
     return out
 
 
-def ch4_volume(subjects_dir, sid, threads=2, env=None):
-    """Atlas-based nucleus basalis (Ch4) grey-matter volume, the design of the SAA papers (Kilimann et al. 2014;
-    Spotorno/Wisse 2024): the Julich-Brain Ch4 maps (``atlases.ch4_maps``, MNI152NLin2009cAsym) are pulled onto
-    FastSurfer's conformed T1 through the inverse of the subject's T1 -> MNI SyN (``nm_template.syn_cache``, the NM
-    study's registration, computed if missing; its cropped field covers the basal forebrain), and grey matter is FSL
-    FAST's partial-volume estimate on the brain. Writes ``stats/ch4.json``: ``ch4_{lh,rh}_gm_mm3`` (GM in the map
-    thresholded at 0.5), ``ch4_{lh,rh}_pgm_mm3`` (GM weighted by probability) and ``ch4_{lh,rh}_map_mm3`` (the warped
-    map's own volume at 0.5, a registration check)."""
-    import json
-    import subprocess
-    import tempfile
-
-    import ants
-
-    from .atlases import ch4_maps
-    from .nm_native import inverse_warp
-    from .nm_template import syn_cache
-
-    subj = Path(subjects_dir).resolve() / sid
-    out = subj / "stats" / "ch4.json"
-    if out.exists():
-        return json.loads(out.read_text())
-    os.environ.setdefault("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", str(threads))
-    warp, affine = syn_cache(subj)["fwd"]
-    mri = subj / "mri"
-    t1 = nib.load(mri / "orig.mgz")
-    brain = np.asarray(nib.load(mri / "mask.mgz").dataobj) > 0
-    fsl = Path(os.environ.get("FSLDIR") or Path.home() / "fsl")
-    with tempfile.TemporaryDirectory(prefix="pie_ch4_") as d:
-        d = Path(d)
-        nib.save(nib.Nifti1Image(np.asarray(t1.dataobj, np.float32) * brain, t1.affine), d / "brain.nii.gz")
-        r = subprocess.run([str(fsl / "bin" / "fast"), "-t", "1", "-n", "3", "-o", str(d / "fast"), str(d / "brain.nii.gz")],
-                           env=dict(os.environ, FSLDIR=str(fsl), FSLOUTPUTTYPE="NIFTI_GZ"), capture_output=True, text=True, timeout=3600)
-        if r.returncode:
-            raise RuntimeError(f"FSL fast failed: {r.stderr[-300:]}")
-        gm = np.asarray(nib.load(d / "fast_pve_1.nii.gz").dataobj, np.float32)
-        fixed = ants.image_read(str(d / "brain.nii.gz"))
-        row, vox = {}, float(np.prod(t1.header.get_zooms()[:3]))
-        for h, path in ch4_maps().items():
-            p = ants.apply_transforms(fixed, ants.image_read(str(path)), [str(affine), str(inverse_warp(warp))], whichtoinvert=[True, False],
-                                      interpolator="linear").numpy()
-            row[f"ch4_{h}_gm_mm3"] = float((gm * (p >= 0.5)).sum() * vox)
-            row[f"ch4_{h}_pgm_mm3"] = float((gm * p).sum() * vox)
-            row[f"ch4_{h}_map_mm3"] = float((p >= 0.5).sum() * vox)
-    out.write_text(json.dumps(row, indent=1))
-    return row
-
-
 def parse_volume_txt(path):
     """``segment_subregions``' ``<name> <volume>`` lines as a dict."""
     return {ln.split()[0]: float(ln.split()[1]) for ln in Path(path).read_text().splitlines() if ln.strip()}

@@ -150,8 +150,9 @@ def test_optional_freesurfer_stages_are_parsed_into_the_idp_row(tmp_path):
     (subj / "mri" / "lh.hippoSfVolumes.txt").write_text("CA1 600.5\nWhole_hippocampus 3400.0\n")
     pd.DataFrame({"subject": ["x"], "left hippocampus": [3500.0], "total intracranial": [1.5e6]}).to_csv(subj / "synthseg" / "volumes.csv", index=False)
     pd.DataFrame({"subject": ["x"], "general white matter": [0.9], "hippocampus": [0.6]}).to_csv(subj / "synthseg" / "qc.csv", index=False)
-    (subj / "stats" / "ch4.json").write_text('{"ch4_lh_gm_mm3": 40.0, "ch4_lh_pgm_mm3": 170.0, "ch4_lh_map_mm3": 190.0}')
+    (subj / "stats" / "cat12_ch4.json").write_text('{"ch4_lh_gm_mm3": 140.0, "ch4_lh_pgm_mm3": 170.0, "cat12_tiv_mm3": 1.5e6, "nmm_lh_basal_forebrain_mm3": 400.0}')
     row = extra_t1_columns(subj)
-    assert row["vol_ch4_lh_gm"] == 40.0 and row["vol_ch4_lh_pgm"] == 170.0 and row["ch4_lh_map_mm3"] == 190.0
+    assert row["vol_ch4_lh_gm"] == 140.0 and row["vol_ch4_lh_pgm"] == 170.0 and row["cat12_tiv_mm3"] == 1.5e6
+    assert row["vol_nmm_lh_basal_forebrain"] == 400.0
     assert row["vol_sclimbic_Left_Basal_Forebrain"] == 359.6 and row["sclimbic_qa_z_max"] == 2.5
     assert row["vol_hsf_lh_CA1"] == 600.5 and row["synthseg_left_hippocampus"] == 3500.0 and row["synthseg_qc_min"] == 0.6
