@@ -4,6 +4,12 @@
 - the user has reviewed it;
 - the candidate counts below are filled in from the DWI series index, `sessions.csv` and cohort labels only.
 
+**Freeze on hold (13 Oct 2026).** The user approved freezing, but the candidate count, taken from series names, the
+LONI search export and cohort labels only, makes the PD − HC design impossible. Only 4 HC and 26 PD held locally have
+the PPMI 2.0 three-shell protocol, all HC on Siemens; the other 67 are prodromal. LONI's listing adds 1 HC, 54 PD and 175
+prodromal. With 5 HC at most, no vendor reaches the 5 HC the harmonisation needs. No `dwisf_*` value has been
+produced. The contrast must change before freezing (user decision).
+
 It must be frozen before `dwi --eddy --study` produces any `dwisf_*` value for the sample. QC exclusions are reported
 in the participant flow after the run.
 
@@ -46,7 +52,7 @@ Candidate counts are filled in at freeze, from the index and cohort labels only.
 
 | | HC | PD |
 |---|---|---|
-| Multi-shell candidates with a FastSurfer T1 (at freeze) | _ | _ |
+| Multi-shell candidates with a FastSurfer T1 (13 Oct, held locally; LONI adds 1 HC, 54 PD) | 4 | 26 |
 | Passing `dwisf_qc_pass` (after the run, in the flow) | _ | _ |
 
 The 28 Siemens sessions with stripped gradient tags are excluded from the primary analysis; if recovered, they enter only the sensitivity analysis.

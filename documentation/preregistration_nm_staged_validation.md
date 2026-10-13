@@ -144,8 +144,20 @@ processed T1 in PIE, so their T1s are downloaded with them.
 - **Measure:** the Stage 1 primary measure, unchanged. Script: `scripts/nm_staged.py fresh-clinical` (draft).
 - **Statistic:** AUROC (HC > de novo PD) stratified by vendor (pairs compared only within a vendor, pooled), with a
   stratified bootstrap 95 % CI; Siemens-only AUROC as a secondary.
-- **Proposed pass rule (the user decides before the data are opened):** CI lower bound > 0.50, the point estimate
-  reported beside the like-for-like benchmark 0.633 and the Langley 2025 equivalent of about 0.71. With about 35
-  usable HC and 300 PD, a true AUROC of 0.63 passes 74 % of the time (simulated, DeLong; 30 HC / 250 PD: 67 %).
+- **Pass rule (decided 13 Oct 2026, before any Stage 3 data were downloaded):** both of these must hold.
+  1. The vendor-stratified 95 % CI lower bound is > 0.50: above chance out of sample.
+  2. The CI upper bound is ≥ 0.633, the like-for-like published PPMI GRE-MT benchmark (Langley/Hu ISMRM 2023): PIE
+     is not shown to be worse than the published method on the same protocol.
+
+  The point estimate is reported beside 0.633 and the Langley 2025 equivalent of about 0.71.
+
+  The user asked for the rule most likely to hold up to PPMI/MJFF review. Requiring the point estimate to reach 0.633
+  was rejected: with about 35 HC it would fail about half the time even if PIE matched the published method. The
+  test would be uninformative, and the threshold would look picked to pass or fail. Requiring the lower bound to
+  exceed 0.633 cannot be powered.
+
+  With about 35 usable HC and 300 PD, a true AUROC of 0.63 passes about 74 % of the time (simulated, DeLong; 30 HC /
+  250 PD: 67 %). Condition 2 removes almost nothing at that effect, because an upper bound below 0.633 needs an
+  estimate near 0.54.
 - **What `NM_VALIDATED` would mean:** technically reliable (Stage 1), biologically plausible (Stage 2a), and above
   chance out of sample (Stage 3), for the stated context of use. It would not mean diagnostic accuracy.
