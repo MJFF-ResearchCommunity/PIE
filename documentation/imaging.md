@@ -742,11 +742,18 @@ Recommended analysis:
 The pilot's acceptance test is the 29 same-day repeat sets: they should show about zero change, and they give the
 minimal detectable change.
 
-**Every modality, every visit.** The DWI, NM and FLAIR CLIs take `--per-visit`, in a separate `--work-dir`:
+**Every modality, every visit.** The DWI and FLAIR CLIs take `--per-visit`, in a separate `--work-dir`:
 - `batch.visit_jobs` runs one modality session per finished T1 session.
 - Each dated session goes to the participant's T1 session nearest in date, within `--visit-window-days` (default 180).
 - A T1 session keeps only its nearest modality session.
 - Each session is measured on its own visit's anatomy (`fs_image_id`); resuming is by (patno, `fs_image_id`).
+- Each job works in `<work>/by_t1/<fs_image_id>/<patno>` (`batch.job_work_dir`): before 13 Oct 2026 two visits of one
+  participant shared `<work>/<patno>` and, run in parallel, could overwrite each other's conversions and kept outputs.
+
+NM refuses `--per-visit`: `nm_template` and `nm_native` read one slab per participant from `<work>/<patno>`. Longitudinal
+NM uses `--session-index k` instead (any modality CLI takes it): each participant's k-th dated session (0 = earliest,
+`batch.nth_session`), measured on the participant's baseline T1, with one `--work-dir` per k. Every visit then shares
+the baseline's atlas pull-back and SyN, so change is not confounded by re-segmenting the anatomy.
 
 `build_manifest(per_visit=True)` and `assemble_features(per_visit=True)` then give one row per T1 session:
 - each modality row attaches to the T1 session it was measured on;

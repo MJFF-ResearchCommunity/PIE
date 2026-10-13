@@ -166,7 +166,23 @@ def add_common_args(ap):
     ap.add_argument("--per-visit", action="store_true", help="longitudinal: one session per finished T1 session (each measured on "
                     "its own visit's T1), not one per participant; use a separate --work-dir")
     ap.add_argument("--visit-window-days", type=int, default=180, help="--per-visit: largest gap between a session and its T1")
+    ap.add_argument("--session-index", type=int, help="longitudinal on one anatomy: each participant's k-th dated session "
+                    "(0 = earliest), measured on the participant's baseline T1; one --work-dir per k")
     return ap
+
+
+def nth_session(group, k):
+    """Rows of a subject's k-th dated session (0 = earliest); [] when it has fewer. LONI-masked dates are skipped."""
+    d = pd.to_datetime(group["date"], errors="coerce")
+    dates = group.loc[d.notna() & (d.dt.year < 2100), "date"].drop_duplicates()
+    dates = dates.iloc[pd.to_datetime(dates).argsort()].tolist()
+    return group[group["date"] == dates[k]].to_dict("records") if k < len(dates) else []
+
+
+def job_work_dir(work, a, fs_dir):
+    """A job's work dir: per-visit jobs of one participant get one each (keyed by their T1), so parallel visits never
+    share <work>/<patno>."""
+    return str(Path(work) / "by_t1" / Path(fs_dir).name) if getattr(a, "per_visit", False) else str(work)
 
 
 def done_subjects(out_csv, retry_errors=False, key="patno"):
@@ -214,7 +230,14 @@ def visit_jobs(idx, sessions_csv, fastsurfer_dir, window_days=180, require="stat
 def modality_jobs(idx, a, out_csv):
     """(patno, series rows, FastSurfer dir) still to run for a modality CLI: per participant, the session nearest its
     earliest finished T1 (``session_rows``); with ``--per-visit``, one per finished T1 session (``visit_jobs``), resumed
-    by (patno, fs_image_id)."""
+    by (patno, fs_image_id); with ``--session-index k``, the k-th dated session on the baseline T1 (``nth_session``)."""
+    if getattr(a, "per_visit", False) and getattr(a, "session_index", None) is not None:
+        raise SystemExit("--per-visit and --session-index are exclusive")
+    if getattr(a, "session_index", None) is not None:
+        fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+        done = done_subjects(out_csv, a.retry_errors)
+        jobs = [(int(p), nth_session(g, a.session_index), fs[int(p)]) for p, g in idx.groupby("patno") if p not in done and int(p) in fs]
+        return [j for j in jobs if j[1]]
     if getattr(a, "per_visit", False):
         done = done_subjects(out_csv, a.retry_errors, key=["patno", "fs_image_id"])
         return [j for j in visit_jobs(idx, a.sessions, a.fastsurfer_dir, a.visit_window_days) if (j[0], Path(j[2]).name) not in done]

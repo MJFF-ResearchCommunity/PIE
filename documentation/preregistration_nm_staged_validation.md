@@ -101,7 +101,8 @@ PPMI's acquisition metadata (Sep 2026) lists NM at ≥ 2 visits for 546 PD and 1
 5 HC; PIE holds one NM session per participant.
 
 - **2a, decline in PD (primary).** Annualised change of the Stage 1 primary measure across each PD participant's NM
-  visits, every visit registered to the participant's baseline T1; pairs with a scanner change excluded
+  visits, every visit registered to the participant's baseline T1 (`nm --session-index k`, one work dir per k, then
+  `nm_template syn` and `nm_native` per work dir); pairs with a scanner change excluded
   (`SCANNER_CHANGE_AFTER_BASELINE`). Pass: mean annual change < 0 with the 95 % CI excluding 0. Anchor: −2 %/yr for the
   contrast ratio in PPMI PD (Lillebostad, Lundervold, Tzoulis, EAN 2025 ePoster EPO-131). Prodromal change is
   descriptive.

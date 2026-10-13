@@ -630,6 +630,8 @@ def main(argv=None):
     ap.add_argument("--split-half", action="store_true", help="for every finished slab, write two half-averages of its "
                     "repeats (split_half_subject) for split-half reliability; table nm_split_half.csv")
     a = ap.parse_args(argv)
+    if a.per_visit:     # nm_template and nm_native read one slab per participant from <work>/<patno>
+        ap.error("nm keeps one slab per participant per work dir: for longitudinal NM use --session-index k, one --work-dir per k")
     work = Path(a.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     if a.refeature:

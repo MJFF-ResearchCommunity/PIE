@@ -331,7 +331,7 @@ def _job(args):
 def main(argv=None):
     import argparse
 
-    from .batch import add_common_args, filter_jobs, load_index, modality_jobs, run_batch
+    from .batch import add_common_args, filter_jobs, job_work_dir, load_index, modality_jobs, run_batch
 
     ap = add_common_args(argparse.ArgumentParser())
     ap.add_argument("--truenet-prep", choices=["fsl_anat", "fastsurfer"], default="fsl_anat", help="TrUE-Net input preparation: "
@@ -356,7 +356,7 @@ def main(argv=None):
     idx = load_index(work / "flair_index.csv", a.zips, flag_flair)
     idx["flair_3d"] = flag_flair_3d(idx)
     idx = idx[idx["selected"]]
-    jobs = [(p, rows, fsd, str(work), a.keep_nifti, a.method, a.truenet_prep) for p, rows, fsd in modality_jobs(idx, a, out_csv)]
+    jobs = [(p, rows, fsd, job_work_dir(work, a, fsd), a.keep_nifti, a.method, a.truenet_prep) for p, rows, fsd in modality_jobs(idx, a, out_csv)]
     run_batch(filter_jobs(jobs, a.patnos, a.limit), _job, out_csv, workers=a.workers, log_every=20, pid_file=a.pid_file)
 
 

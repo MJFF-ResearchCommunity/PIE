@@ -77,3 +77,28 @@ def test_per_visit_jobs_pair_each_session_with_its_own_t1(tmp_path):
                         "prefix": ["a", "b", "c", "d", "e"], "n_files": [10] * 5})
     jobs = visit_jobs(idx, tmp_path / "sessions.csv", fs, window_days=90)
     assert [(p, Path(d).name, sorted(r["prefix"] for r in rows)) for p, rows, d in jobs] == [(1, "T_BL", ["a", "b"]), (1, "T_V06", ["c"])]
+
+
+def test_session_index_takes_the_kth_dated_session_on_the_baseline_t1_and_per_visit_jobs_get_their_own_dirs(tmp_path):
+    from argparse import Namespace
+
+    from pie.imaging.batch import job_work_dir, modality_jobs, nth_session
+
+    g = pd.DataFrame({"patno": [1] * 5, "date": ["2023-06-01", "2020-01-03", "2020-01-03", "2100-01-01", "2021-12-30"],
+                      "prefix": ["c", "a", "b", "masked", "x"], "n_files": [10] * 5})
+    assert [sorted(r["prefix"] for r in nth_session(g, k)) for k in range(4)] == [["a", "b"], ["x"], ["c"], []]
+    fs = tmp_path / "fs"
+    for img in ("T_BL", "T_V06"):
+        (fs / img / "stats").mkdir(parents=True)
+        (fs / img / "stats" / "aseg+DKT.stats").write_text("")
+    pd.DataFrame({"patno": [1, 1, 2], "image_id": ["T_V06", "T_BL", "T_X"],
+                  "session_date": ["2022-01-05", "2020-01-01", "2020-01-01"]}).to_csv(tmp_path / "sessions.csv", index=False)
+    a = Namespace(sessions=tmp_path / "sessions.csv", fastsurfer_dir=fs, retry_errors=False, per_visit=False, session_index=2)
+    jobs = modality_jobs(g, a, tmp_path / "out.csv")
+    assert [(p, [r["prefix"] for r in rows], Path(d).name) for p, rows, d in jobs] == [(1, ["c"], "T_BL")]
+    a.session_index = 3
+    assert modality_jobs(g, a, tmp_path / "out.csv") == []
+    a.per_visit = True
+    assert job_work_dir(tmp_path, a, fs / "T_BL") != job_work_dir(tmp_path, a, fs / "T_V06")
+    a.per_visit = False
+    assert job_work_dir(tmp_path, a, fs / "T_BL") == str(tmp_path)
