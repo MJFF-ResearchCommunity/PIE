@@ -212,7 +212,8 @@ Columns `dwisf_{fw,fat,mdt}_{sn,sn_posterior,sn_anterior}_{l,r,mean}`; primary `
 multi-shell fit, ≥ 20 nigral voxels, ≥ 95 % in the brain mask, ≥ 80 % physical free-water fits, motion ≤ 2 mm, both
 posterior halves measured. Single-shell rows fail `multishell` (single-shell free water stays quarantined, below).
 `assemble_features` carries the columns under that QC. The test is pre-registered in
-[preregistration_dwi_fw.md](preregistration_dwi_fw.md); until it runs the endpoint is exploratory
+[preregistration_dwi_fw.md](preregistration_dwi_fw.md). Its contrast is prodromal DaT-deficient against DaT-normal,
+not PD − HC: PPMI 2.0's three-shell protocol reached at most 5 healthy controls (13 Oct 2026). Until it runs the endpoint is exploratory
 (`dwi_nigral_validated` False). The free-water change is only comparable within one correction tier across visits.
 
 ### Single-shell free water is not assembled by default

@@ -1,29 +1,32 @@
-# Pre-registration: multi-shell posterior-SN free water in PPMI 2.0 (PD vs HC)
+# Pre-registration: multi-shell posterior-SN free water in PPMI 2.0 prodromal participants (DaT-deficient vs DaT-normal)
 
-**Status: DRAFT, 11 Oct 2026.** It is frozen, with a timestamp and the commit hash of the code, after two things:
-- the user has reviewed it;
-- the candidate counts below are filled in from the DWI series index, `sessions.csv` and cohort labels only.
+**Status: DRAFT, contrast changed 13 Oct 2026 (user decision).** Freezing was approved; it happens, with a timestamp
+and the commit hash of the code, once the multi-shell download is in and the candidate counts below are filled in
+from the DWI series index, `sessions.csv`, cohort and DaT labels only. It must be frozen before `dwi --eddy --study`
+produces any `dwisf_*` value for the sample. No `dwisf_*` value exists yet.
 
-**Freeze on hold (13 Oct 2026).** The user approved freezing, but the candidate count, taken from series names, the
-LONI search export and cohort labels only, makes the PD − HC design impossible. Only 4 HC and 26 PD held locally have
-the PPMI 2.0 three-shell protocol, all HC on Siemens; the other 67 are prodromal. LONI's listing adds 1 HC, 54 PD and 175
-prodromal. With 5 HC at most, no vendor reaches the 5 HC the harmonisation needs. No `dwisf_*` value has been
-produced. The contrast must change before freezing (user decision).
+**Why the contrast changed.** The first draft (11 Oct) compared PD with HC. A count from series names and labels only
+(13 Oct) found PPMI 2.0's three-shell protocol (Siemens Prisma, b = 700/1000/2000) in at most 5 healthy controls (4
+held, 1 more on LONI), against 80 PD and 242 prodromal. That is fewer than the 5 HC per vendor the HC-referenced
+harmonisation needs, so PD − HC could not be estimated. The new contrast mirrors NM Stage 2b
+(`preregistration_nm_staged_validation.md`), which passed: within prodromal participants, those with a DaT deficit
+against those without.
 
-It must be frozen before `dwi --eddy --study` produces any `dwisf_*` value for the sample. QC exclusions are reported
-in the participant flow after the run.
-
-This is a **post hoc** analysis of a measure chosen after related measures were seen (disclosure below), and it will be labelled that way.
+This is a **post hoc** analysis of a measure chosen after related measures were seen (disclosure below), and it will
+be labelled that way.
 
 ## Why this endpoint
 
-PIE's first nigral DWI endpoint failed its pre-registered PPMI 2.0 gate. That endpoint was posterior-SN mean diffusivity (`dwis_md_sn_posterior_mean`); it scored AUROC 0.574 [0.495, 0.652] on 218 PD / 82 HC (29 Sep 2026). The result matches the meta-analytic nigral MD effect (Schwarz 2013, d ≈ 0.26). In PPMI-1, nigral MD did not separate the groups (Ofori 2015).
+Posterior-SN free water is the PPMI-supported nigral DWI marker: PD > HC in PPMI-1 (Ofori 2015), d ≈ 0.4–0.5 and rising
+over 1 and 4 years in PD but not HC (Burciu 2017, Brain, 10.1093/brain/awx146). PIE's first nigral DWI endpoint,
+posterior-SN mean diffusivity, failed its PPMI 2.0 gate (AUROC 0.574 [0.495, 0.652], 218 PD / 82 HC, 29 Sep 2026).
+Free water needs a second shell to be well-posed (Golub 2021, MRM 10.1002/mrm.28599). **User decision, 11 Oct 2026:**
+multi-shell posterior-SN free water is PIE's pre-registered DWI endpoint.
 
-The PPMI-supported nigral DWI marker is **posterior-SN free water**:
-- Ofori 2015: PD > HC.
-- Burciu 2017 (Brain, 10.1093/brain/awx146): PPMI-1, PD > HC with d ≈ 0.4–0.5, increasing over 1 and 4 years in PD and not in HC.
-
-Free water needs a second shell to be well-posed (Golub 2021, MRM 10.1002/mrm.28599). PPMI 2.0's multi-shell protocol provides one. **User decision, 11 Oct 2026:** multi-shell posterior-SN free water is PIE's pre-registered DWI endpoint.
+A nigral marker should track nigrostriatal loss before diagnosis. A DaT deficit in a prodromal participant is
+nigrostriatal loss (NSD-ISS stage ≥ 2 biology), so the expected direction is higher posterior-SN free water with a
+deficit. PD − HC (d 0.4–0.5) corresponds to AUROC ≈ 0.61–0.64; DaT-deficient prodromal participants are earlier in
+the disease, so a smaller separation, about 0.55–0.62, is expected.
 
 ## Disclosure: what has already been seen
 
@@ -31,6 +34,7 @@ Free water needs a second shell to be well-posed (Golub 2021, MRM 10.1002/mrm.28
 - **PIE's nigral MD gate:** 0.574 (above).
 - **PIE's whole-brain median multi-shell free water:** rises with age, r +0.49.
 - **PIE's generic-path free-water columns** (`dwi_sn_posterior_*_fw`, affine CIT168, scanner-frame split) exist on disk for earlier runs. No PD-vs-HC comparison of them is known to have been run, and none will be before freezing.
+- **No DWI measure of any kind has been compared between DaT-deficient and DaT-normal prodromal participants** (none known).
 - **No `dwisf_*` value exists yet.** The measure was implemented on 11 Oct 2026 and has only been run on synthetic data.
 
 ## Measure (one scalar)
@@ -46,69 +50,55 @@ Free water needs a second shell to be well-posed (Golub 2021, MRM 10.1002/mrm.28
 
 ## Sample
 
-All PPMI 2.0 baseline PD and HC multi-shell DWI sessions available locally (acquired 2020 or later) that have a finished FastSurfer T1. This is the 29 Sep gate's candidate set restricted to multi-shell sessions, plus any later downloads. Diagnosis comes from PPMI's cohort labels. Philips sessions use the name-derived PE polarity.
+Every PPMI 2.0 prodromal participant (PPMI cohort label) with a three-shell DWI session and a finished FastSurfer T1,
+earliest such session per participant. DaT labels come from PPMI's core-lab tables through `labels.dat_labels`
+(`dat_d_nsdiss`: the NSD-ISS DaT deficit), matched to the DWI session within 18 months, as in NM Stage 2b. PD
+participants with the same protocol enter the secondary analyses only.
 
-Candidate counts are filled in at freeze, from the index and cohort labels only. QC counts come after the run:
+Held on 13 Oct: 67 prodromal and 26 PD sessions. LONI lists 175 prodromal and 54 PD more (the 23 Aug search export),
+most without a PIE T1, so they are downloaded with their T1s and run through FastSurfer first. Candidate counts are
+filled in at freeze; QC counts come after the run:
 
-| | HC | PD |
-|---|---|---|
-| Multi-shell candidates with a FastSurfer T1 (13 Oct, held locally; LONI adds 1 HC, 54 PD) | 4 | 26 |
-| Passing `dwisf_qc_pass` (after the run, in the flow) | _ | _ |
+| | DaT-normal prodromal | DaT-deficient prodromal | PD |
+|---|---|---|---|
+| Three-shell candidates with a FastSurfer T1 and a DaT label (at freeze) | _ | _ | _ |
+| Passing `dwisf_qc_pass` (after the run, in the flow) | _ | _ | _ |
 
-The 28 Siemens sessions with stripped gradient tags are excluded from the primary analysis; if recovered, they enter only the sensitivity analysis.
+The 28 Siemens sessions with stripped gradient tags are single-shell PPMI-1 and not in this sample.
 
-## Harmonisation (primary)
+## Primary analysis and pass rule
 
-As the 28 Sep gate: HC-referenced z-scores within vendor × correction tier.
-- Age and sex are regressed out in all HC, with batch intercepts.
-- Each batch is scaled on its own HC residual SD.
-- A vendor whose tiers have fewer than 5 HC each is one batch. A vendor with fewer than 5 HC in total has no batch, and its participants are excluded and counted.
-- Only HC labels enter the harmonisation.
+**Statistic:** AUROC, P(free water of a DaT-deficient participant > that of a DaT-normal one), with pairs compared only
+within a stratum and pooled (`nm_staged.stratified_auc`). Strata are vendor × correction tier (`dwisf_tier`:
+topup + eddy, eddy without reverse PE, rigid). The 95 % CI comes from 2,000 bootstrap draws resampled within stratum ×
+group (`nm_staged.auc_with_ci`).
 
-## Estimand and reading (no pass/fail gate)
+**Pass (`DWI_FW_VALIDATED` for this context of use): CI lower bound > 0.50**, the Stage 2b rule. The point estimate is
+reported beside the expected 0.55–0.62 and the PD − HC equivalent 0.61–0.64.
 
-**Primary:** the standardised PD − HC difference of the harmonised scalar, Cohen's d with the pooled SD. Its 95 % bootstrap CI uses 2,000 draws, resampled within group with the HC reference refitted each draw, seed 20261011.
+**Power** (Hanley–McNeil normal approximation; the deficit share assumed near Stage 2b's 47 %):
 
-The anchor is the published PPMI-1 effect, d = 0.40–0.50. The CI is read as follows:
-
-| 95 % CI of d | Reading |
-|---|---|
-| Lower bound > 0 and the CI overlaps 0.40–0.50 | Consistent with the published PPMI effect |
-| Lower bound > 0, upper bound < 0.40 | Present but smaller than published |
-| Lower bound > 0.50 | Larger than published |
-| Upper bound < 0.40, lower bound ≤ 0 | Not detected; excludes the published effect |
-| Otherwise | Inconclusive |
-
-**Power** (normal approximation; SE(d) ≈ √(1/n_PD + 1/n_HC + d²/2N)):
-
-| n PD / n HC | CI half-width | P(lower bound > 0 \| d = 0.45) | P(CI contains 0.45 \| d = 0.45) | P(lower bound > 0 \| d = 0.30) |
+| n deficient / n normal | CI half-width at 0.60 | P(pass \| 0.58) | P(pass \| 0.60) | P(pass \| 0.65) |
 |---|---|---|---|---|
-| 100 / 40 | 0.37 | 0.66 | 0.95 | 0.36 |
-| 150 / 60 | 0.30 | 0.83 | 0.95 | 0.50 |
-| 218 / 82 | 0.26 | 0.93 | 0.95 | 0.64 |
+| 24 / 26 (held only) | 0.16 | 0.16 | 0.24 | 0.48 |
+| 60 / 65 | 0.10 | 0.35 | 0.50 | 0.86 |
+| 85 / 100 (after the download) | 0.08 | 0.47 | 0.67 | 0.96 |
 
-With fewer than about 40 HC, the analysis can say little beyond "inconclusive". That will be stated before anything is unblinded if the freeze counts fall below it.
+On the held sessions alone the test is close to uninformative. It is run only after the download.
 
-**Reported regardless:**
-- AUROC with its CI;
-- Glass's Δ (HC-SD units);
-- the unadjusted AUROC;
-- AUROC by vendor;
-- the participant flow;
-- batch sizes;
-- HC age ρ, the positive control (expected > 0);
-- anterior-SN free water d, the specificity check (expected smaller than posterior);
-- posterior-SN tissue FA d;
-- in PD, Spearman ρ with the lowest putamen SBR, using PPMI's core-lab values and each source separately (expected negative).
+**Reported regardless, no gate:**
+- the participant flow, strata and their sizes;
+- the AUROC with age and sex regressed out (fitted on all prodromal; no DaT label enters the fit);
+- the AUROC with the 0.65 SBR deficit label in place of NSD-ISS;
+- Spearman ρ with percent-expected putamen SBR in prodromal participants (expected negative);
+- the positive control: Spearman ρ of free water with age in DaT-normal prodromal participants (expected > 0);
+- the specificity check: anterior-SN free water AUROC (expected smaller);
+- posterior-SN tissue FA (FAt) AUROC;
+- PD against DaT-normal prodromal participants, stratified AUROC (expected > the primary);
+- in PD, Spearman ρ with the lowest putamen SBR, each SBR source separately (expected negative).
 
-**Sensitivity analyses (they never replace the primary):**
-1. Single-scanner batches (`DeviceSerialNumber` with ≥ 5 HC and ≥ 5 PD).
-2. Recovered Siemens sessions added.
-3. ComBat by vendor × tier, with diagnosis, age and sex protected (`pie.imaging.harmonize`, once merged).
-
-**Afterwards, not part of this test:**
-- longitudinal change in PD vs HC, as in Burciu 2017, within one correction tier;
-- SAA status in prodromals, analysed only after this reading and pre-registered separately.
+**Afterwards, not part of this test:** longitudinal change within one correction tier (Burciu 2017); SAA status in
+prodromal participants, pre-registered separately; PD − HC if PPMI acquires multi-shell controls.
 
 ## Analysis code
 
