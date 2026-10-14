@@ -6,8 +6,8 @@ from the DWI series index, `sessions.csv`, cohort and DaT labels only. It must b
 produces any `dwisf_*` value for the sample. No `dwisf_*` value exists yet.
 
 **Why the contrast changed.** The first draft (11 Oct) compared PD with HC. A count from series names and labels only
-(13 Oct) found PPMI 2.0's three-shell protocol (Siemens Prisma, b = 700/1000/2000) in at most 5 healthy controls (4
-held, 1 more on LONI), against 80 PD and 242 prodromal. That is fewer than the 5 HC per vendor the HC-referenced
+(13 Oct) found PPMI 2.0's three-shell protocol (Siemens Prisma, b = 700/1000/2000) in only 4 held healthy controls,
+against 26 PD and 67 prodromal held. That is fewer than the 5 HC per vendor the HC-referenced
 harmonisation needs, so PD − HC could not be estimated. The new contrast mirrors NM Stage 2b
 (`preregistration_nm_staged_validation.md`), which passed: within prodromal participants, those with a DaT deficit
 against those without.
@@ -55,8 +55,11 @@ earliest such session per participant. DaT labels come from PPMI's core-lab tabl
 (`dat_d_nsdiss`: the NSD-ISS DaT deficit), matched to the DWI session within 18 months, as in NM Stage 2b. PD
 participants with the same protocol enter the secondary analyses only.
 
-Held on 13 Oct: 67 prodromal and 26 PD sessions. LONI lists 175 prodromal and 54 PD more (the 23 Aug search export),
-most without a PIE T1, so they are downloaded with their T1s and run through FastSurfer first. Candidate counts are
+Held on 13 Oct: 67 prodromal and 26 PD sessions. A 23 Aug LONI search export listed three-shell series for 229 more
+(175 prodromal, 54 PD). That export proved unreliable for DTI. A 14 Oct LONI search by those participants found DTI
+for only 57 of them and three-shell series for only 12 (7 prodromal, 5 PD). Those 12 were downloaded on 13 Oct
+(`dwi_validation_multishell*.zip`). The export's control counts are equally unverified. A census of all PPMI DTI on
+LONI is pending; the contrast, sample and power are revisited after it, before freezing. Candidate counts are
 filled in at freeze; QC counts come after the run:
 
 | | DaT-normal prodromal | DaT-deficient prodromal | PD |
