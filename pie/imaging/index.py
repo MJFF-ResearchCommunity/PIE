@@ -36,7 +36,8 @@ def index_zips(zip_paths, cache_csv=None):
         cached = pd.read_csv(cache_csv, dtype={"patno": int, "image_id": str})
         todo = [z for z in zip_paths if z not in set(cached["zip"].astype(str))]
         if not todo:
-            return cached[cached["zip"].astype(str).isin(zip_paths)].reset_index(drop=True)
+            out = cached[cached["zip"].astype(str).isin(zip_paths)].reset_index(drop=True)
+            return out.assign(session_date=pd.to_datetime(out["session"].str[:10], errors="coerce"))
         zip_paths = todo
     rows = {}
     for zp in zip_paths:
@@ -59,9 +60,11 @@ def index_zips(zip_paths, cache_csv=None):
                 r["n_files"] += 1
                 r["bytes"] += info.file_size
     df = pd.DataFrame(list(rows.values()))
-    df["session_date"] = pd.to_datetime(df["session"].str[:10], errors="coerce")
     if cached is not None:
         df = pd.concat([cached, df], ignore_index=True)
+    # every row, after the concat (and on the cached path above): the cache reads session_date back as text, which
+    # pandas 3 mixes with new rows' datetimes into "YYYY-MM-DD" and "YYYY-MM-DD 00:00:00" strings that break parsing
+    df["session_date"] = pd.to_datetime(df["session"].str[:10], errors="coerce")
     if cache_csv:
         df.to_csv(cache_csv, index=False)
     return df

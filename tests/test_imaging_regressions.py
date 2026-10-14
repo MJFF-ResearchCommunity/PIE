@@ -1284,7 +1284,13 @@ def test_index_cache_takes_in_a_zip_added_later(tmp_path):
         z.writestr("PPMI/1/MPRAGE/2002-01-01_09_00_00.0/I000002/a.dcm", b"x")
     cache = tmp_path / "index.csv"
     assert index.index_zips([a], cache_csv=cache)["image_id"].tolist() == ["I000001"]
-    assert index.index_zips([a, b], cache_csv=cache)["image_id"].tolist() == ["I000001", "I000002"]
+    added = index.index_zips([a, b], cache_csv=cache)
+    assert added["image_id"].tolist() == ["I000001", "I000002"]
+    # cached text dates + new datetimes were written back as mixed strings under pandas 3; the next cached read then
+    # broke link_sessions_to_events' date parsing
+    assert pd.to_datetime(added["session_date"]).dt.year.tolist() == [2000, 2002]
+    again = index.index_zips([a, b], cache_csv=cache)
+    assert pd.to_datetime(again["session_date"]).dt.year.tolist() == [2000, 2002]
     assert index.index_zips([b], cache_csv=cache)["image_id"].tolist() == ["I000002"]
 
 
