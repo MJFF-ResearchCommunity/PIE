@@ -1,9 +1,9 @@
 # Pre-registration: multi-shell posterior-SN free water in PPMI 2.0 prodromal participants (DaT-deficient vs DaT-normal)
 
-**Status: DRAFT, contrast changed 13 Oct 2026 (user decision).** Freezing was approved; it happens, with a timestamp
-and the commit hash of the code, once the multi-shell download is in and the candidate counts below are filled in
-from the DWI series index, `sessions.csv`, cohort and DaT labels only. It must be frozen before `dwi --eddy --study`
-produces any `dwisf_*` value for the sample. No `dwisf_*` value exists yet.
+**Status: FROZEN 2026-10-14** (user-approved; contrast changed 13 Oct by user decision), before `dwi --eddy --study`
+produced any `dwisf_*` value for the sample. The commit that adds this line is the frozen code. The candidate counts
+below come from the DWI series index, `sessions.csv`, cohort and DaT labels only. T1s for most participants were still
+to be downloaded at the freeze; the sample is defined by the rule below, not by who is processed first.
 
 **Why the contrast changed.** The first draft (11 Oct) compared PD with HC. A count from series names and labels only
 (13 Oct) found PPMI 2.0's three-shell protocol (Siemens Prisma, b = 700/1000/2000) in only 4 held healthy controls.
@@ -51,21 +51,26 @@ the disease, so a smaller separation, about 0.55–0.62, is expected.
 
 ## Sample
 
-Every PPMI 2.0 prodromal participant (PPMI cohort label) with a three-shell DWI session and a finished FastSurfer T1,
-earliest such session per participant. DaT labels come from PPMI's core-lab tables through `labels.dat_labels`
+Every PPMI 2.0 prodromal participant (PPMI cohort label) with a three-shell DWI session, the earliest such session
+per participant (`scripts/dwi_fw_index.py`: two or more of DTI_B700/B1000/B2000_64dir on one date, every series of
+that date kept). Each session is measured on the participant's finished FastSurfer T1 nearest in date within 180 days
+(`dwi --per-visit`, `batch.visit_jobs`). Without one, the participant is excluded and counted. DaT labels come from PPMI's core-lab tables through `labels.dat_labels`
 (`dat_d_nsdiss`: the NSD-ISS DaT deficit), matched to the DWI session within 18 months, as in NM Stage 2b. PD
 participants with the same protocol enter the secondary analyses only.
 
-Availability (LONI census, 14 Oct): three-shell sessions for 466 prodromal and 240 PD participants. 73 prodromal
-and 30 PD are held (including 12 downloaded on 13 Oct, `dwi_validation_multishell*.zip`); the other 393 prodromal and
-210 PD are downloaded with their T1s, since 562 of them have no PIE T1, and run through FastSurfer first. An earlier
-LONI export (23 Aug) proved unreliable for DTI and is not used. Candidate counts are
-filled in at freeze; QC counts come after the run:
+Availability (LONI census, 14 Oct): three-shell sessions for 466 prodromal and 240 PD participants. At the freeze all
+466 prodromal sessions are held (`First_Study_DTI_Refined*`, `dwi_validation_multishell*`,
+`remaining_prodromal_dwi_R*` zips; 500 participants in the index with 4 HC and 30 PD). The 210 other PD sessions and
+the same-visit T1s of 613 participants (399 prodromal, 214 PD) are still to be downloaded. The T1s go through
+FastSurfer before their sessions run. An earlier LONI export (23 Aug) proved unreliable for DTI and is not used.
 
-| | DaT-normal prodromal | DaT-deficient prodromal | PD |
-|---|---|---|---|
-| Three-shell candidates with a FastSurfer T1 and a DaT label (at freeze) | _ | _ | _ |
-| Passing `dwisf_qc_pass` (after the run, in the flow) | _ | _ | _ |
+Counts at the freeze (14 Oct), from labels and dates only; QC counts come after the run:
+
+| | DaT-normal prodromal | DaT-deficient prodromal | No DaT label (excluded) | PD (held) |
+|---|---|---|---|---|
+| Three-shell session held | 275 | 184 | 7 | 30 |
+| … with a finished T1 within 180 days at the freeze | 45 | 22 | 0 | 26 |
+| Passing `dwisf_qc_pass` (after the run, in the flow) | _ | _ | _ | _ |
 
 The 28 Siemens sessions with stripped gradient tags are single-shell PPMI-1 and not in this sample.
 
@@ -84,7 +89,7 @@ reported beside the expected 0.55–0.62 and the PD − HC equivalent 0.61–0.6
 | n deficient / n normal | CI half-width at 0.60 | P(pass \| 0.58) | P(pass \| 0.60) | P(pass \| 0.65) |
 |---|---|---|---|---|
 | 27 / 31 (held only, 73 prodromal) | 0.15 | 0.18 | 0.26 | 0.54 |
-| 175 / 197 (all 466 prodromal, ~80 % passing QC with a DaT label) | 0.06 | 0.77 | 0.93 | 1.00 |
+| 147 / 220 (the 184 / 275 at the freeze, ~80 % passing QC) | 0.06 | 0.75 | 0.91 | 1.00 |
 
 On the held sessions alone the test is close to uninformative. It is run only after the download.
 
@@ -104,7 +109,17 @@ prodromal participants, pre-registered separately; PD − HC if PPMI acquires mu
 
 ## Analysis code
 
+The run: `scripts/dwi_fw_index.py --zips <the zips above> --out <derived>/dwi_fw/dwi_index.csv`, then
+`dwi --zips <same> --sessions <derived>/sessions.csv --fastsurfer-dir <derived>/fastsurfer --work-dir <derived>/dwi_fw
+--eddy --study --per-visit --workers 1`, prodromal first (`--priority`). It is repeated as T1s and the PD download
+arrive (finished participants are skipped).
+
 `scripts/analyse_dwi_fw.py`:
 - `--synthetic` is the dry run. It reads nothing real: every value, label and identifier is generated.
 - The real run is `--tables <dwi_features.csv>[,...] --ppmi PPMI --out <dir>`.
 - `tests/test_analyse_dwi_fw.py` checks it on synthetic data.
+
+sha256 at the freeze (14 Oct 2026): `analyse_dwi_fw.py` ef22dda5d559c9f65b117faa10e9bbc3f4c110ca9714a26a25912993fe557d17;
+`dwi_fw_index.py` 8f253245ff856e7ef74277cf921bab904ed58f332be260e26ec4735fc584d2df; `nm_staged.py` (its AUROC and CI)
+3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f. Synthetic dry run only before the freeze. Run once;
+every number reported.
