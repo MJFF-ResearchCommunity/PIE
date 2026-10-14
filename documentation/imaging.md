@@ -101,6 +101,14 @@ venv_imaging/bin/python -m pie.imaging.run \
 The file names are those of the study's September 2026 LONI download; LONI writes the collection CSV next to every
 download, and the IDA metadata zip comes with "Advanced Download".
 
+**Searching LONI for T1s: do not filter on Weighting = T1** (checked 14 Oct 2026 on 613 PPMI 2.0 participants). LONI
+tags most PPMI 2.0 `3D T1-weighted` series as **PD**-weighted (1,082 of 1,207 3D T1 images; the rest are tagged T1).
+It also tags 2D neuromelanin (GRE-MT) and resting-state fMRI as T1-weighted. A Weighting = T1 search therefore returns
+mostly neuromelanin and fMRI and silently misses most PPMI 2.0 T1s. Search by Subject ID, Modality MRI, Image Type
+Original. Then take Weighting = PD (3D T1s plus a few small 2D PD scans) and, separately, Weighting = T1 rows whose
+description is a 3D T1. PPMI's `MRI_Acquisition_Metadata` (`MRI_SEQ_T1_WEIGHTED`) confirms whether a visit acquired
+a T1. PIE picks the T1 from whatever the zip holds (step 2 below).
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--zips` | required | LONI zip(s), laid out `PPMI/<PATNO>/<SeriesDescription>/<yyyy-mm-dd_HH_MM_SS.0>/<IMAGE_ID>/*.dcm` |
