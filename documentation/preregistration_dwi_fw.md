@@ -6,8 +6,9 @@ from the DWI series index, `sessions.csv`, cohort and DaT labels only. It must b
 produces any `dwisf_*` value for the sample. No `dwisf_*` value exists yet.
 
 **Why the contrast changed.** The first draft (11 Oct) compared PD with HC. A count from series names and labels only
-(13 Oct) found PPMI 2.0's three-shell protocol (Siemens Prisma, b = 700/1000/2000) in only 4 held healthy controls,
-against 26 PD and 67 prodromal held. That is fewer than the 5 HC per vendor the HC-referenced
+(13 Oct) found PPMI 2.0's three-shell protocol (Siemens Prisma, b = 700/1000/2000) in only 4 held healthy controls.
+A census of every PPMI DTI image on LONI (14 Oct, search export, no images read) confirmed it: three-shell sessions
+exist for 13 controls, 240 PD and 466 prodromal participants. That is fewer than the 5 HC per vendor the HC-referenced
 harmonisation needs, so PD − HC could not be estimated. The new contrast mirrors NM Stage 2b
 (`preregistration_nm_staged_validation.md`), which passed: within prodromal participants, those with a DaT deficit
 against those without.
@@ -55,11 +56,10 @@ earliest such session per participant. DaT labels come from PPMI's core-lab tabl
 (`dat_d_nsdiss`: the NSD-ISS DaT deficit), matched to the DWI session within 18 months, as in NM Stage 2b. PD
 participants with the same protocol enter the secondary analyses only.
 
-Held on 13 Oct: 67 prodromal and 26 PD sessions. A 23 Aug LONI search export listed three-shell series for 229 more
-(175 prodromal, 54 PD). That export proved unreliable for DTI. A 14 Oct LONI search by those participants found DTI
-for only 57 of them and three-shell series for only 12 (7 prodromal, 5 PD). Those 12 were downloaded on 13 Oct
-(`dwi_validation_multishell*.zip`). The export's control counts are equally unverified. A census of all PPMI DTI on
-LONI is pending; the contrast, sample and power are revisited after it, before freezing. Candidate counts are
+Availability (LONI census, 14 Oct): three-shell sessions for 466 prodromal and 240 PD participants. 73 prodromal
+and 30 PD are held (including 12 downloaded on 13 Oct, `dwi_validation_multishell*.zip`); the other 393 prodromal and
+210 PD are downloaded with their T1s, since 562 of them have no PIE T1, and run through FastSurfer first. An earlier
+LONI export (23 Aug) proved unreliable for DTI and is not used. Candidate counts are
 filled in at freeze; QC counts come after the run:
 
 | | DaT-normal prodromal | DaT-deficient prodromal | PD |
@@ -83,9 +83,8 @@ reported beside the expected 0.55–0.62 and the PD − HC equivalent 0.61–0.6
 
 | n deficient / n normal | CI half-width at 0.60 | P(pass \| 0.58) | P(pass \| 0.60) | P(pass \| 0.65) |
 |---|---|---|---|---|
-| 24 / 26 (held only) | 0.16 | 0.16 | 0.24 | 0.48 |
-| 60 / 65 | 0.10 | 0.35 | 0.50 | 0.86 |
-| 85 / 100 (after the download) | 0.08 | 0.47 | 0.67 | 0.96 |
+| 27 / 31 (held only, 73 prodromal) | 0.15 | 0.18 | 0.26 | 0.54 |
+| 175 / 197 (all 466 prodromal, ~80 % passing QC with a DaT label) | 0.06 | 0.77 | 0.93 | 1.00 |
 
 On the held sessions alone the test is close to uninformative. It is run only after the download.
 
