@@ -353,6 +353,15 @@ class Catalog:
                 raise ValueError("kind must be scalar, timeseries, tracts, or statistic; raw SPECT projections must be reconstructed first")
             if item.get("registration", "native") not in ("native", "verified"):
                 raise ValueError(f"{where}: registration must be native or verified")
+            if (item["modality"] == "Statistic") != (item.get("kind") == "statistic"):
+                raise ValueError(f"{where}: modality Statistic and kind statistic go together (pie.imaging.regionmap writes both)")
+            if item.get("kind") == "statistic":
+                try:
+                    vmax = float(item.get("metadata", {}).get("vmax"))
+                except (TypeError, ValueError):
+                    vmax = float("nan")
+                if not vmax >= 0 or vmax == float("inf"):
+                    raise ValueError(f"{where}: a statistic map needs a finite metadata.vmax (its sidecar's colour limit)")
             self.scans[item["id"]] = Scan(**item)
             self.subjects.setdefault(item["subject"], {"id": item["subject"], "group": "Imported", "cohort": "Imported"})
         for scan in self.scans.values():
@@ -367,8 +376,12 @@ class Catalog:
                 from .images import same_grid
                 if scan.registration != "verified":
                     raise ValueError(f"{scan.id}: a statistic map must be verified against the reference scan it was painted on")
-                if not same_grid(nib.load(scan.path), nib.load(self.scans[scan.reference_id].path)):
+                reference = self.scans[scan.reference_id]
+                if not same_grid(nib.load(scan.path), nib.load(reference.path)):
                     raise ValueError(f"{scan.id}: a statistic map must be painted on its reference scan's grid")
+                painted_on = scan.metadata.get("atlas_sha256")
+                if painted_on and reference.atlas and hashlib.sha256(Path(reference.atlas).read_bytes()).hexdigest() != painted_on:
+                    raise ValueError(f"{scan.id}: painted on a different segmentation than {reference.id}'s atlas")
 
     def public(self):
         subjects = []

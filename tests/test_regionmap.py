@@ -89,14 +89,14 @@ def test_figures_write_slices_for_participant_maps_even_when_empty(tmp_path):
     assert "no region passes" not in (tmp_path / "fig" / "effect_slices.svg").read_text()
 
 
-def test_surface_projection_keeps_only_that_hemispheres_cortex():
+def test_surface_values_paint_whole_parcels_of_that_hemisphere():
     a = np.zeros((4, 4, 4), np.int16)
     a[0], a[1], a[2] = 4, 1024, 2024                  # lateral ventricle, ctx-lh-precentral, ctx-rh-precentral
-    m = nib.Nifti1Image(np.where(a > 0, 0.5, 0).astype(np.float32), np.eye(4))
-    left = np.asarray(regionmap.cortex_only(m, nib.Nifti1Image(a, np.eye(4)), "left").dataobj)
-    assert left[1].min() == np.float32(0.5) and not left[0].any() and not left[2].any()
-    right = np.asarray(regionmap.cortex_only(m, nib.Nifti1Image(a, np.eye(4)), "right").dataobj)
-    assert right[2].min() == np.float32(0.5) and not right[:2].any()
+    m = nib.Nifti1Image(np.where(a == 1024, 0.5, np.where(a == 2024, -0.4, np.where(a == 4, 0.9, 0))).astype(np.float32), np.eye(4))
+    labels = np.array([4.0, 1024.0, 2024.0, 0.0, 1024.0])        # per-vertex labels sampled from the atlas
+    atlas = nib.Nifti1Image(a, np.eye(4))
+    assert regionmap.surface_values(m, atlas, labels, "left").tolist() == [0, 0.5, 0, 0, 0.5]
+    assert regionmap.surface_values(m, atlas, labels, "right").tolist() == [0, 0, np.float32(-0.4), 0, 0]
 
 
 def test_surface_view_keeps_positive_effects_warm(tmp_path, monkeypatch):
@@ -116,9 +116,11 @@ def test_surface_view_keeps_positive_effects_warm(tmp_path, monkeypatch):
     nib.save(nib.Nifti1Image(m, np.eye(4)), tmp_path / "pos.nii.gz")
     (tmp_path / "pos.json").write_text(json.dumps({"statistic": "d", "units": "SD", "vmax": 0.6, "threshold": None,
                                                    "atlas": str(tmp_path / "atlas.nii.gz")}))
-    pts = np.random.default_rng(2).uniform(3, 8, (200, 3))
-    mesh = (pts, ConvexHull(pts).simplices)
-    fake = {f"{k}_{h}": mesh for k in ("pial", "infl") for h in ("left", "right")}
+    d = np.random.default_rng(2).normal(size=(200, 3))
+    pts = 5.5 + 2.5 * d / np.linalg.norm(d, axis=1, keepdims=True)        # a small sphere: every point is a mesh vertex
+    faces = ConvexHull(pts).simplices
+    # one array per surface, as fsaverage's files are (nilearn's plotting recentres a mesh in place)
+    fake = {f"{k}_{h}": (pts.copy(), faces.copy()) for k in ("pial", "white", "infl") for h in ("left", "right")}
     fake |= {f"sulc_{h}": np.zeros(len(pts)) for h in ("left", "right")}
     monkeypatch.setattr(datasets, "fetch_surf_fsaverage", lambda *args, **kwargs: fake)
     out = regionmap.figures(tmp_path / "pos.nii.gz", tmp_path / "pos.json", tmp_path / "pos.nii.gz", tmp_path / "fig", template=True)
@@ -194,3 +196,75 @@ def test_empty_map_figure_still_shows_the_background(tmp_path):
     h, w = img.shape
     inside = img[int(0.35 * h): int(0.7 * h), int(0.05 * w): int(0.25 * w)]       # inside the first panel, clear of labels
     assert inside.std() > 0.05                                                      # the background shows, not a uniform dark box
+
+
+def test_cli_sidecar_hashes_the_csv_file_itself(tmp_path):
+    import hashlib
+    _fs(tmp_path / "fs")
+    (tmp_path / "t.csv").write_text("feature,d\nvol_Left_Putamen,0.40\n")
+    side = regionmap.main(["--table", str(tmp_path / "t.csv"), "--value", "d", "--fastsurfer-dir", str(tmp_path / "fs"), "--out", str(tmp_path / "x")])
+    assert side["source_sha256"] == hashlib.sha256((tmp_path / "t.csv").read_bytes()).hexdigest()
+
+
+def test_regions_absent_from_the_atlas_image_are_reported_not_shown(tmp_path):
+    p = tmp_path / "atlas.nii.gz"
+    nib.save(_atlas(), p)                              # labels 12, 51, 1024 only
+    t = pd.DataFrame({"feature": ["vol_Left_Putamen", "vol_Left_Caudate"], "d": [-0.5, 0.9]})
+    _, side = regionmap.region_map(t, p, value="d")
+    assert side["absent_from_atlas"] == ["vol_Left_Caudate"] and side["n_shown"] == 1 and side["vmax"] == 0.5
+
+
+def test_sidecar_records_the_absolute_atlas_path_and_its_hash(tmp_path, monkeypatch):
+    import hashlib
+    nib.save(_atlas(), tmp_path / "atlas.nii.gz")
+    monkeypatch.chdir(tmp_path)
+    _, side = regionmap.region_map(pd.DataFrame({"feature": ["vol_Left_Putamen"], "d": [0.3]}), "atlas.nii.gz", value="d")
+    assert side["atlas"] == str(tmp_path / "atlas.nii.gz")
+    assert side["atlas_sha256"] == hashlib.sha256((tmp_path / "atlas.nii.gz").read_bytes()).hexdigest()
+
+
+def test_cli_p_without_alpha_is_an_error(tmp_path):
+    import pytest
+    _fs(tmp_path / "fs")
+    pd.DataFrame({"feature": ["vol_Left_Putamen"], "d": [0.4], "p": [0.2]}).to_csv(tmp_path / "t.csv", index=False)
+    with pytest.raises(SystemExit):
+        regionmap.main(["--table", str(tmp_path / "t.csv"), "--value", "d", "--p", "p", "--fastsurfer-dir", str(tmp_path / "fs"), "--out", str(tmp_path / "x")])
+
+
+def _two_refs(tmp_path, second_atlas_differs=False):
+    import json
+    _fs(tmp_path / "fs")
+    other = _fs(tmp_path / "fs2")
+    if second_atlas_differs:
+        nib.save(nib.MGHImage(np.full((4, 4, 4), 17, np.int32), np.eye(4)), other / "mri" / "aparc.DKTatlas+aseg.deep.mgz")
+    pd.DataFrame({"feature": ["vol_Left_Putamen"], "d": [0.4]}).to_csv(tmp_path / "t.csv", index=False)
+    m = tmp_path / "viewer.json"
+    m.write_text(json.dumps({"version": 1, "scans": [
+        {"id": "a", "subject": "s", "modality": "MRI", "path": "fs/mri/orig_nu.mgz", "atlas": "fs/mri/aparc.DKTatlas+aseg.deep.mgz", "space": "s:T1"},
+        {"id": "b", "subject": "s", "modality": "MRI", "path": "fs2/mri/orig_nu.mgz", "atlas": "fs2/mri/aparc.DKTatlas+aseg.deep.mgz", "space": "s:T1b"}]}))
+    return m, ["--table", str(tmp_path / "t.csv"), "--value", "d", "--fastsurfer-dir", str(tmp_path / "fs"), "--out", str(tmp_path / "x"), "--manifest", str(m)]
+
+
+def test_cli_will_not_take_over_a_same_named_map_of_another_reference(tmp_path):
+    import pytest
+    m, args = _two_refs(tmp_path)
+    regionmap.main(args + ["--reference-id", "a"])
+    before = m.read_text()
+    with pytest.raises(SystemExit):
+        regionmap.main(args[:4] + ["--fastsurfer-dir", str(tmp_path / "fs2")] + args[6:] + ["--reference-id", "b"])
+    assert m.read_text() == before
+
+
+def test_cli_refuses_a_reference_whose_segmentation_differs(tmp_path):
+    import pytest
+    m, args = _two_refs(tmp_path, second_atlas_differs=True)
+    before = m.read_text()
+    with pytest.raises(SystemExit):                    # same grid, different segmentation: not the canvas it was painted on
+        regionmap.main(args + ["--reference-id", "b"])
+    assert m.read_text() == before
+
+
+def test_figure_colours_match_the_viewers_warm_and_cool_scales():
+    c = regionmap.STAT_CMAP
+    assert np.allclose(c(1.0)[:3], (1, 254 / 255, 0), atol=0.01) and np.allclose(c(0.0)[:3], (0, 254 / 255, 1), atol=0.01)
+    assert np.allclose(c(0.499)[:3], (0, 127 / 255, 1), atol=0.02) and np.allclose(c(0.501)[:3], (1, 127 / 255, 0), atol=0.02)

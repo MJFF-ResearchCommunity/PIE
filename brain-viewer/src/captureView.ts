@@ -1,17 +1,7 @@
 import type { Display, Prepared, Structures } from "./types";
 import { frameSeconds } from "./fmriDisplay";
 import { structureViewLabel } from "./structureDisplay";
-
-/** The overlay line for a regional statistic map: what is shown, by which rule, on which limits. */
-function statisticLine(o: Prepared) {
-  const m = o.scan.metadata as {
-    statistic?: string;
-    vmax?: number;
-    threshold?: { p_column: string; alpha: number } | null;
-  };
-  const rule = m.threshold ? `${m.threshold.p_column} < ${m.threshold.alpha}` : "all matched regions";
-  return `Overlay ${m.statistic ?? o.scan.description} · ${rule} · ±${Number(m.vmax ?? 0).toPrecision(2)} ${o.scan.units} · regional, not voxelwise`;
-}
+import { statisticNote } from "./statDisplay";
 
 export function captureLines(
   p: Prepared,
@@ -42,7 +32,7 @@ export function captureLines(
     structureLabel
       ? `Estimated labels, not validated pial surfaces · ${boundaries ? `see-through 3D · MRI ${d.structureMri ? Math.round(d.structureMriOpacity * 100) : 0}%` : `selected slice outlines ${d.structureOutlines ? "on" : "off"}`} · structure opacity ${Math.round(d.structureOpacity * 100)}% · selected labels ${d.selectedStructures.join(", ")}`
       : `Atlas ${d.atlas ? (d.atlasOutline ? "outlines" : "labels") : "off"} · signal opacity ${Math.round(d.opacity * 100)}% · fingerprint ${p.fingerprint ?? "browser import"}`,
-    ...(overlay?.scan.kind === "statistic" ? [statisticLine(overlay)] : []),
+    ...(overlay?.scan.kind === "statistic" ? [`Overlay ${statisticNote(overlay.scan)}`] : []),
   ];
 }
 export function captureView(

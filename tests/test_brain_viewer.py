@@ -288,3 +288,23 @@ def test_statistic_map_is_served_with_its_sidecar(volume, tmp_path):
     client = TestClient(create_app(tmp_path, manifest=manifest(tmp_path, _statistic_scans(volume, tmp_path))))
     detail = client.get("/api/scans/map")
     assert detail.status_code == 200 and detail.json()["scan"]["metadata"]["vmax"] == 0.5
+
+
+@pytest.mark.parametrize("changes, message", [
+    ({"kind": "scalar"}, "go together"),                                   # Statistic modality, scalar kind: one-sided colours
+    ({"modality": "MRI"}, "go together"),
+    ({"metadata": {"statistic": "d"}}, "finite metadata.vmax"),
+    ({"metadata": {"statistic": "d", "vmax": "nan"}}, "finite metadata.vmax")])
+def test_statistic_entries_must_be_complete(volume, tmp_path, changes, message):
+    with pytest.raises(ValueError, match=message):
+        Catalog(tmp_path, manifest=manifest(tmp_path, _statistic_scans(volume, tmp_path, **changes)))
+
+
+def test_statistic_map_from_another_segmentation_is_rejected(volume, tmp_path):
+    path, data, affine = volume
+    atlas = tmp_path / "atlas.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones(data.shape, np.int16), affine), atlas)
+    scans = _statistic_scans(volume, tmp_path, metadata={"statistic": "d", "vmax": 0.5, "atlas_sha256": "0" * 64})
+    scans[0]["atlas"] = str(atlas)
+    with pytest.raises(ValueError, match="map: .*different segmentation"):
+        Catalog(tmp_path, manifest=manifest(tmp_path, scans))

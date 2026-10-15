@@ -689,34 +689,47 @@ conversion or fMRI summaries. Use a manifest for anything persistent.
 A **statistic map** shows a regional result, such as a PD − HC effect size per structure, on a brain.
 `pie.imaging.regionmap` paints each region's value onto a FastSurfer label atlas (DKT + aseg) **on that atlas's own
 grid**, so the map is registered to its T1 by construction and can be declared `verified`. Nothing is warped or
-resampled. Use the MNI152 template from the example bundle for group results, or a participant's own segmentation:
+resampled. Use the MNI152 template from the example bundle for group results, or a participant's own segmentation.
+Add maps to a **copy** of the example manifest: `fetch_viewer_examples.py` rewrites `manifest.json` itself.
 
 ```bash
+cp Imaging/examples/manifest.json Imaging/examples/manifest_statmaps.json
 venv_imaging/bin/python -m pie.imaging.regionmap --table results.csv --value d --p p_fdr --alpha 0.05 \
     --fastsurfer-dir Imaging/examples/fastsurfer/MNI152NLin2009cAsym --out maps/pd_vs_hc \
-    --statistic "Cohen's d (PD - HC)" --units SD --manifest Imaging/examples/manifest.json --reference-id mni152-t1
+    --statistic "Cohen's d (PD - HC)" --units SD --manifest Imaging/examples/manifest_statmaps.json --reference-id mni152-t1
+venv_imaging/bin/python -m pie.imaging.viewer serve --manifest Imaging/examples/manifest_statmaps.json
 ```
 
 - **Input:** one row per region, with a feature name, a value and an optional p column. PIE names such as
   `vol_Left_Putamen`, `vol_ctx_lh_precentral` and `cth_lh_precentral` match atlas labels. Anything else (eTIV, sums,
   asymmetry indices, DK-only regions) is listed as **unmatched**, never dropped silently. **One measure per map:**
   a table holding both `vol_ctx_lh_precentral` and `cth_lh_precentral` is refused, because both are the same region.
+  `--p` and `--alpha` go together.
+- **Cortical parcels:** the canvas is FastSurfer's DKT parcellation. PIE's `cth_`/`area_` columns come from the DK
+  atlas (`aparc.stats`), whose boundaries differ slightly. A DK value is shown on the DKT parcel of the same name, and
+  the DK-only regions (banks of the STS, frontal and temporal poles) are listed as unmatched.
 - **Reference scan:** `--reference-id` names a scan in the manifest, or a T1 the viewer finds in PIE's outputs
   (`mri-<image id>`, with `--repo`). The CLI checks the map is on that scan's grid before it touches the manifest.
 - **Sidecar** (`PREFIX.json`): the statistic, units, threshold rule, colour limit `vmax`, matched/shown/unmatched
-  counts and the source table's sha256. The viewer and the figures read their limits from it.
-- **Grid rule:** the catalog loads a `kind: "statistic"` scan only when it is `verified` and has exactly the shape and
-  affine of its `reference_id`. A map from another participant or a resampled template is rejected.
-- **Display:** in **Registered overlay** on the reference scan. Warm is positive and cool negative, with symmetric
-  limits, so effects in both directions stay visible, plus a colour bar. If no region passes the threshold, the map
-  still loads and says so.
+  counts, regions in the lookup table but absent from this segmentation, the atlas path and sha256, and the source
+  CSV's sha256 (`sha256sum` gives the same value). The viewer and the figures read their limits from it.
+- **Grid rule:** the catalog loads a `kind: "statistic"` scan (always with `modality: "Statistic"` and a finite
+  `metadata.vmax`) only when it is `verified`, has exactly the shape and affine of its `reference_id`, and, when the
+  reference has an atlas, was painted on that same segmentation (sidecar `atlas_sha256`). A map from another
+  participant or a resampled template is rejected. The CLI applies the same checks before it writes the manifest, and
+  will not let a map take over the id of a map on another reference.
+- **Display:** in **Registered overlay** on the reference scan, listed by statistic, threshold rule and map id. Warm is
+  positive and cool negative, with symmetric limits, so effects in both directions stay visible, plus a colour bar.
+  The inspector note and the camera export name the statistic, rule and limits. If no region passes the threshold,
+  the map still loads and says so.
 - **Figures:** `regionmap.figures(map, sidecar, background, out_dir, template=True)` writes ortho slices (PNG and SVG
-  with editable text). For template maps it also writes a glass brain and an fsaverage5 surface view. They use the
-  same file and limits as the viewer, so the figure and the interactive view cannot disagree. The camera button
-  exports the current view.
+  with editable text). For template maps it also writes a glass brain and an fsaverage5 surface view, where each
+  vertex takes the value of the cortical parcel it samples (whole parcels, no interpolation). They use the same file,
+  limits and warm/cool colours as the viewer, so the figure and the interactive view cannot disagree. The camera
+  button exports the current view.
 - **Limits:**
   - Regional values only: no voxelwise or cluster statistics. PIE's analyses are regional.
-  - The surface view projects the MNI152 volume onto fsaverage and is approximate.
+  - The surface view samples MNI152 parcels onto fsaverage, so parcel borders are approximate.
   - Participant-space maps get slices only.
 
 The walkthrough [`region_effect_maps.ipynb`](../walkthroughs/region_effect_maps.ipynb) runs all of this on synthetic

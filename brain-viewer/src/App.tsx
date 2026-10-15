@@ -68,7 +68,7 @@ import {
   subjectLabel,
 } from "./model";
 import { serviceUnavailableMessage } from "./apiTarget";
-import { statisticDisplay } from "./statDisplay";
+import { statisticDisplay, statisticLabel, statisticNote } from "./statDisplay";
 
 const names: Record<Modality, string> = {
   MRI: "Structural MRI",
@@ -1519,7 +1519,7 @@ export default function App() {
                           {compatible.map((s) => (
                             <option key={s.id} value={s.id}>
                               {s.kind === "statistic"
-                                ? String(s.metadata.statistic ?? s.description)
+                                ? statisticLabel(s)
                                 : `${s.modality} · ${dateLabel(s.date, true)} · ${s.description}`}
                             </option>
                           ))}
@@ -1542,11 +1542,17 @@ export default function App() {
                           onChange={(n) => update({ overlayOpacity: n / 100 })}
                         />
                         <p className="fusion-note">
-                          {overlay.scan.modality} acquired{" "}
-                          {dateLabel(overlay.scan.date, true)}. Reference
-                          acquired {dateLabel(scan?.date ?? null, true)}.{" "}
-                          {overlay.scan.date !== scan?.date &&
-                            "These are different acquisition dates."}
+                          {overlay.scan.kind === "statistic" ? (
+                            statisticNote(overlay.scan)
+                          ) : (
+                            <>
+                              {overlay.scan.modality} acquired{" "}
+                              {dateLabel(overlay.scan.date, true)}. Reference
+                              acquired {dateLabel(scan?.date ?? null, true)}.{" "}
+                              {overlay.scan.date !== scan?.date &&
+                                "These are different acquisition dates."}
+                            </>
+                          )}
                         </p>
                         {overlay.scan.kind === "statistic" &&
                           statisticDisplay(overlay.scan.metadata).empty && (
