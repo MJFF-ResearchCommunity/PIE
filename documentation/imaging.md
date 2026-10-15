@@ -47,6 +47,7 @@ The T1 run comes first: every other modality uses the subject's FastSurfer segme
 | `cohorts.py` | One integer participant key across cohorts (PPMI PATNO, ADNI RID range, hashed keys for other LONI projects and BIDS) | |
 | `harmonize.py` | ComBat (optionally with a spline age term), longitudinal ComBat, batch × label confounding report | |
 | `qc.py` | Overlay montages and contact sheets for visual QC | yes |
+| `regionmap.py` | Regional results (effect sizes, t, p) painted on a FastSurfer label atlas as a statistic map with a sidecar, a viewer overlay and publication figures ([viewer](brain_viewer.md#statistic-maps)) | yes |
 | `cnn.py` | Whole-image 3D CNN baseline (SFCN) with grouped out-of-fold predictions | yes |
 | `embed.py` | Embeddings from pretrained open-weight T1 models | yes |
 | `atlases.py` + `data/atlases/` | Bundled, checksummed CIT168 atlas in MNI152NLin2009cAsym | |

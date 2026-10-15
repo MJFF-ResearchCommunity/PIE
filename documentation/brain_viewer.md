@@ -684,6 +684,41 @@ conversion or fMRI summaries. Use a manifest for anything persistent.
 - Overlays and previews from different dates show both acquisition dates everywhere.
 - Deep nuclei are inspected as volumes and slices, not projected onto cortex.
 
+## Statistic maps
+
+A **statistic map** shows a regional result, such as a PD − HC effect size per structure, on a brain.
+`pie.imaging.regionmap` paints each region's value onto a FastSurfer label atlas (DKT + aseg) **on that atlas's own
+grid**, so the map is registered to its T1 by construction and can be declared `verified`. Nothing is warped or
+resampled. Use the MNI152 template from the example bundle for group results, or a participant's own segmentation:
+
+```bash
+venv_imaging/bin/python -m pie.imaging.regionmap --table results.csv --value d --p p_fdr --alpha 0.05 \
+    --fastsurfer-dir Imaging/examples/fastsurfer/MNI152NLin2009cAsym --out maps/pd_vs_hc \
+    --statistic "Cohen's d (PD - HC)" --units SD --manifest Imaging/examples/manifest.json --reference-id mni152-t1
+```
+
+- **Input:** one row per region, with a feature name, a value and an optional p column. PIE names such as
+  `vol_Left_Putamen`, `vol_ctx_lh_precentral` and `cth_lh_precentral` match atlas labels. Anything else (eTIV, sums,
+  asymmetry indices, DK-only regions) is listed as **unmatched**, never dropped silently.
+- **Sidecar** (`PREFIX.json`): the statistic, units, threshold rule, colour limit `vmax`, matched/shown/unmatched
+  counts and the source table's sha256. The viewer and the figures read their limits from it.
+- **Grid rule:** the catalog loads a `kind: "statistic"` scan only when it is `verified` and has exactly the shape and
+  affine of its `reference_id`. A map from another participant or a resampled template is rejected.
+- **Display:** in **Registered overlay** on the reference scan. Warm is positive and cool negative, with symmetric
+  limits, so effects in both directions stay visible, plus a colour bar. If no region passes the threshold, the map
+  still loads and says so.
+- **Figures:** `regionmap.figures(map, sidecar, background, out_dir, template=True)` writes ortho slices (PNG and SVG
+  with editable text). For template maps it also writes a glass brain and an fsaverage5 surface view. They use the
+  same file and limits as the viewer, so the figure and the interactive view cannot disagree. The camera button
+  exports the current view.
+- **Limits:**
+  - Regional values only: no voxelwise or cluster statistics. PIE's analyses are regional.
+  - The surface view projects the MNI152 volume onto fsaverage and is approximate.
+  - Participant-space maps get slices only.
+
+The walkthrough [`region_effect_maps.ipynb`](../walkthroughs/region_effect_maps.ipynb) runs all of this on synthetic
+numbers.
+
 ## Sample download plan
 
 ```bash
