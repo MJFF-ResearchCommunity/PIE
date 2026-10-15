@@ -212,11 +212,32 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
   2. a public BIDS dataset;
   3. ADNI, once data access is in place.
 
+## Pre-registrations
+
+| Document | Tests | Status (15 Oct 2026) |
+|---|---|---|
+| [preregistration_nm_snceg.md](preregistration_nm_snceg.md) | snceg NM, PD vs HC, Siemens GRE-MT | Frozen 11 Oct; run; failed against 0.743 (0.631) |
+| [preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md) | NM staged: technical, biological, clinical | Stage 1 and 2b frozen and run (passed; 2b overlap disclosed). Stages 2a, 3 and 2b-R (Amendment 1) DRAFT, awaiting downloads |
+| [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md) | Nucleus basalis (Ch4), CAT12.9 | Frozen 13 Oct; running |
+| [preregistration_dwi_fw.md](preregistration_dwi_fw.md) | Posterior-SN free water, prodromal DaT contrast (+ PD secondaries) | Frozen 14 Oct; running |
+| [preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md) | PIE vs QSIPrep free-water agreement | DRAFT |
+| [preregistration_flair_wmh.md](preregistration_flair_wmh.md) | TrUE-Net WMH accuracy (MICCAI 2017 test set) and PPMI biology | DRAFT |
+| [preregistration_fmri.md](preregistration_fmri.md) | rs-fMRI throughput, motion (QC-FC), reliability, per protocol | DRAFT |
+| [preregistration_t1_surfaces.md](preregistration_t1_surfaces.md) | Cortical thickness vs PPMI FS7, repeatability, age; T1 QC vs MRIQC | DRAFT |
+| [preregistration_t1_longitudinal_pilot.md](preregistration_t1_longitudinal_pilot.md) | Longitudinal FastSurfer stream | DRAFT; needs control follow-up T1s |
+| [preregistration_harmonisation_ppmi.md](preregistration_harmonisation_ppmi.md) | ComBat across PPMI's own scanners | DRAFT |
+| [preregistration_survival_positive_control.md](preregistration_survival_positive_control.md) | Survival layer: baseline DaT predicts phenoconversion | DRAFT |
+
+A DRAFT has a fully synthetic dry run and tests but has computed nothing on real outcomes. It is frozen, with its
+script hashes, before its data are processed.
+
 ## Log
 
 Newest first.
 
 - **2026-10-15**
+  - Seven pre-registrations drafted (QSIPrep agreement, FLAIR WMH, fMRI, cortical thickness + T1 QC, longitudinal pilot, PPMI harmonisation, survival positive control), each with tests and a synthetic dry run; listed above.
+  - DWI: eddy_cuda failures while FastSurfer shared the GPU overnight; failed participants re-run with the same frozen code. The PD arm (210 participants) is queued.
   - NM Stage 2b correction: 224 of its 267 scans had been used by the Study 1 manuscript's NM analysis. Disclosed in the pre-registration; the result is unchanged. Most of its margin comes from the ≥ 24 mm slab rule.
   - NM literature review. The like-for-like PPMI GRE-MT benchmark is 0.633, and PIE's 0.631 sits at it. There is no public PPMI reference standard for neuromelanin. Recorded above.
   - CAT26 noted and put on hold.
