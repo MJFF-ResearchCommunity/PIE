@@ -132,6 +132,22 @@ PPMI's acquisition metadata (Sep 2026) lists NM at ≥ 2 visits for 546 PD and 1
       0.264 with percent-of-expected SBR (n 267), inside Park 2023's 0.25–0.33.
     - Note: the slab ≥ 24 mm rule removed 117 sessions (27 %), more than in R1; the result holds for the sessions with
       full nigral coverage.
+  - **Correction, 15 Oct 2026 (disclosure; the computed result is unchanged).** The freeze text above says the 433
+    sessions were ones "no NM analysis has used". That was wrong. 224 of the 267 analysed participants have the same NM
+    scans that the Study 1 manuscript's NM analysis used (also produced with PIE), and 43 are new to it. Study 1 had
+    already compared its own whole-nigra contrast with DaT deficit in those participants, with a null result, before
+    this stage was frozen. So Stage 2b is a pre-registered test of a new measure, but not on unseen scans.
+    The Study 1 session then ran a post hoc comparison (aggregates in that study's `summary_nm_coverage.json`) on the
+    178 participants shared with its DaT analysis:
+    - Study 1's whole-nigra contrast gave AUROC 0.637 against DaT deficit; PIE's `nms_sn_mean_cr` gave 0.648. The
+      two measures correlate at Spearman 0.84.
+    - Study 1's null came from slabs under 24 mm (median 20 mm, almost all GE). There, its contrast gave AUROC 0.398;
+      on slabs with full coverage it gave 0.634.
+
+    Most of Stage 2b's margin over Study 1 therefore comes from the slab-coverage rule (≥ 24 mm through-plane), not
+    from the snceg measure. Stage 3 draws only participants whose NM is in no PIE download, so it does not share this
+    problem. Before it runs, its list is also checked against every NM scan used by Study 1 or by earlier PIE NM
+    tests, and any overlap is excluded and counted.
 - **2c, side-matched DaT (exploratory, reused data).** Each hemisphere's NM against the same hemisphere's posterior
   putamen SBR, and the more-affected side, as Park 2023.
 

@@ -47,7 +47,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 | T1 | Cortical thickness, hippocampal subfields, SynthSeg (legacy 1.5 T), medial-temporal index | Not yet run | Code and synthetic tests | Agreement with PPMI's `FS7_APARC_CTH`; same-day ICC |
 | DaT-SPECT | PPMI core-lab SBRs (Xing; Invicro fallback) | **Validated** (reference values) | PPMI's own endpoint; PD vs HC AUROC 0.99 | — |
 | DaT-SPECT | PIE's own reconstruction (`datscan_2026_10`) | **Validated** | 1,452 of 1,459 scans pass QC. vs Xing: putamen r 0.851, CCC 0.87, deficit κ 0.80. vs Invicro: r 0.887. The two core labs agree with each other at r 0.88 | Non-PPMI reconstructed stacks |
-| NM-MRI | snceg contrast ratio (`nm_primary_cr`) | **Exploratory**, 2 of 3 stages passed | Stage 1 technical: projected ICC 0.945. Stage 2b: prodromal DaT-deficient vs normal AUROC 0.693 [0.625, 0.758]. PD vs HC on Siemens GRE-MT: 0.631, at the published like-for-like level (0.633) | Stage 2a (longitudinal), Stage 3 (fresh HC/PD); downloads pending |
+| NM-MRI | snceg contrast ratio (`nm_primary_cr`) | **Exploratory**, 2 of 3 stages passed | Stage 1 technical: projected ICC 0.945. Stage 2b: prodromal DaT-deficient vs normal AUROC 0.693 [0.625, 0.758] (scans largely shared with an earlier analysis; see below). PD vs HC on Siemens GRE-MT: 0.631, at the published like-for-like level (0.633) | Stage 2a (longitudinal), Stage 3 (fresh HC/PD); downloads pending |
 | DWI | Stripped-gradient recovery | **Validated** | 36 series rebuilt across 5 protocols; leave-one-out error ≤ 0.42°; MD r > 0.9999 | — |
 | DWI | Nigral FA/MD (single-shell tensor) | **Exploratory** | Pre-registered PPMI 2.0 re-test failed: AUROC 0.574 (0.495–0.652); MD ρ −0.01 vs PPMI's hand-drawn ROIs | — |
 | DWI | Single-shell free water | Quarantined | Age r +0.02; PD vs HC AUROC 0.50; ill-posed on one shell | — |
@@ -126,7 +126,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 | early Oct 2026 | snceg (Lillebostad 2025) on PPMI TSE-FS | Reproduced: 0.710 vs published 0.743 |
 | 12 Oct 2026 | snceg on PPMI Siemens GRE-MT, target 0.743 ([preregistration_nm_snceg.md](preregistration_nm_snceg.md)) | 0.631 [0.555, 0.707]: failed against that target |
 | 12 Oct 2026 | Staged validation, Stage 1, technical ([preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md)) | Passed: primary `nms_sn_mean_cr`, projected ICC 0.945 |
-| 12 Oct 2026 | Stage 2b, biological: prodromal DaT-deficient vs DaT-normal (267 participants) | Passed: AUROC 0.693 [0.625, 0.758] |
+| 12 Oct 2026 | Stage 2b, biological: prodromal DaT-deficient vs DaT-normal (267 participants) | Passed: AUROC 0.693 [0.625, 0.758]. Corrected 15 Oct: 224 of the 267 scans had been used by the Study 1 manuscript's NM analysis, so this was not a test on unseen scans. On 178 shared participants, Study 1's whole-nigra contrast performed alike (0.637 vs PIE 0.648) once slabs under 24 mm were excluded. The slab-coverage QC, not the measure, explains most of the gain |
 
 **Why PD vs HC stays modest (literature review, 15 Oct 2026).**
 - **The like-for-like benchmark.** The only published estimate for the same comparison (PPMI Siemens GRE-MT, newly diagnosed PD) is an AUROC of 0.633, rising to 0.755 at four years (Langley, Hwang, Huddleston & Hu, ISMRM 2023, abstract 3195). PIE's 0.631 sits at it.
@@ -135,10 +135,12 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 - **Biology.** Nigral neuromelanin loss lags striatal DaT loss at diagnosis, and PPMI required a DaT deficit to enrol PD.
 - **No reference standard.** PPMI publishes no core-lab neuromelanin values, so agreement cannot be tested as it was for DaT and AV-133. The field calls for standardisation before neuromelanin MRI is used as a multisite biomarker (Trujillo et al. 2024, doi:10.1093/brain/awad300).
 
+**Slab coverage matters more than the measure.** In prodromal participants, slabs under 24 mm through-plane (median 20 mm, almost all GE) carry no DaT signal: AUROC 0.398 against 0.634 on full-coverage slabs, for the same contrast measure. PIE's NM QC requires ≥ 24 mm, which removed 27 % of prodromal sessions.
+
 **What is left:**
 - **Stage 2a:** decline in PD on follow-up scans.
 - **Stage 2c:** side-matched DaT; exploratory.
-- **Stage 3:** fresh HC and PD. Pass rule fixed 13 Oct, before any Stage 3 data: vendor-stratified AUROC with CI lower bound > 0.50 and CI upper bound ≥ 0.633.
+- **Stage 3:** fresh HC and PD, from NM in no PIE download, and checked against every NM scan used before. Pass rule fixed 13 Oct, before any Stage 3 data: vendor-stratified AUROC with CI lower bound > 0.50 and CI upper bound ≥ 0.633.
 
 If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg contrast, research use at group level, not diagnosis.
 
@@ -214,6 +216,7 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 Newest first.
 
 - **2026-10-15**
+  - NM Stage 2b correction: 224 of its 267 scans had been used by the Study 1 manuscript's NM analysis. Disclosed in the pre-registration; the result is unchanged. Most of its margin comes from the ≥ 24 mm slab rule.
   - NM literature review. The like-for-like PPMI GRE-MT benchmark is 0.633, and PIE's 0.631 sits at it. There is no public PPMI reference standard for neuromelanin. Recorded above.
   - CAT26 noted and put on hold.
   - This page added.
