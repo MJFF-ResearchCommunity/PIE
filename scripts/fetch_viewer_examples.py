@@ -33,6 +33,9 @@ DWI = "ds001907/sub-RC4101_ses-1/sub-RC4101_ses-1_dwi"
 PET_1MM = "derived/ds006917_sub-005_trc-fluoroethylpe2i_pet_1mm.nii.gz"
 DWI_MAPS = {key: f"derived/ds001907_sub-RC4101_ses-1_{key}.nii.gz" for key in ("fa", "md", "b0")}
 FASTSURFER_SUBJECT = "ds005892_sub-MJF001"
+TEMPLATE = "templateflow/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
+TEMPLATE_SUBJECT = "MNI152NLin2009cAsym"
+TF = "https://templateflow.s3.amazonaws.com/tpl-MNI152NLin2009cAsym"
 
 # dest-relative path -> (pinned URL, SHA-256)
 FILES = {
@@ -54,6 +57,9 @@ FILES = {
                                           "bf306045a3fe9555140cb09aea112f5fd062843ef50c7606da34fbe8c9b5b9b7"),
     CT: ("https://raw.githubusercontent.com/neurolabusc/niivue-images/main/CT_Electrodes.nii.gz",
          "0566942708ff451458d0fdb1f61c4611187bb5cc0efa516c8500f1ff3c142e57"),
+    TEMPLATE: (f"{TF}/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz",
+               "1f27aabea9f7183dc0c69dafa71e1787b921ca778d655d9c1bf302b273d5627a"),
+    "templateflow/LICENSE": (f"{TF}/LICENSE", "46e280fe1a24c6f37feef2445ed288435e0ad063504a06030b206b12fdd2629d"),
     "ct_electrodes/Seg3DData_LICENSE": ("https://raw.githubusercontent.com/CIBC-Internal/Seg3DData/master/LICENSE",
                                         "30a7b23550b2a64eccde03066377bb72b88589c6fd2a7f875d75851cdb677ff4"),
 }
@@ -88,6 +94,12 @@ DATASETS = {
                       "participant": "CT_Electrodes: head CT with implanted electrodes; clinical context not stated",
                       "citation": "CT_Electrodes from the Seg3DData repository, distributed in neurolabusc/niivue-images. "
                                   "Copyright (c) 2015 Scientific Computing and Imaging Institute, University of Utah."},
+    "templateflow": {"collection": "TemplateFlow", "license": "MNI/McGill permissive notice (templateflow/LICENSE)",
+                     "participant": "MNI152NLin2009cAsym: a population template, not a participant",
+                     "citation": "Fonov VS, Evans AC, Botteron K, et al. Unbiased average age-appropriate atlases for pediatric studies. "
+                                 "NeuroImage 2011;54:313-327, doi:10.1016/j.neuroimage.2010.07.033; Fonov VS, et al. NeuroImage "
+                                 "2009;47:S102, doi:10.1016/S1053-8119(09)70884-5. "
+                                 "Distributed by TemplateFlow (Ciric et al. 2022, Nat Methods, doi:10.1038/s41592-022-01681-2)."},
 }
 
 
@@ -156,10 +168,10 @@ def dwi_maps(dest: Path):
         save(data, image.affine, dest / DWI_MAPS[key])
 
 
-def fastsurfer_command(dest: Path) -> str:
+def fastsurfer_command(dest: Path, t1: str = T1, sid: str = FASTSURFER_SUBJECT) -> str:
     q = lambda p: shlex.quote(str(p))
-    return (f"cd {q(REPO / 'third_party/FastSurfer')} && ./run_fastsurfer.sh --t1 {q((dest / T1).resolve())} "
-            f"--sid {FASTSURFER_SUBJECT} --sd {q((dest / 'fastsurfer').resolve())} --seg_only --no_cereb --no_hypothal "
+    return (f"cd {q(REPO / 'third_party/FastSurfer')} && ./run_fastsurfer.sh --t1 {q((dest / t1).resolve())} "
+            f"--sid {sid} --sd {q((dest / 'fastsurfer').resolve())} --seg_only --no_cereb --no_hypothal "
             f"--no_cc --device cpu --viewagg_device cpu --threads 6 --py {q(REPO / 'venv_imaging/bin/python')}")
 
 
@@ -205,6 +217,14 @@ def build_manifest(dest: Path) -> dict:
                       "space": "CT_Electrodes:native", "units": "HU", "description": "Head CT with implanted electrodes",
                       "qc": "Example image · clinical context not stated",
                       "provenance": provenance("ct_electrodes", "Head CT as distributed.")})
+    tpl = dest / "fastsurfer" / TEMPLATE_SUBJECT / "mri"
+    if (tpl / "orig_nu.mgz").is_file() and (tpl / "aparc.DKTatlas+aseg.deep.mgz").is_file():
+        scans.append({"id": "mni152-t1", "subject": "MNI152-template", "modality": "MRI", "visit": visit,
+                      "path": str((tpl / "orig_nu.mgz").relative_to(dest)),
+                      "atlas": str((tpl / "aparc.DKTatlas+aseg.deep.mgz").relative_to(dest)), "atlas_name": "DKT + aseg",
+                      "space": f"{TEMPLATE_SUBJECT}:T1-conformed", "description": "MNI152NLin2009cAsym T1w template · FastSurfer conformed 1 mm",
+                      "qc": "Template · automated FastSurfer segmentation, not reviewed",
+                      "provenance": provenance("templateflow", "TemplateFlow tpl-MNI152NLin2009cAsym (Fonov et al. 2011), segmented locally with FastSurfer --seg_only; a template, not a participant.")})
     if all((dest / p).is_file() for p in DWI_MAPS.values()):
         scans.append({"id": "rc4101-dti", "subject": "sub-RC4101", "modality": "DTI", "visit": visit,
                       "path": DWI_MAPS["fa"], "anatomy": DWI_MAPS["b0"], "space": "sub-RC4101:DWI", "units": "FA (dimensionless)",
@@ -214,7 +234,8 @@ def build_manifest(dest: Path) -> dict:
     people = {"sub-MJF001": ("ds005892", {"group": "PD-MCI", "cohort": "PD-MCI", "sex": "M", "age_at_scan": "68"}),
               "sub-005": ("ds006917", {"group": "Healthy control", "cohort": "Healthy control"}),
               "sub-RC4101": ("ds001907", {"group": "Healthy control", "cohort": "Healthy control"}),
-              "CT_Electrodes": ("ct_electrodes", {"group": "Example CT", "cohort": "Example CT"})}
+              "CT_Electrodes": ("ct_electrodes", {"group": "Example CT", "cohort": "Example CT"}),
+              "MNI152-template": ("templateflow", {"group": "Template (not a participant)", "cohort": "Template (not a participant)"})}
     used = {s["subject"] for s in scans}
     subjects = [{"id": sid, "collection": DATASETS[key]["collection"], **fields} for sid, (key, fields) in people.items() if sid in used]
     return {"version": 1, "subjects": subjects, "scans": scans}
@@ -232,7 +253,9 @@ def write_outputs(dest: Path) -> dict:
               f"- `{PET_1MM}`: 2x2x2 block mean of the ds006917 PET (0.5 mm to 1 mm).",
               "- `derived/ds001907_*`: FA, MD and mean b0 from pie.imaging.dwi (display copies).",
               f"- `fastsurfer/{FASTSURFER_SUBJECT}/`: local FastSurfer segmentation of the ds005892 T1 "
-              "(FastSurfer, Apache-2.0). Derived files carry their source dataset's license.", ""]
+              "(FastSurfer, Apache-2.0). Derived files carry their source dataset's license.",
+              f"- `fastsurfer/{TEMPLATE_SUBJECT}/`: local FastSurfer segmentation of the MNI152NLin2009cAsym template "
+              "(the canvas for group statistic maps).", ""]
     (dest / "ATTRIBUTION.md").write_text("\n".join(lines))
     return doc
 
@@ -253,6 +276,9 @@ def main():
     if not any(s["id"] == "mjf001-t1" for s in doc["scans"]):
         print("The T1 + 3-D structures entry needs a FastSurfer segmentation (CPU, roughly 15-30 min). Run:\n  "
               + fastsurfer_command(dest) + "\nthen run this script again.")
+    if not any(s["id"] == "mni152-t1" for s in doc["scans"]):
+        print("The MNI152 template entry (canvas for group statistic maps) needs its own FastSurfer segmentation. Run:\n  "
+              + fastsurfer_command(dest, TEMPLATE, TEMPLATE_SUBJECT) + "\nthen run this script again.")
     print(f"Serve: venv_imaging/bin/python -m pie.imaging.viewer serve --manifest {dest / 'manifest.json'}")
 
 

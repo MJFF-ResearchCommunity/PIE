@@ -138,6 +138,27 @@ def test_open_example_manifest_loads_and_adds_t1_only_after_segmentation(tmp_pat
     assert "Scientific Computing and Imaging Institute" in (dest / "ATTRIBUTION.md").read_text()
 
 
+def test_template_entry_appears_only_after_its_segmentation(tmp_path):
+    """The MNI152 template is the canvas for group statistic maps; listed once FastSurfer has segmented it."""
+    dest = tmp_path / "examples"
+    (dest / examples.TEMPLATE).parent.mkdir(parents=True)
+    nifti(dest / examples.TEMPLATE, (4, 4, 4))
+    assert not examples.build_manifest(dest)["scans"]
+    assert "--sid MNI152NLin2009cAsym" in examples.fastsurfer_command(dest, examples.TEMPLATE, examples.TEMPLATE_SUBJECT)
+    mri = dest / "fastsurfer" / examples.TEMPLATE_SUBJECT / "mri"
+    mri.mkdir(parents=True)
+    for name in ("orig_nu.mgz", "aparc.DKTatlas+aseg.deep.mgz"):
+        nib.save(nib.MGHImage(np.ones((4, 4, 4), np.float32), np.eye(4)), mri / name)
+    doc = examples.write_outputs(dest)
+    scan = {s["id"]: s for s in doc["scans"]}["mni152-t1"]
+    assert scan["path"] == "fastsurfer/MNI152NLin2009cAsym/mri/orig_nu.mgz"
+    assert scan["atlas"] == "fastsurfer/MNI152NLin2009cAsym/mri/aparc.DKTatlas+aseg.deep.mgz"
+    assert scan["atlas_name"] == "DKT + aseg" and scan["space"] == "MNI152NLin2009cAsym:T1-conformed"
+    assert {s["id"]: s for s in doc["subjects"]}["MNI152-template"]["group"] == "Template (not a participant)"
+    catalog = Catalog(tmp_path / "repo", manifest=dest / "manifest.json")
+    assert "not a participant" in catalog.scans["mni152-t1"].provenance
+
+
 # LONI image IDs, or a number of 3+ digits right after a participant-like word.
 EMBEDDED_ID = re.compile(r"\bI\d{5,}\b|\b(?:participants?|examples?|PATNO|PPMI)\s*(?:<[^>]*>\s*)?\d{3,}", re.I)
 
