@@ -57,7 +57,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 | rs-fMRI | fMRIPrep + XCP-D connectivity | **Not yet validated** | No real-data run since the October fixes | Pre-registered plan (below) |
 | PET | AV-133 striatal SBR | **Validated, with limits** | vs all three PPMI pipelines: posterior putamen r 0.92–0.97; caudate r 0.79–0.95 with a fixed offset; no partial-volume correction | Remaining scans |
 | PET | SV2A, tau (PI-2620) | Not validated (planned: Not offered) | Too few scans in PPMI (18 SV2A, 23 tau) to validate a pipeline. PPMI's own SUVRs are read by `labels.suvr_labels` | Revisit if PPMI publishes its method |
-| — | CT, α-synuclein PET, DPA-714, iron (QSM/SWI) | **Not offered** | CT is a safety form without images; PPMI does not acquire QSM/SWI | — |
+| — | CT, α-synuclein PET, DPA-714, iron (QSM/SWI) | **Not offered** | PPMI's CT is 121 low-dose attenuation-correction series (58 participants, 2014–2020) from its AV-133 PET/CT and DaT SPECT/CT sessions; no diagnostic or post-DBS CT. PPMI does not acquire QSM/SWI | CT as a PET/SPECT companion under review |
 | Longitudinal | Per-visit runs, longitudinal FastSurfer stream | Not yet piloted | Same-day MDC95 2–6 % gives the noise floor | Pilot on 100 participants |
 | Multi-cohort | BIDS/ADNI input, ComBat harmonisation | Synthetic tests only | — | Harmonisation across PPMI's own scanners; then a public BIDS dataset and ADNI |
 
