@@ -30,6 +30,7 @@ derived images        ──Brain Explorer──► interactive 3-D / slice revi
 | Diffusion MRI: free water, tensors, FBA, correction | [imaging_dwi.md](imaging_dwi.md) | `pie/imaging/dwi*.py`, `fba.py` |
 | Neuromelanin MRI and DaTscan SPECT | [imaging_nm_datscan.md](imaging_nm_datscan.md) | `pie/imaging/nm*.py`, `datscan.py` |
 | Resting-state fMRI: BIDS, fMRIPrep, QC, connectivity | [fmriprep.md](fmriprep.md) | `pie/imaging/fmri*.py` |
+| Imaging validation: status per modality, how each was validated, what is in progress, dated log | [validation.md](validation.md) | `pie/imaging/manifest.py` (`*_VALIDATED` flags) |
 | Brain Explorer viewer | [brain_viewer.md](brain_viewer.md) | `pie/imaging/viewer/`, `brain-viewer/` |
 | fMRI in the viewer | [fmri_viewer.md](fmri_viewer.md) | `pie/imaging/viewer/fmri.py` |
 

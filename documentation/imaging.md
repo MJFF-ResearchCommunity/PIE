@@ -1119,6 +1119,8 @@ A review of PPMI's own methods documents (core-lab SPECT, CIND DTI, the McGill F
 
 ### Real-data validity checks (September 2026)
 
+Current status of every measure, with the evidence behind it and a dated log: [validation.md](validation.md).
+
 On the study's derived tables (written 7–8 September 2026, before the 9–21 September fixes: re-run DWI, NM and FLAIR
 before quoting their values), with PPMI cohort labels:
 
