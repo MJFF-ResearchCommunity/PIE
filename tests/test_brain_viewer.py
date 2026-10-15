@@ -254,3 +254,37 @@ def test_open_data_manifest_serves_without_ppmi_or_imaging(tmp_path):
     assert structures.status_code == 200
     assert {"11", "50"} <= {m["key"] for m in structures.json()["meshes"]}
     assert client.get("/api/scans/sub-01-bold").json()["fmri"]["frames"] == 5
+
+
+def _statistic_scans(volume, tmp_path, affine=None, **changes):
+    path, data, ref_affine = volume
+    stat = tmp_path / "stat.nii.gz"
+    nib.save(nib.Nifti1Image(np.zeros(data.shape, np.float32), ref_affine if affine is None else affine), stat)
+    return [{"id": "t1", "subject": "001", "modality": "MRI", "date": "2020-01-01", "path": str(path), "space": "tpl"},
+            {"id": "map", "subject": "001", "modality": "Statistic", "kind": "statistic", "path": str(stat), "space": "tpl",
+             "registration": "verified", "reference_id": "t1", "metadata": {"statistic": "d", "vmax": 0.5}, **changes}]
+
+
+def test_statistic_map_overlays_only_on_its_reference_grid(volume, tmp_path):
+    catalog = Catalog(tmp_path, manifest=manifest(tmp_path, _statistic_scans(volume, tmp_path)))
+    scan = catalog.scans["map"].public()
+    assert scan["kind"] == "statistic" and scan["registration"] == "verified" and scan["metadata"]["vmax"] == 0.5
+
+
+def test_statistic_map_on_another_grid_is_rejected(volume, tmp_path):
+    shifted = volume[2].copy()
+    shifted[0, 3] += 1.0
+    with pytest.raises(ValueError, match="map: .*grid"):
+        Catalog(tmp_path, manifest=manifest(tmp_path, _statistic_scans(volume, tmp_path, affine=shifted)))
+
+
+def test_statistic_map_must_be_verified(volume, tmp_path):
+    with pytest.raises(ValueError, match="map: .*verified"):
+        Catalog(tmp_path, manifest=manifest(tmp_path, _statistic_scans(volume, tmp_path, registration="native")))
+
+
+def test_statistic_map_is_served_with_its_sidecar(volume, tmp_path):
+    from fastapi.testclient import TestClient
+    client = TestClient(create_app(tmp_path, manifest=manifest(tmp_path, _statistic_scans(volume, tmp_path))))
+    detail = client.get("/api/scans/map")
+    assert detail.status_code == 200 and detail.json()["scan"]["metadata"]["vmax"] == 0.5

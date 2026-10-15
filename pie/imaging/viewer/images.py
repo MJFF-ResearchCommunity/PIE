@@ -171,7 +171,7 @@ class ImageStore:
             source_header = nib.load(scan.path).header
             if hasattr(source_header, "get_xyzt_units"):
                 info["spatial_unit"] = source_header.get_xyzt_units()[0]
-            cmap = {"MRI": "gray", "CT": "gray", "DTI": "viridis", "PET": "inferno", "SPECT": "inferno", "fMRI": "gray"}[scan.modality]
+            cmap = {"MRI": "gray", "CT": "gray", "DTI": "viridis", "PET": "inferno", "SPECT": "inferno", "fMRI": "gray", "Statistic": "warm"}[scan.modality]
             cal_min, cal_max = (0, 1) if scan.modality == "DTI" else (info["cal_min"], info["cal_max"])
             if scan.modality == "CT":
                 cal_min, cal_max = 0, 80

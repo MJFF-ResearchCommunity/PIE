@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, fields
 from datetime import date, datetime
 from pathlib import Path
 
-MODALITIES = ("MRI", "DTI", "SPECT", "PET", "CT", "fMRI")
+MODALITIES = ("MRI", "DTI", "SPECT", "PET", "CT", "fMRI", "Statistic")
 DKT_ATLAS = "DKT + aseg"
 DKT_LUT = Path(__file__).with_name("atlas.tsv")
 # PPMI re-releases tables with the download date in the name: 08Sep2026, 9_07_2026, ...
@@ -349,8 +349,8 @@ class Catalog:
             # A FastSurfer DKT + aseg segmentation uses the bundled lookup table.
             if item.get("atlas_name") == DKT_ATLAS and not item.get("atlas_lut"):
                 item["atlas_lut"] = DKT_LUT
-            if item.get("kind", "scalar") not in ("scalar", "timeseries", "tracts"):
-                raise ValueError("kind must be scalar, timeseries, or tracts; raw SPECT projections must be reconstructed first")
+            if item.get("kind", "scalar") not in ("scalar", "timeseries", "tracts", "statistic"):
+                raise ValueError("kind must be scalar, timeseries, tracts, or statistic; raw SPECT projections must be reconstructed first")
             if item.get("registration", "native") not in ("native", "verified"):
                 raise ValueError(f"{where}: registration must be native or verified")
             self.scans[item["id"]] = Scan(**item)
@@ -360,6 +360,15 @@ class Catalog:
                 reference = self.scans.get(scan.reference_id)
                 if not reference or reference.id == scan.id or reference.subject != scan.subject or reference.space != scan.space:
                     raise ValueError(f"{scan.id}: verified registration requires a same-subject reference_id in the same explicit space")
+            if scan.kind == "statistic":
+                # Painted on the reference's own label grid (pie.imaging.regionmap); anything else would need a resampling we never do.
+                import nibabel as nib
+
+                from .images import same_grid
+                if scan.registration != "verified":
+                    raise ValueError(f"{scan.id}: a statistic map must be verified against the reference scan it was painted on")
+                if not same_grid(nib.load(scan.path), nib.load(self.scans[scan.reference_id].path)):
+                    raise ValueError(f"{scan.id}: a statistic map must be painted on its reference scan's grid")
 
     def public(self):
         subjects = []
