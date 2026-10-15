@@ -235,7 +235,11 @@ def test_compare_subject_on_synthetic_qsiprep_and_qsirecon_trees(tmp_path, monke
         nib.save(nib.MGHImage(np.ones((4, 4, 4), np.float32), np.eye(4)), tmp_path / "fs" / "mri" / name)
     seen = {}
     monkeypatch.setattr(dwi, "register_b0_to_t1", lambda moving, t1, mask, sampling_seed: seen.update(seed=sampling_seed, moving=moving) or ("tx", -0.6))
-    monkeypatch.setattr(dwi, "study_nigra_labels", lambda grid, fs_dir, tx: seen.update(grid=grid, tx=tx) or _codes(shape))
+    def labels(grid, fs_dir, tx, posterior=False):        # the anatomical posterior split adds 100 (here: y < 8)
+        seen.update(grid=grid, tx=tx, posterior=posterior)
+        codes = _codes(shape)
+        return codes + 100 * ((codes > 0) & (np.indices(shape)[1] < 8)) if posterior else codes
+    monkeypatch.setattr(dwi, "study_nigra_labels", labels)
     row = dq.compare_subject(1, tmp_path / "qsiprep", tmp_path / "fs", tmp_path / "recon")
     assert seen["seed"] == dwi.STUDY_SEED and seen["tx"] == "tx" and seen["grid"].shape == shape and np.allclose(seen["grid"].affine, AFF)
     assert np.asarray(seen["moving"].dataobj)[~sphere].max() == 0                 # brain-masked QSIPrep T1w
@@ -243,6 +247,10 @@ def test_compare_subject_on_synthetic_qsiprep_and_qsirecon_trees(tmp_path, monke
     assert row["dwiq_fw_sn_posterior_mean"] == pytest.approx(0.2, abs=0.01) and np.isfinite(row["dwiq_fa_sn_posterior_mean"])
     assert row["dwiq_tensor_fa_sn_l"] == pytest.approx(0.5) and row["dwiq_noddi_isovf_snr_mean"] == pytest.approx(0.3)
     assert "dwiq_qc_pass" in row and not any(k.startswith("dwis_") for k in row)
+    # PIE's pre-registered free-water endpoint, mirrored with its anatomical split and its own QC; the T1 used is recorded
+    assert seen["posterior"] and row["dwiq_fs_image_id"] == "fs" and "dwiqf_qc_pass" in row
+    assert row["dwiqf_fw_sn_posterior_mean"] == pytest.approx(row["dwiq_fw_sn_posterior_mean"], abs=0.01)
+    assert not any(k.startswith("dwisf_") for k in row)
 
 
 def test_agreement_stats_match_closed_forms():

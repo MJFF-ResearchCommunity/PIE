@@ -282,8 +282,9 @@ def compare_subject(patno, qsiprep_dir, fastsurfer_dir, recon_dir=None):
     in one nearest-neighbour resampling onto QSIPrep's preprocessed-DWI grid, via a rigid QSIPrep T1w -> FastSurfer T1
     registration (so QSIPrep's own b0 -> T1w coregistration is the one compared). On QSIPrep's DWI: PIE's tensor rule and
     QC (``dwi.study_features``: the b = 1000 run, its own b0s; motion = QSIPrep's mean framewise displacement), and
-    multi-shell free water (``freewater_qc.fit_multishell_checked``, b <= 2050) under the same region rule; and the
-    QSIRecon ``RECON_MAPS`` (``dwiq_<model>_<param>_*``)."""
+    multi-shell free water (``freewater_qc.fit_multishell_checked``) under the same region rule (``dwiq_fw_*``, scanner-frame
+    split); PIE's pre-registered free-water endpoint with its anatomical split and QC (``dwi.study_fw_features`` -> ``dwiqf_*``,
+    ``dwiqf_qc_pass``); ``dwiq_fs_image_id``; and the QSIRecon ``RECON_MAPS`` (``dwiq_<model>_<param>_*``)."""
     from .freewater_qc import fit_multishell_checked
 
     label = str(int(patno))
@@ -299,16 +300,26 @@ def compare_subject(patno, qsiprep_dir, fastsurfer_dir, recon_dir=None):
     mri = Path(fastsurfer_dir) / "mri"
     moving = nib.Nifti1Image(np.where(brainq, np.asarray(t1q.dataobj, np.float32), 0).astype(np.float32), t1q.affine)
     tx, metric = dwi.register_b0_to_t1(moving, nib.load(mri / "orig.mgz"), nib.load(mri / "mask.mgz"), sampling_seed=dwi.STUDY_SEED)
-    codes = np.asarray(dwi.study_nigra_labels(nib.Nifti1Image(np.zeros(img.shape[:3], np.float32), img.affine), fastsurfer_dir, tx))
+    # one nearest-neighbour pull with the anatomical posterior split (+100); codes % 100 are the plain study labels
+    fw_codes = np.asarray(dwi.study_nigra_labels(nib.Nifti1Image(np.zeros(img.shape[:3], np.float32), img.affine), fastsurfer_dir, tx,
+                                                 posterior=True))
+    codes = fw_codes % 100
     motion = float(np.nanmean(pd.to_numeric(conf["framewise_displacement"], errors="coerce")))
     row = {"patno": int(patno), "dwiq_source": nii.name, "dwiq_n_volumes": int(data.shape[3]), "dwiq_reg_t1_t1_mi": metric,
-           "dwiq_voxel_mm": float(np.linalg.norm(img.affine[:3, :3], axis=0).mean()), "dwiq_motion_metric": "qsiprep_mean_fd_mm"}
-    study = dwi.study_features(data, b, v, img.affine, run_bounds(conf["original_file"]), codes,
-                               dwi._b0_brain(data[..., b <= 50].mean(axis=3)), motion)
+           "dwiq_voxel_mm": float(np.linalg.norm(img.affine[:3, :3], axis=0).mean()), "dwiq_motion_metric": "qsiprep_mean_fd_mm",
+           "dwiq_fs_image_id": Path(fastsurfer_dir).name}
+    brain = dwi._b0_brain(data[..., b <= 50].mean(axis=3))
+    study = dwi.study_features(data, b, v, img.affine, run_bounds(conf["original_file"]), codes, brain, motion)
     row.update({"dwiq_" + k[len("dwis_"):]: val for k, val in study.items()})
     xyz, rois = dwi.study_rois(codes, img.affine)
     fw = fit_multishell_checked(data[tuple(xyz.T)], b, v)
-    row.update(dwi.roi_means(np.where(fw["physical"], fw["f"], np.nan), rois, "dwiq_fw"))
+    row.update(dwi.roi_means(np.where(fw["physical"], fw["f"], np.nan), rois, "dwiq_fw"))      # scanner-frame split (legacy)
+    # PIE's pre-registered endpoint mirrored on QSIPrep's grid: dwi.study_fw_features (anatomical split, its own QC) -> dwiqf_*
+    maps = {k: np.full(codes.shape, np.nan, np.float32) for k in ("fw", "fat", "mdt")}
+    for k, src in (("fw", "f"), ("fat", "tissue_fa"), ("mdt", "tissue_md")):
+        maps[k][tuple(xyz.T)] = np.where(fw["physical"], fw[src], np.nan)
+    method = "multishell_nls" if len(np.unique(np.rint(b[b > 50] / 100))) >= 2 else "singleshell_prior"
+    row.update({"dwiqf_" + k[len("dwisf_"):]: val for k, val in dwi.study_fw_features(maps, fw_codes, brain, motion, method).items()})
     for (model, param), path in (sorted(recon_maps(recon_dir, label).items()) if recon_dir else []):
         m = nib.load(path)
         if m.shape[:3] != img.shape[:3] or not np.allclose(m.affine, img.affine, atol=1e-3):
@@ -415,6 +426,9 @@ def main(argv=None):
         return
     if a.stage == "compare":
         fs = fastsurfer_by_patno(a.sessions, a.fastsurfer_dir)
+        if a.pie_features:        # measure on the T1 PIE's own row used (per-visit runs pair each DWI session with one T1)
+            pie_rows = pd.read_csv(a.pie_features, dtype={"fs_image_id": str}, low_memory=False).dropna(subset=["fs_image_id"])
+            fs.update({int(p): str(Path(a.fastsurfer_dir) / f) for p, f in zip(pie_rows["patno"], pie_rows["fs_image_id"])})
         labels = a.participants or sorted(p.name[4:] for p in Path(a.qsiprep_dir).glob("sub-*") if p.is_dir())
         work = Path(a.work_dir)
         out_csv = work / "dwiq_features.csv"
