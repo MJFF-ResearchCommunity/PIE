@@ -88,7 +88,7 @@ def header_quality(headers):
     """image_id -> header score: +2 3D acquisition (-2 2D), +1 ORIGINAL (-1 derived, reformatted, MPR, projection),
     +1 an inversion time (MPRAGE / IR-SPGR), -1 in-plane spacing under 0.75 mm (a 512-matrix interpolated
     reconstruction, which the byte count would otherwise favour)."""
-    h = headers.set_index("image_id")
+    h = headers.drop_duplicates("image_id").set_index("image_id")      # one LONI image can sit in two downloads
     text = lambda c: h.get(c, pd.Series("", index=h.index)).fillna("").astype(str).str.upper()
     acq, kind = text("MRAcquisitionType"), text("ImageType")
     derived = kind.str.contains("DERIVED|REFORMAT|MPR|MIP|PROJECTION")

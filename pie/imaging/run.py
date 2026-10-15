@@ -77,7 +77,7 @@ def t1_headers(index, cache_csv):
     from the zips; cached and extended incrementally."""
     cand = t1_candidates(index)
     cached = pd.read_csv(cache_csv, dtype={"image_id": str}) if Path(cache_csv).exists() else pd.DataFrame({"image_id": []})
-    todo = cand[~cand["image_id"].astype(str).isin(set(cached["image_id"]))]
+    todo = cand[~cand["image_id"].astype(str).isin(set(cached["image_id"]))].drop_duplicates("image_id")
     if len(todo):
         cached = pd.concat([cached, probe_headers(todo, fields=T1_HEADER_FIELDS)], ignore_index=True)
         cached.to_csv(cache_csv, index=False)

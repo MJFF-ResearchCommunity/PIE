@@ -1331,3 +1331,14 @@ def test_scan_metadata_widens_instead_of_appending_a_longer_row(tmp_path):
     append_meta(m, {"image_id": "I3", "nifti": "c", "Manufacturer": "GE", "ConversionSoftwareVersion": "v1"})
     t = pd.read_csv(m)
     assert t["image_id"].tolist() == ["I1", "I2", "I3"] and t["ConversionSoftwareVersion"].isna().tolist() == [True, False, False]
+
+
+def test_t1_selection_survives_the_same_loni_image_in_two_downloads():
+    # a re-download put the same image_id in two zips; the header cache then held it twice and select_t1_series's
+    # score lookup (Series.map on a non-unique index) crashed the T1 run
+    from pie.imaging import index
+
+    idx = pd.DataFrame([dict(zip=z, patno=1, series_desc="MPRAGE", session="2023-01-01_10_00_00.0", image_id="I1", n_files=176,
+                             bytes=100, member_prefix="p/") for z in ("a.zip", "b.zip")])
+    headers = pd.DataFrame([{"image_id": "I1", "MRAcquisitionType": "3D", "ImageType": "ORIGINAL"}] * 2)
+    assert index.select_t1_series(idx, headers)["image_id"].tolist() == ["I1"]
