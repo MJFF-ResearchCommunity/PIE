@@ -137,9 +137,10 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 
 **Slab coverage matters more than the measure.** In prodromal participants, slabs under 24 mm through-plane (median 20 mm, almost all GE) carry no DaT signal: AUROC 0.398 against 0.634 on full-coverage slabs, for the same contrast measure. PIE's NM QC requires ≥ 24 mm, which removed 27 % of prodromal sessions.
 
-**What is left:**
+**What is left** (Amendment 1, drafted 15 Oct and to be frozen before the downloads are opened, adds Stage 2b-R, codes the Stage 3 pass rule in full and excludes any participant analysed before):
 - **Stage 2a:** decline in PD on follow-up scans.
 - **Stage 2c:** side-matched DaT; exploratory.
+- **Stage 2b-R:** Stage 2b repeated on 400 prodromal participants whose NM no analysis has used (seeded draw from 1,027 eligible).
 - **Stage 3:** fresh HC and PD, from NM in no PIE download, and checked against every NM scan used before. Pass rule fixed 13 Oct, before any Stage 3 data: vendor-stratified AUROC with CI lower bound > 0.50 and CI upper bound ≥ 0.633.
 
 If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg contrast, research use at group level, not diagnosis.

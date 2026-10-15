@@ -177,3 +177,33 @@ processed T1 in PIE, so their T1s are downloaded with them.
   estimate near 0.54.
 - **What `NM_VALIDATED` would mean:** technically reliable (Stage 1), biologically plausible (Stage 2a), and above
   chance out of sample (Stage 3), for the stated context of use. It would not mean diagnostic accuracy.
+
+## Amendment 1 (DRAFT, 15 Oct 2026; to be frozen, with the script hash, before either download is opened)
+
+Written before any Stage 3 or Stage 2b-R data were downloaded. Nothing below uses an outcome.
+
+**Why.**
+1. **The pass rule was not fully coded.** `scripts/nm_staged.py fresh-clinical` coded only condition 1 of the 13 Oct pass rule (CI lower bound > 0.50), not condition 2 (CI upper bound ≥ 0.633). Stage 3 therefore runs with `scripts/nm_stage3.py`, which applies both conditions.
+2. **`nm_staged.py` is not edited.** It stays byte-identical (sha256 `3ab1bc26…`), because the frozen DWI free-water analysis imports from it. The new script imports its loading, labelling and statistics unchanged.
+3. **Stage 2b reused scans** (correction above): 224 of its 267 participants had been analysed by Study 1. Stage 2b is therefore repeated on prodromal participants whose NM no analysis has used (Stage 2b-R).
+4. **Overlap is checked.** Every Stage 3 and Stage 2b-R participant is checked against a list of every participant whose NM was analysed before: Study 1's NM inventory, every PIE NM feature table, and the held prodromal sessions. Those participants are excluded and counted (`--exclude`). Built on 15 Oct, the list holds 1,005 participants. It overlaps the Stage 3 lists in 1 HC and 2 PD, and the Stage 2b-R list in none. The list itself stays outside the repository.
+
+**Stage 2b-R: prodromal NM against DaT, fresh participants.**
+- **Candidates.** PPMI's acquisition metadata lists NM for 2,534 prodromal participants. 1,266 of them were never analysed. Of those, 1,084 have NM at SC or BL, and 1,027 also have core-lab DaT at SC or BL.
+- **Sample.** 400 of the 1,027 were drawn with `numpy.random.default_rng(20261015)` (list outside the repository). They are downloaded with their T1s.
+- **Measure, statistic, exclusions and pass rule:** as Stage 2b. Stage 1 primary; vendor-stratified AUROC, DaT-normal > DaT-deficient (NSD-ISS D+); CI lower bound > 0.50. Exclusions include slab < 24 mm.
+- **Power.** With about a third excluded (QC, thin slabs, no DaT within 18 months), about 260 remain. A true AUROC of 0.65 then gives a CI lower bound above 0.50 with power above 0.95.
+
+**Stage 3, unchanged except:**
+- the overlap exclusion above;
+- the pass rule is now coded as decided on 13 Oct (`nm_stage3.stage3_pass`).
+
+**Descriptive secondaries, Stage 3 and Stage 2b-R (no gate, no multiplicity claim):**
+- **The lower of the two sides' contrast** (`min(nms_sn_l_cr, nms_sn_r_cr)`). Loss is greater on the more affected side, and "lower side" is defined for controls too.
+- **snceg nigral volume** (`nms_sn_volume_mm3`, unadjusted). Meta-analyses find volume discriminates better than signal (Cho 2021).
+
+**Considered and not added: ComBat on the primary.** The primary statistic already compares pairs only within vendor. ComBat on a two-group test would either remove group signal (diagnosis not protected) or let the label into the harmonisation (diagnosis protected).
+
+**Script.** `scripts/nm_stage3.py` (`fresh-clinical`, `prodromal-fresh`, `--synthetic`), tests in `tests/test_nm_stage3.py`. Synthetic dry run only so far.
+
+**What `NM_VALIDATED` would mean: unchanged** (Stage 1, Stage 2a, Stage 3). Stage 2b-R is supporting biological evidence.
