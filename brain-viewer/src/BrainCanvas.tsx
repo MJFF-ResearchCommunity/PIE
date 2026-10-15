@@ -616,7 +616,7 @@ export default function BrainCanvas({
           },
           capture: () => {
             nv.drawScene();
-            captureView(element, prepared, settings.current, structures);
+            captureView(element, prepared, settings.current, structures, overlay);
           },
         });
         // Browser inspection hook: local-only, holds just this renderer.

@@ -699,7 +699,10 @@ venv_imaging/bin/python -m pie.imaging.regionmap --table results.csv --value d -
 
 - **Input:** one row per region, with a feature name, a value and an optional p column. PIE names such as
   `vol_Left_Putamen`, `vol_ctx_lh_precentral` and `cth_lh_precentral` match atlas labels. Anything else (eTIV, sums,
-  asymmetry indices, DK-only regions) is listed as **unmatched**, never dropped silently.
+  asymmetry indices, DK-only regions) is listed as **unmatched**, never dropped silently. **One measure per map:**
+  a table holding both `vol_ctx_lh_precentral` and `cth_lh_precentral` is refused, because both are the same region.
+- **Reference scan:** `--reference-id` names a scan in the manifest, or a T1 the viewer finds in PIE's outputs
+  (`mri-<image id>`, with `--repo`). The CLI checks the map is on that scan's grid before it touches the manifest.
 - **Sidecar** (`PREFIX.json`): the statistic, units, threshold rule, colour limit `vmax`, matched/shown/unmatched
   counts and the source table's sha256. The viewer and the figures read their limits from it.
 - **Grid rule:** the catalog loads a `kind: "statistic"` scan only when it is `verified` and has exactly the shape and

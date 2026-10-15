@@ -47,6 +47,12 @@ def region_map(table, atlas_path, value, feature="feature", p=None, alpha=None, 
 
     atlas = nib.load(atlas_path)
     got, unmatched = match_features(table[feature].astype(str).tolist(), pd.read_csv(DKT_LUT, sep="\t"))
+    by_label = {}
+    for f, label in got.items():
+        by_label.setdefault(label, []).append(f)
+    shared = [" / ".join(fs) for fs in by_label.values() if len(fs) > 1]
+    if shared:
+        raise ValueError(f"one value per region: {'; '.join(shared)} map to the same atlas label; make one map per measure")
     rows = table[table[feature].isin(got)]
     keep = rows if p is None or alpha is None else rows[pd.to_numeric(rows[p], errors="coerce") < alpha]
     vals = {got[f]: float(v) for f, v in zip(keep[feature], pd.to_numeric(keep[value], errors="coerce"))}
@@ -80,7 +86,7 @@ def figures(map_path, sidecar_path, background, out_dir, template=False):
         title += " (no region passes the threshold)"
     img = nib.load(map_path)
     # symmetric in every view: nilearn otherwise maps a one-signed map onto the whole diverging scale
-    kw = {"cmap": "cold_hot", "vmax": vmax or 1.0, "threshold": vmax / 1000 or None, "symmetric_cbar": True}
+    kw = {"cmap": "cold_hot", "vmax": vmax or 1.0, "threshold": vmax / 1000 if vmax else 1e-6, "symmetric_cbar": True}
     out_dir, stem = Path(out_dir), Path(map_path).name.split(".")[0]
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
@@ -126,7 +132,8 @@ def main(argv=None):
     ap.add_argument("--statistic", default="")
     ap.add_argument("--units", default="")
     ap.add_argument("--manifest", type=Path, help="viewer manifest to add the map to, as a verified overlay")
-    ap.add_argument("--reference-id", help="manifest scan the atlas belongs to (required with --manifest)")
+    ap.add_argument("--reference-id", help="scan the atlas belongs to (required with --manifest): in the manifest, or found by the viewer in --repo")
+    ap.add_argument("--repo", type=Path, default=Path("."), help="repository whose PIE outputs the viewer indexes (for --reference-id mri-<image id>)")
     a = ap.parse_args(argv)
     img, side = region_map(pd.read_csv(a.table), a.fastsurfer_dir / "mri" / "aparc.DKTatlas+aseg.deep.mgz", a.value, a.feature,
                            a.p, a.alpha, a.statistic, a.units)
@@ -140,13 +147,22 @@ def main(argv=None):
             ap.error("--manifest needs --reference-id")
         doc = json.loads(a.manifest.read_text())
         ref = next((s for s in doc["scans"] if s["id"] == a.reference_id), None)
-        if ref is None:
-            ap.error(f"{a.reference_id} is not a scan in {a.manifest}")
+        if ref is not None:
+            ref_path = (a.manifest.parent / ref["path"]).resolve()
+        else:                                        # a T1 the viewer discovers in PIE's outputs (mri-<image id>)
+            from .viewer.catalog import Catalog
+            scan = Catalog(a.repo, manifest=a.manifest).scans.get(a.reference_id)
+            if scan is None:
+                ap.error(f"{a.reference_id} is neither in {a.manifest} nor among the scans the viewer finds in {a.repo}")
+            ref, ref_path = {"subject": scan.subject, "space": scan.space, "visit": scan.visit}, scan.path
+        from .viewer.images import same_grid
+        if not same_grid(img, nib.load(ref_path)):
+            ap.error(f"{a.reference_id} is not on the grid of {a.fastsurfer_dir}'s atlas; paint the map on that scan's own segmentation")
         sid = f"stat-{a.out.name}"
         rule = "all matched regions" if side["threshold"] is None else f"{a.p} < {a.alpha}"
         doc["scans"] = [s for s in doc["scans"] if s["id"] != sid] + [{
             "id": sid, "subject": ref["subject"], "modality": "Statistic", "kind": "statistic", "visit": ref.get("visit", "Imported acquisition"),
-            "path": os.path.relpath(nii, a.manifest.parent), "space": ref.get("space", f"sub-{ref['subject']}:native:{ref['id']}"), "registration": "verified",
+            "path": os.path.relpath(nii, a.manifest.parent), "space": ref.get("space", f"sub-{ref['subject']}:native:{a.reference_id}"), "registration": "verified",
             "reference_id": a.reference_id, "units": a.units, "description": side["statistic"], "metadata": side,
             "qc": "Regional statistic painted on the reference's own label grid",
             "provenance": f"pie.imaging.regionmap from a table with sha256 {side['source_sha256'][:12]}; shown: {rule}."}]

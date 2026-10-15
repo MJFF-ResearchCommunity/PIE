@@ -126,3 +126,71 @@ def test_surface_view_keeps_positive_effects_warm(tmp_path, monkeypatch):
     brains = img[:, : int(0.75 * img.shape[1]), :3]                # the four views, not the colour bar
     blue = (brains[..., 2] > brains[..., 0] + 0.3) & (brains[..., 2] > 0.5)
     assert not blue.any()
+
+
+def test_two_measures_for_one_region_are_refused_not_overwritten(tmp_path):
+    import pytest
+    p = tmp_path / "atlas.nii.gz"
+    nib.save(_atlas(), p)
+    t = pd.DataFrame({"feature": ["vol_ctx_lh_precentral", "cth_lh_precentral"], "d": [0.8, -0.3], "p": [0.01, 0.01]})
+    with pytest.raises(ValueError, match="vol_ctx_lh_precentral / cth_lh_precentral"):
+        regionmap.region_map(t, p, value="d")
+
+
+def _fs(root, affine=np.eye(4)):
+    mri = root / "mri"
+    mri.mkdir(parents=True)
+    nib.save(nib.MGHImage(np.asarray(_atlas().dataobj).astype(np.int32), affine), mri / "aparc.DKTatlas+aseg.deep.mgz")
+    nib.save(nib.MGHImage(np.ones((4, 4, 4), np.float32), affine), mri / "orig_nu.mgz")
+    return root
+
+
+def test_cli_attaches_a_map_to_a_pie_discovered_t1(tmp_path):
+    import json
+
+    from pie.imaging.viewer.catalog import Catalog
+    repo = tmp_path / "repo"
+    _fs(repo / "Imaging/derived/fastsurfer/A")
+    (repo / "Imaging/derived/sessions.csv").write_text("patno,image_id,series_desc\n1,A,T1\n")
+    pd.DataFrame({"feature": ["vol_Left_Putamen"], "z": [-2.5]}).to_csv(tmp_path / "t.csv", index=False)
+    m = tmp_path / "viewer.json"
+    m.write_text(json.dumps({"version": 1, "scans": []}))
+    regionmap.main(["--table", str(tmp_path / "t.csv"), "--value", "z", "--fastsurfer-dir", str(repo / "Imaging/derived/fastsurfer/A"),
+                    "--out", str(tmp_path / "z"), "--manifest", str(m), "--reference-id", "mri-A", "--repo", str(repo)])
+    scan = Catalog(repo, manifest=m).scans["stat-z"]
+    assert scan.subject == "1" and scan.space == "sub-1:T1:A" and scan.reference_id == "mri-A"
+
+
+def test_cli_refuses_a_reference_on_another_grid_and_leaves_the_manifest_alone(tmp_path):
+    import json
+
+    import pytest
+    _fs(tmp_path / "fs")
+    _fs(tmp_path / "other", affine=np.diag([2.0, 2.0, 2.0, 1.0]))
+    pd.DataFrame({"feature": ["vol_Left_Putamen"], "d": [0.4]}).to_csv(tmp_path / "t.csv", index=False)
+    m = tmp_path / "viewer.json"
+    before = json.dumps({"version": 1, "scans": [{"id": "t1", "subject": "s", "modality": "MRI", "path": "other/mri/orig_nu.mgz", "space": "s:T1"}]})
+    m.write_text(before)
+    with pytest.raises(SystemExit):
+        regionmap.main(["--table", str(tmp_path / "t.csv"), "--value", "d", "--fastsurfer-dir", str(tmp_path / "fs"),
+                        "--out", str(tmp_path / "x"), "--manifest", str(m), "--reference-id", "t1"])
+    assert m.read_text() == before
+
+
+def test_empty_map_figure_still_shows_the_background(tmp_path):
+    import json
+
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.image import imread
+    affine = np.diag([2.0, 2.0, 2.0, 1.0])
+    yy = np.indices((20, 20, 20))[1].astype(np.float32)
+    nib.save(nib.Nifti1Image(yy, affine), tmp_path / "bg.nii.gz")                 # a gradient: visible structure
+    nib.save(nib.Nifti1Image(np.zeros((20, 20, 20), np.float32), affine), tmp_path / "none.nii.gz")
+    (tmp_path / "none.json").write_text(json.dumps({"statistic": "d", "vmax": 0.0, "threshold": None}))
+    png = next(p for p in regionmap.figures(tmp_path / "none.nii.gz", tmp_path / "none.json", tmp_path / "bg.nii.gz", tmp_path / "f")
+               if p.suffix == ".png")
+    img = imread(png)[..., :3].mean(axis=2)
+    h, w = img.shape
+    inside = img[int(0.35 * h): int(0.7 * h), int(0.05 * w): int(0.25 * w)]       # inside the first panel, clear of labels
+    assert inside.std() > 0.05                                                      # the background shows, not a uniform dark box
