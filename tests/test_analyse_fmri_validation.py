@@ -11,7 +11,6 @@ from threadpoolctl import threadpool_limits
 spec = importlib.util.spec_from_file_location("analyse_fmri_validation", Path(__file__).resolve().parent.parent / "scripts" / "analyse_fmri_validation.py")
 fv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fv)
-FILLED = dict(fv.GATES, qcfc_median_excess=0.01, qcfc_distance_abs=0.05)     # stand-ins for the Ciric figure values
 P = 50                                                                           # permutations: enough for a test
 
 
@@ -21,29 +20,32 @@ def one_blas_thread():          # small matrices: threads only add overhead (and
         yield
 
 
-def test_dry_run_reports_every_protocol_and_leaves_unset_benchmarks_undecided(tmp_path):
+def test_dry_run_reports_every_protocol_and_decides_every_gate(tmp_path):
     res = fv.main(["--synthetic", "--out", str(tmp_path), "--n-perm", "50"])
     assert set(res["protocols"]) == {"P1_TR2.4", "P1_TR2.5", "P2_TR1", "P2_TR2.5", "P2_TR1:no_notch"}
     assert json.loads((tmp_path / "synthetic_fmri_validation.json").read_text())["gates_used"]["qcfc_pct_fdr"] == 7.0
     for p, r in res["protocols"].items():
-        assert r["gates"]["qcfc_median"] is None and r["validated"] is None          # Ciric figure values not yet copied
+        assert all(isinstance(v, bool) for v in r["gates"].values())
+        assert (r["validated"] is None) == (":" in p)                                # the no-notch variant is reported only
         assert ("reliability" in r["gates"]) == p.startswith("P2")
     assert res["biology"]["all"]["l"]["r"] > 0                                         # synthetic coupling tracks SBR
 
 
 def test_motion_artefact_fails_qcfc_and_clean_data_passes():
-    clean = fv.analyse(*fv.synthetic(n=60, motion=0.0), gates=FILLED, n_perm=P)["protocols"]
-    assert all(clean[p]["validated"] for p in ("P1_TR2.4", "P1_TR2.5", "P2_TR1", "P2_TR2.5"))
-    strong = fv.analyse(*fv.synthetic(n=60, motion=3.0), gates=FILLED, n_perm=P)["protocols"]["P2_TR1"]
+    clean = fv.analyse(*fv.synthetic(n=60, motion=0.0), n_perm=P)["protocols"]
+    gates = [clean[p]["gates"] for p in ("P1_TR2.4", "P1_TR2.5", "P2_TR1", "P2_TR2.5")]
+    assert all(g["throughput"] and g["qcfc_fdr"] for g in gates)
+    assert sum(not g[k] for g in gates for k in ("qcfc_median", "qcfc_distance")) <= 1   # null-only: ~5 % chance failures each
+    strong = fv.analyse(*fv.synthetic(n=60, motion=3.0), n_perm=P)["protocols"]["P2_TR1"]
     q = strong["qcfc"]
     assert q["percent_significant_fdr"] > 7 and q["median_excess"] > 0.1 and q["distance_dependence_r"] < -0.1
     assert strong["gates"]["qcfc_fdr"] is False and strong["gates"]["qcfc_median"] is False and strong["validated"] is False
-    moderate = fv.analyse(*fv.synthetic(n=60, motion=1.0), gates=FILLED, n_perm=P)["protocols"]["P1_TR2.4"]["gates"]
+    moderate = fv.analyse(*fv.synthetic(n=60, motion=1.0), n_perm=P)["protocols"]["P1_TR2.4"]["gates"]
     assert moderate["qcfc_fdr"] and moderate["qcfc_distance"] is False      # short-range inflation the FDR count misses
 
 
 def test_halves_without_stable_individual_connectivity_fail_reliability():
-    r = fv.analyse(*fv.synthetic(n=60, motion=0.0, stable=0.0), gates=FILLED, n_perm=P)["protocols"]
+    r = fv.analyse(*fv.synthetic(n=60, motion=0.0, stable=0.0), n_perm=P)["protocols"]
     rel = r["P2_TR1"]["reliability"]
     assert rel["families"]["fc_4S456"]["median_icc"] < 0.2 and not rel["families"]["fc_4S456"]["exported"]
     assert rel["edge_icc_median"] < 0.1 and rel["identification_accuracy"] < 0.2
@@ -52,16 +54,19 @@ def test_halves_without_stable_individual_connectivity_fail_reliability():
     assert rel["families"]["striatal"]["exported"]                  # run-step halves still agree
 
 
-def test_throughput_counts_pipeline_failures_but_not_acquisition_exclusions():
+def test_throughput_counts_pipeline_failures_but_not_acquisition_exclusions_or_motion_losses():
     scans, ts, atlas = fv.synthetic(n=60, motion=0.0)
     p = scans["protocol"].eq("P1_TR2.4")
     scans.loc[p, "exclusion"] = ""
     scans.loc[scans.index[p][:20], "exclusion"] = "no_verified_reverse_pe_pair"     # acquisition: leaves the denominator
-    ok = fv.analyse(scans, ts, atlas, gates=FILLED, n_perm=P)["protocols"]["P1_TR2.4"]["flow"]
+    ok = fv.analyse(scans, ts, atlas, n_perm=P)["protocols"]["P1_TR2.4"]["flow"]
     assert ok["throughput"] == 1.0 and ok["acquisition_excluded"] == 20
     scans.loc[scans.index[p][20:30], "exclusion"] = "fmriprep_error"                 # pipeline: counts against
-    bad = fv.analyse(scans, ts, atlas, gates=FILLED, n_perm=P)["protocols"]["P1_TR2.4"]
+    bad = fv.analyse(scans, ts, atlas, n_perm=P)["protocols"]["P1_TR2.4"]
     assert bad["flow"]["throughput"] == 30 / 40 and bad["gates"]["throughput"] is False
+    scans.loc[scans.index[p][20:30], "exclusion"] = "xcpd_min_time"                  # motion: reported apart
+    motion = fv.analyse(scans, ts, atlas, n_perm=P)["protocols"]["P1_TR2.4"]["flow"]
+    assert motion["throughput"] == 1.0 and motion["motion_excluded"] == 10 and motion["motion_loss_of_eligible"] == 10 / 40
 
 
 def test_icc31_is_consistency_and_selection_is_one_earliest_scan_per_participant_and_stratum():
@@ -80,3 +85,11 @@ def test_icc31_is_consistency_and_selection_is_one_earliest_scan_per_participant
     assert c["P2_TR2.5"] == {"eligible": 300, "selected": 100, "signatures": 2}
     assert first["signature"].value_counts().to_dict() == {"rsfmri_rl": 67, "rsfmri_rl_no_music_": 33}
     assert first["patno"].tolist() == fv.select(many)[0]["patno"].tolist()          # seeded: the same list every time
+
+
+def test_census_adds_ppmi1_scans_only(tmp_path):
+    f = tmp_path / "census.csv"
+    pd.DataFrame({"Subject ID": ["1", "2"], "Study Date": ["3/01/2014", "3/01/2023"], "Description": ["ep2d_RESTING_STATE"] * 2,
+                  "Image ID": ["I1", "I2"], "Imaging Protocol": ["TR=2400.0", "TR=1000.0"]}).to_csv(f, index=False)
+    c = fv._census(f)
+    assert c["patno"].tolist() == [1] and c["tr"].tolist() == [2.4]

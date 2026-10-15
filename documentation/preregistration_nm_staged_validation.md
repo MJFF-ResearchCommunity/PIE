@@ -4,7 +4,8 @@
 split-half slabs were being written when it was committed, and no measure had been computed on them) **and RUN the same
 day: technical gate passed, primary `nms_sn_mean_cr`.** **Stage 2b FROZEN 2026-10-12**, before its prodromal slabs were
 built, **and RUN the same day: passed (AUROC 0.693 [0.625, 0.758]).** Stages 2a, 2c and 3 are DRAFTS until their data
-are downloaded; each is frozen, with its script hash, before its data are opened.
+are downloaded; each is frozen, with its script hash, before its data are opened. **Amendment 1 FROZEN 2026-10-15**
+(Stage 3 and Stage 2b-R, `scripts/nm_stage3.py`), before either download was opened. Stages 2a and 2c stay drafts.
 
 ## Why staged
 
@@ -157,7 +158,8 @@ PPMI's metadata lists NM for 41 HC and 411 de novo PD (NM at BL/SC) that no PIE 
 `~/pie_validation/20261012_nm_staged/`, not in the repository). Only 10 of these HC and 75 of these PD have a
 processed T1 in PIE, so their T1s are downloaded with them.
 
-- **Measure:** the Stage 1 primary measure, unchanged. Script: `scripts/nm_staged.py fresh-clinical` (draft).
+- **Measure:** the Stage 1 primary measure, unchanged. Script: `scripts/nm_stage3.py fresh-clinical` (Amendment 1;
+  it replaces `nm_staged.py fresh-clinical`, which coded only half the pass rule).
 - **Statistic:** AUROC (HC > de novo PD) stratified by vendor (pairs compared only within a vendor, pooled), with a
   stratified bootstrap 95 % CI; Siemens-only AUROC as a secondary.
 - **Pass rule (decided 13 Oct 2026, before any Stage 3 data were downloaded):** both of these must hold.
@@ -178,7 +180,7 @@ processed T1 in PIE, so their T1s are downloaded with them.
 - **What `NM_VALIDATED` would mean:** technically reliable (Stage 1), biologically plausible (Stage 2a), and above
   chance out of sample (Stage 3), for the stated context of use. It would not mean diagnostic accuracy.
 
-## Amendment 1 (DRAFT, 15 Oct 2026; to be frozen, with the script hash, before either download is opened)
+## Amendment 1 (FROZEN 2026-10-15, before either download was opened)
 
 Written before any Stage 3 or Stage 2b-R data were downloaded. Nothing below uses an outcome.
 
@@ -204,6 +206,13 @@ Written before any Stage 3 or Stage 2b-R data were downloaded. Nothing below use
 
 **Considered and not added: ComBat on the primary.** The primary statistic already compares pairs only within vendor. ComBat on a two-group test would either remove group signal (diagnosis not protected) or let the label into the harmonisation (diagnosis protected).
 
-**Script.** `scripts/nm_stage3.py` (`fresh-clinical`, `prodromal-fresh`, `--synthetic`), tests in `tests/test_nm_stage3.py`. Synthetic dry run only so far.
+**Script.** `scripts/nm_stage3.py` (`fresh-clinical`, `prodromal-fresh`, `--synthetic`), tests in `tests/test_nm_stage3.py`. Synthetic dry run only before the freeze.
+
+**Freeze record (15 Oct 2026).** No Stage 3 or Stage 2b-R image had been downloaded. sha256:
+- `scripts/nm_stage3.py` `688bb8bebdf0821418a44d36cdc32aab1bd99693327a324e44526e7380269a1c`;
+- `scripts/nm_staged.py` `3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f` (byte-identical to its 12 Oct freeze);
+- the lists, outside the repository (`~/pie_validation/20261012_nm_staged/`): HC `loni_nm_hc_unheld_patnos.txt` `95cd70cb3393f560dc427d4520340f6d31aa50d77b3ecac602b34bbc52ffbb11`;
+  de novo PD `loni_nm_pd_denovo_unheld_patnos.txt` `f1ef14fbf6bfa08cb23c68f2d2ceefbb7e6352d098b3c535b7b2ee041ce094a9`; prodromal `loni_nm_prodromal_fresh400_patnos.txt`
+  `37e775dfb299f3cf24d78c486033ab688ed42f27c169fdca94327680554c0afe`; exclusion `nm_used_before_20261015_patnos.txt` `7226a015917494d06a5f7e48954fa449caed9addca8b722e49bd72e3916c75ee`.
 
 **What `NM_VALIDATED` would mean: unchanged** (Stage 1, Stage 2a, Stage 3). Stage 2b-R is supporting biological evidence.

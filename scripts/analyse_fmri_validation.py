@@ -1,5 +1,5 @@
 """Pre-registered rs-fMRI validation (documentation/preregistration_fmri.md), per protocol: end-to-end throughput,
-motion (QC-FC on 4S456 against Ciric et al. 2017), split-half reliability (PPMI 2.0) and, reported only, posterior
+motion (QC-FC on 4S456: Ciric et al. 2017's FDR bar, and median and distance dependence against a permutation null), split-half reliability (PPMI 2.0) and, reported only, posterior
 putamen-SomMot coupling against the same side's post-commissural putamen DaT SBR.
 
     select    <out>/fmri_selection.csv: up to 100 scans per protocol, one per participant (earliest), stratified by the
@@ -23,18 +23,17 @@ from pie.imaging.fmri_connectivity import network_means, qc_fc
 SEED, N_PER_PROTOCOL, N_PERM = 20261015, 100, 1000
 PPMI2_FROM = "2020-07-01"     # PPMI MRI metadata: protocol 001 rs-fMRI up to 2020 Q1, protocol 002 from 2020 Q4
 RS = r"rs.?fmri|resting|bold"
-# The median and distance criteria are judged against a permutation null (mean FD shuffled across scans): at N 100 the
-# median |QC-FC| of a motion-free pipeline moves by several hundredths with the dependence between edges, so a fixed
-# threshold would fail clean data by chance. A protocol fails only when it is worse than Ciric's value beyond the null's
-# 95th percentile.
-GATES = {"throughput": 0.80,            # feature rows / (selected - acquisition-driven exclusions)
+# The median and distance criteria are judged against a permutation null only (mean FD shuffled across scans; Ciric's
+# values exist only in his figures): a protocol fails when its statistic exceeds the null's 95th percentile, i.e. a
+# motion-connectivity association detectable at this N. At N 100 the median |QC-FC| of a motion-free pipeline moves by
+# several hundredths with the dependence between edges, so a fixed threshold would fail clean data by chance.
+GATES = {"throughput": 0.80,            # feature rows / (selected - acquisition exclusions - motion losses)
          "qcfc_pct_fdr": 7.0,           # Ciric 2017 Results: 36P + any censoring left < 7 % of edges FDR-significant
-         "qcfc_median_excess": None,    # Ciric 2017 Fig. 3A, 36P+scrub, minus the null median at N 393 (0.034): TO COPY
-         "qcfc_distance_abs": None,     # Ciric 2017 Fig. 4A, 36P+scrub, |r| of QC-FC with distance: TO COPY
-         "icc_network": 0.40}           # proposed: median ICC(3,1) of the 4S456 network-pair features, PPMI 2.0 strata
+         "icc_network": 0.40}           # median ICC(3,1) of the 4S456 network-pair features, PPMI 2.0 strata
 ICC_FAMILY_MIN = 0.40                   # a feature family below this median split-half ICC is not exported (per protocol)
-COVERAGE_MAX_NAN = 0.10                 # proposed: > 10 % of 4S456 parcels blanked by XCP-D = a coverage failure
+COVERAGE_MAX_NAN = 0.10                 # > 10 % of 4S456 parcels blanked by XCP-D = a coverage failure
 ACQUISITION = {"no_verified_reverse_pe_pair", "too_few_volumes", "header_tr_outside_stratum", "no_t1"}
+MOTION = {"xcpd_min_time"}              # < 300 s retained after censoring: reported apart, outside the throughput denominator
 FD, RMS, RETAINED = "fmri_xcpd_qc_mean_fd", "fmri_xcpd_qc_mean_relative_rms", "fmri_xcpd_qc_retained_seconds"
 COUPLING = {s: f"fmri_xcpd_striatal_putamen_posterior_{s}__SomMot" for s in "lr"}
 SBR = {s: f"sbr_post_putamen_{s}" for s in "lr"}
@@ -81,11 +80,13 @@ def select(series, n=N_PER_PROTOCOL):
 
 
 def _census(path):
-    """LONI search export: Subject ID, Study Date, Description, Image ID, Imaging Protocol (TR in ms)."""
+    """LONI search export: Subject ID, Study Date, Description, Image ID, Imaging Protocol (TR in ms). PPMI-1 rows only:
+    PPMI 2.0 is drawn from the held zips, so census rows cannot change that draw."""
     c = pd.read_csv(path, dtype=str)
     tr = c["Imaging Protocol"].fillna("").str.extract(r"(?:^|;)TR=([0-9.]+)")[0].astype(float) / 1000
-    return pd.DataFrame({"patno": pd.to_numeric(c["Subject ID"], errors="coerce"), "date": c["Study Date"],
-                         "desc": c["Description"].fillna(""), "image_id": c["Image ID"], "tr": tr}).dropna(subset=["patno"])
+    d = pd.DataFrame({"patno": pd.to_numeric(c["Subject ID"], errors="coerce"), "date": c["Study Date"],
+                      "desc": c["Description"].fillna(""), "image_id": c["Image ID"], "tr": tr}).dropna(subset=["patno"])
+    return d[pd.to_datetime(d["date"], errors="coerce") < PPMI2_FROM]
 
 
 # ---------------------------------------------------------------- statistics
@@ -125,10 +126,13 @@ def _identification(e1, e2):
 def _flow(g):
     reasons = g.loc[g["exclusion"].ne(""), "exclusion"].value_counts().to_dict()
     acq = sum(v for k, v in reasons.items() if k in ACQUISITION)
+    motion = sum(v for k, v in reasons.items() if k in MOTION)
     rows = int(g["exclusion"].eq("").sum())
     eligible = len(g) - acq
-    return {"selected": len(g), "feature_rows": rows, "acquisition_excluded": int(acq), "by_reason": reasons,
-            "throughput": rows / eligible if eligible else None, "throughput_of_selected": rows / len(g) if len(g) else None,
+    return {"selected": len(g), "feature_rows": rows, "acquisition_excluded": int(acq), "motion_excluded": int(motion),
+            "by_reason": reasons, "throughput": rows / (eligible - motion) if eligible > motion else None,
+            "motion_loss_of_eligible": motion / eligible if eligible else None,
+            "throughput_of_eligible": rows / eligible if eligible else None, "throughput_of_selected": rows / len(g) if len(g) else None,
             "retained_seconds_median": float(g.loc[g["exclusion"].eq(""), RETAINED].median())}
 
 
@@ -205,13 +209,10 @@ def analyse(scans, ts, atlas, gates=GATES, n_perm=N_PERM):
         r = {"flow": _flow(g), "qcfc": _qcfc(ok, edges, atlas[base]["centroids"], n_perm)}
         r["reliability"] = _reliability(ok, ts, atlas[base])
         q, thr = r["qcfc"], r["flow"]["throughput"]
-        chance_median = q["null_p95_median_abs_qcfc"] - q["null_median_abs_qcfc"]
         gate = {"throughput": thr is not None and thr >= gates["throughput"],
                 "qcfc_fdr": q["percent_significant_fdr"] < gates["qcfc_pct_fdr"],
-                "qcfc_median": None if gates["qcfc_median_excess"] is None
-                else q["median_excess"] <= gates["qcfc_median_excess"] + chance_median,
-                "qcfc_distance": None if gates["qcfc_distance_abs"] is None
-                else abs(q["distance_dependence_r"]) <= gates["qcfc_distance_abs"] + q["null_p95_abs_distance_r"]}
+                "qcfc_median": q["median_abs_qcfc"] <= q["null_p95_median_abs_qcfc"],
+                "qcfc_distance": abs(q["distance_dependence_r"]) <= q["null_p95_abs_distance_r"]}
         if base.startswith("P2"):
             gate["reliability"] = r["reliability"]["families"]["fc_4S456"]["median_icc"] >= gates["icc_network"]
         r["gates"] = gate
@@ -343,8 +344,8 @@ def main(argv=None):
             print(f"{p}: {r['flow']['feature_rows']} feature rows of {r['flow']['selected']} -> {r['validated']}")
             continue
         f, q, rel = r["flow"], r["qcfc"], r["reliability"]
-        print(f"{'synthetic dry run: ' if a.synthetic else ''}{p}: throughput {f['feature_rows']}/{f['selected'] - f['acquisition_excluded']}"
-              f" ({np.nan if f['throughput'] is None else f['throughput']:.2f}); QC-FC FDR {q['percent_significant_fdr']:.1f} %, median |r| {q['median_abs_qcfc']:.3f}"
+        print(f"{'synthetic dry run: ' if a.synthetic else ''}{p}: throughput {f['feature_rows']}/{f['selected'] - f['acquisition_excluded'] - f['motion_excluded']}"
+              f" ({np.nan if f['throughput'] is None else f['throughput']:.2f}; motion losses {f['motion_excluded']}); QC-FC FDR {q['percent_significant_fdr']:.1f} %, median |r| {q['median_abs_qcfc']:.3f}"
               f" (null {q['null_median_abs_qcfc']:.3f}, p95 {q['null_p95_median_abs_qcfc']:.3f}), distance r {q['distance_dependence_r']:.2f}; 4S456 network ICC"
               f" {rel['families']['fc_4S456']['median_icc']:.2f}, edge ICC {rel['edge_icc_median']:.2f}, identification"
               f" {rel['identification_accuracy']:.2f}; gates {r['gates']} -> {r['validated']}")

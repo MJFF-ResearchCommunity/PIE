@@ -1,7 +1,7 @@
 # Pre-registration: cortical thickness from FastSurfer surfaces (against PPMI's FreeSurfer 7, same-day repeats, age) and the T1 QC flag against MRIQC
 
-**Status: DRAFT, 15 Oct 2026. Not frozen.** It is to be frozen, with the script's sha256, before `select` runs. At the
-draft no PIE surface exists: none of the FastSurfer subjects has `stats/lh.aparc.stats` (checked 15 Oct). The counts
+**Status: FROZEN 2026-10-15**, before `select` ran (script sha256 in the [run log](#run-log)). The thresholds below are
+the ones approved at the freeze (agreement 0.75, repeatability 0.85, about 470 scans). At the freeze no PIE surface exists: none of the FastSurfer subjects has `stats/lh.aparc.stats` (checked 15 Oct). The counts
 below come from identifiers, dates, cohort labels and the presence of table rows only; no thickness value was read.
 
 ## Why
@@ -60,9 +60,9 @@ The test uses only these scans, about 470 in all. The other baseline scans run l
 
 | # | Layer | Statistic | Threshold | Source |
 |---|---|---|---|---|
-| 1 | Agreement with PPMI | Median over the 68 regions of Lin's CCC (PIE against FS7), all analysed baseline scans; 2,000-resample scan bootstrap CI | **≥ 0.75** | **Proposed** (lowered from 0.80 on 15 Oct, before any thickness value). PIE's subcortical volumes reached a median CCC of 0.87 against the same release (validation.md). Thickness agrees less well across FreeSurfer versions than volumes do: v7.1 thickness was the least compatible with v6.0/5.3, with cingulate ICC 0.37–0.61 (Haddad et al. 2023, Hum Brain Mapp, PMC9921222). Here the segmentation engine and the FreeSurfer version both differ, and possibly the series, so the bar sits below the volumes' 0.87 |
-| 2 | Repeatability | Median over the 68 regions of ICC(2,1) across the same-day pairs (both scans with surfaces); 2,000-resample pair bootstrap CI | **≥ 0.85** | **Proposed** (lowered from 0.90 on 15 Oct, before any thickness value: 0.90 sat at the best published value and would fail a pipeline as reliable as FastSurfer's published one about a third of the time). FastSurfer test-retest thickness ICC: mean 0.92, lowest region 0.78, against FreeSurfer's 0.87 (OASIS-1, 20 participants; Henschel et al. 2020, NeuroImage 219:117012). FreeSurfer DK thickness on visually approved scans: 0.81 (Iscan et al. 2015, Hum Brain Mapp 36:3472). The bar is FreeSurfer's published level. PPMI's repeats are within one session, which favours it |
-| 3 | Age (biological) | In HC, Pearson r between age and mean cortical thickness residualised for sex and scanner batch (vendor × field strength, fitted in HC) | **r ≤ −0.30 and 95 % CI upper bound < 0** (Fisher z) | **Proposed.** Thinning with age is consistent across the cortex and across samples (Salat et al. 2004, Cereb Cortex 14:721; Fjell et al. 2009, Cereb Cortex 19:2001, 883 participants in six samples). No primary source giving r for a healthy 30–85-year sample was found, so the bar is the one used for the Ch4 test. PPMI's own FS7 mean thickness in the same HC is reported beside it as the reference r |
+| 1 | Agreement with PPMI | Median over the 68 regions of Lin's CCC (PIE against FS7), all analysed baseline scans; 2,000-resample scan bootstrap CI | **≥ 0.75** | Fixed at the freeze (lowered from 0.80 on 15 Oct, before any thickness value). PIE's subcortical volumes reached a median CCC of 0.87 against the same release (validation.md). Thickness agrees less well across FreeSurfer versions than volumes do: v7.1 thickness was the least compatible with v6.0/5.3, with cingulate ICC 0.37–0.61 (Haddad et al. 2023, Hum Brain Mapp, PMC9921222). Here the segmentation engine and the FreeSurfer version both differ, and possibly the series, so the bar sits below the volumes' 0.87 |
+| 2 | Repeatability | Median over the 68 regions of ICC(2,1) across the same-day pairs (both scans with surfaces); 2,000-resample pair bootstrap CI | **≥ 0.85** | Fixed at the freeze (lowered from 0.90 on 15 Oct, before any thickness value: 0.90 sat at the best published value and would fail a pipeline as reliable as FastSurfer's published one about a third of the time). FastSurfer test-retest thickness ICC: mean 0.92, lowest region 0.78, against FreeSurfer's 0.87 (OASIS-1, 20 participants; Henschel et al. 2020, NeuroImage 219:117012). FreeSurfer DK thickness on visually approved scans: 0.81 (Iscan et al. 2015, Hum Brain Mapp 36:3472). The bar is FreeSurfer's published level. PPMI's repeats are within one session, which favours it |
+| 3 | Age (biological) | In HC, Pearson r between age and mean cortical thickness residualised for sex and scanner batch (vendor × field strength, fitted in HC) | **r ≤ −0.30 and 95 % CI upper bound < 0** (Fisher z) | Fixed at the freeze. Thinning with age is consistent across the cortex and across samples (Salat et al. 2004, Cereb Cortex 14:721; Fjell et al. 2009, Cereb Cortex 19:2001, 883 participants in six samples). No primary source giving r for a healthy 30–85-year sample was found, so the bar is the one used for the Ch4 test. PPMI's own FS7 mean thickness in the same HC is reported beside it as the reference r |
 
 **Power:**
 - **Gate 3** (n = 165, normal approximation). P(pass) is 0.25, 0.50, 0.76, 0.93 and 1.00 at true r −0.25, −0.30, −0.35, −0.40 and −0.50.
@@ -165,7 +165,7 @@ PYTHONPATH=. venv_imaging/bin/python $S analyse --out $O         # -> $O/t1_surf
   - a flat age effect fails only the age gate;
   - the vectorised CCC matches `pie.stats.agreement.ccc`;
   - the MRIQC orientation recovers flagged scans.
-- sha256 at the freeze: `analyse_t1_surfaces.py` _to be recorded_. The sample rules are imported unchanged from the frozen `ch4_cat12_validation.py` (sha256 in its pre-registration).
+- sha256 at the freeze: in the run log. The sample rules are imported unchanged from the frozen `ch4_cat12_validation.py` (sha256 in its pre-registration).
 - Synthetic dry run only before the freeze. Run once; every number reported.
 
 ## Run log
@@ -173,3 +173,4 @@ PYTHONPATH=. venv_imaging/bin/python $S analyse --out $O         # -> $O/t1_surf
 | Date | Step | What happened (aggregates only) |
 |---|---|---|
 | 2026-10-15 | Draft | Script, test and synthetic dry run (median CCC 0.90, same-day ICC 0.94, HC age r −0.42, all on fake data). Counts above from identifiers and labels |
+| 2026-10-15 | **Frozen** | Gates as above, approved. sha256: `analyse_t1_surfaces.py` `6b222ef6cbcad7ace78f59460193866a11763261b029cdc0e34996851672040b`; `fastsurfer.py` `fb5fb32af9006426934a097d414e90d2fa04182edef42878123654fad76ace07`. No thickness value exists |

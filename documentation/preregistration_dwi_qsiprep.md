@@ -1,8 +1,8 @@
 # Pre-registration: posterior-SN free water from PIE's preprocessing against QSIPrep 26.0.0 (technical agreement)
 
-**Status: DRAFT, 15 Oct 2026. Not frozen.** It is to be frozen, with the script's sha256, before `select` runs and before
-any QSIPrep output exists for a PPMI session. At the draft, no QSIPrep or QSIRecon container has been run on PPMI data
-and no `dwiq*` value exists. The code change listed under **Required before freezing** landed on 15 Oct.
+**Status: FROZEN 2026-10-15**, before `select` ran and before any QSIPrep output existed for a PPMI session (hashes in
+the [run log](#run-log)). At the freeze, no QSIPrep or QSIRecon container has been run on PPMI data and no `dwiq*` value
+exists. The code change listed under **Required before freezing** landed on 15 Oct, before the freeze.
 
 ## Why
 
@@ -96,7 +96,7 @@ over sessions where both free-water QCs pass and both runs used the same FastSur
 
 | Gate | Statistic | Threshold | Source |
 |---|---|---|---|
-| Agreement (`QSIPREP_AGREEMENT`) | ICC(2,1) point estimate, primary pair | **≥ 0.75** | **Proposed.** The lower edge of "good" reliability (0.75–0.90; Koo & Li 2016, J Chiropr Med 15:155). It is the same bar as the Ch4 same-day gate ([preregistration_ch4_cat12.md](preregistration_ch4_cat12.md)). No published agreement value for nigral free water between preprocessing pipelines was found |
+| Agreement (`QSIPREP_AGREEMENT`) | ICC(2,1) point estimate, primary pair | **≥ 0.75** | Fixed at the freeze. The lower edge of "good" reliability (0.75–0.90; Koo & Li 2016, J Chiropr Med 15:155). It is the same bar as the Ch4 same-day gate ([preregistration_ch4_cat12.md](preregistration_ch4_cat12.md)). No published agreement value for nigral free water between preprocessing pipelines was found |
 
 **Power** (simulation on synthetic pairs, n = 40; "true ICC" is the consistency ICC; a systematic bias of 0.3
 between-session SD lowers absolute agreement):
@@ -168,7 +168,7 @@ after values were seen is labelled as such, and the frozen analysis is reported 
 S=scripts/analyse_dwi_qsiprep_agreement.py; T=<derived>/dwi_fw/dwi_features.csv; O=<out>; Q=<derived>/qsiprep
 PYTHONPATH=. venv_imaging/bin/python $S select --tables $T --out $O          # -> $O/qsiprep_order.csv (identifiers stay in $O)
 M="venv_imaging/bin/python -m pie.imaging.dwi_qsiprep"                       # export, run, compare per imaging_dwi.md, in draw order
-$M compare --qsiprep-dir $Q/out --sessions <derived>/sessions.csv --fastsurfer-dir <derived>/fastsurfer --work-dir $Q
+$M compare --qsiprep-dir $Q/out --sessions <derived>/sessions.csv --fastsurfer-dir <derived>/fastsurfer --work-dir $Q --pie-features $T
 PYTHONPATH=. venv_imaging/bin/python $S analyse --tables $T --dwiq $Q/dwiq_features.csv --out $O
 ```
 
@@ -179,7 +179,7 @@ PYTHONPATH=. venv_imaging/bin/python $S analyse --tables $T --dwiq $Q/dwiq_featu
   - the draw is seeded and stratified;
   - a short tier is made up from the other;
   - technical failures are replaced in order.
-- sha256 at the freeze: `analyse_dwi_qsiprep_agreement.py` _to be recorded_; `dwi_qsiprep.py` _to be recorded_ (after the change above).
+- sha256 at the freeze: in the run log. `--pie-features` pins each session's T1 to PIE's row, as the change above requires.
 - Synthetic dry run only before the freeze. Run once; every number reported.
 
 ## Run log
@@ -187,3 +187,4 @@ PYTHONPATH=. venv_imaging/bin/python $S analyse --tables $T --dwiq $Q/dwiq_featu
 | Date | Step | What happened (aggregates only) |
 |---|---|---|
 | 2026-10-15 | Draft | Script, test and synthetic dry run (ICC 0.80 on fake data). No PPMI value read |
+| 2026-10-15 | **Frozen** | Gate as above, approved. The `compare` command above gained `--pie-features $T` at the freeze (the documented T1 pinning; it was missing from the command). sha256: `analyse_dwi_qsiprep_agreement.py` `b01b46d688bbc1e364ff460e69f0ea6be32e78a179a23ab13a25a43533338f33`; `dwi_qsiprep.py` `1b21f1abf38093f01db808975c3598f2fdd0b136ebe4bd30a1309b12aa4c8081` |

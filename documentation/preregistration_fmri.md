@@ -1,8 +1,9 @@
 # Pre-registration: resting-state fMRI pipeline validation on PPMI (throughput, motion, reliability)
 
-**Status: DRAFT 2026-10-15.** Not frozen. No scan in the sample has been run through the pipeline under test.
-Freezing needs the items in [Before freezing](#before-freezing) to be closed. The commit that marks it frozen
-becomes the frozen code.
+**Status: FROZEN 2026-10-15**, before any scan in the sample was run through the pipeline under test and before the
+PPMI-1 census or download. Decisions at the freeze, and what is still to be written before the run, are listed in
+[At the freeze](#at-the-freeze). The commit that changes this line is the frozen analysis code; hashes are in the
+[run log](#run-log).
 
 ## Why
 
@@ -43,9 +44,9 @@ effect would neither validate nor fail the pipeline. Known biology is reported, 
     median absolute-agreement ICC 0.583 (features 0.51–0.62). By vendor: Siemens 0.595, GE 0.509, Philips 0.459.
   - Study 1 also related these scans' connectivity to SAA status (primary, GSR and DaTscan-matched experiments).
 - **Thresholds were set after those results.** The ICC < 0.4 export rule (`fmriprep.md` §5e, 11 Oct) and the 0.40
-  reliability gate proposed below both came after Study 1's ICC. The 0.40 cut is Cicchetti's (1994) conventional
+  reliability gate below both came after Study 1's ICC. The 0.40 cut is Cicchetti's (1994) conventional
   bound for "poor" agreement, not a value fitted to Study 1.
-- **Overlap with this sample.** The draw drafted on 15 Oct (rule below) is the list that freezing would produce:
+- **Overlap with this sample.** The draw run on 15 Oct under the rule below (seeded, so the run reproduces it):
   | Stratum | Drawn | In Study 1's fMRI table | In Study 1's QC-FC / half-ICC set |
   |---|---|---|---|
   | P2_TR1 | 100 | 88 | 43 |
@@ -56,8 +57,8 @@ effect would neither validate nor fail the pipeline. Known biology is reported, 
     because inclusion there was a QC outcome.
   - Drawing outside Study 1's whole table leaves only 45 eligible P2_TR1 participants.
 - **PPMI-1 scans have not been seen.** No PPMI-1 rs-fMRI has been downloaded or processed, by PIE or by Study 1.
-- **No posterior putamen–SomMot vs DaT SBR association** is known to have been computed on any of these scans. *(To
-  be confirmed by the user before freezing.)*
+- **No posterior putamen–SomMot vs DaT SBR association** is known to have been computed on any of these scans.
+  Checked 15 Oct: no Study 1 document (`study1_virtual_biomarkers/*.md` and its fMRI folder) mentions SomMot.
 - **XCP-D has not run on PPMI data.** It has run only on a synthetic output tree.
 
 ## Pipeline under test (code at the freeze commit)
@@ -87,9 +88,9 @@ effect would neither validate nor fail the pipeline. Known biology is reported, 
 | P1_TR2.4 | PPMI-1 (before 1 Jul 2020) | 2.4 s | — | LONI download, not yet made |
 | P1_TR2.5 | PPMI-1 | 2.5 s | — | LONI download, not yet made |
 | P2_TR1 | PPMI 2.0 (from 1 Jul 2020) | ≈ 1 s (1.0–1.103), multiband | rsfMRI AP / PA | held zips |
-| P2_TR2.5 | PPMI 2.0 | 2.5 s (2.50–2.54), single-band | rsfMRI RL / LR, ep2d, BOLD_RS | held zips. **Proposed addition** |
+| P2_TR2.5 | PPMI 2.0 | 2.5 s (2.50–2.54), single-band | rsfMRI RL / LR, ep2d, BOLD_RS | held zips. Added at the freeze |
 
-**Why a fourth stratum (decision for the user).** The plan assumed PPMI 2.0 means TR 1 s. It does not:
+**Why a fourth stratum (kept at the freeze).** The plan assumed PPMI 2.0 means TR 1 s. It does not:
 - LONI's search export for the first held zip (408 participants, 9 Sep 2026) gives TR ≈ 1 s only for the AP/PA series
   (Siemens 1.0 and 1.03 s, GE 1.0 s, Philips 1.103 s; 2 Siemens series at 2.5 s).
 - The RL/LR series run at TR 2.5 s on all three vendors.
@@ -145,7 +146,7 @@ at the freeze; only counts go in this document.
 - PPMI-1 is drawn from a fresh LONI fMRI census (Modality fMRI, with the Imaging Protocol column for TR). Exactly the
   drawn scans are then downloaded.
 
-**Draft draw (15 Oct, held zips, this rule):**
+**PPMI 2.0 draw (15 Oct, held zips, this rule):**
 
 | Stratum | Eligible | Naming signatures | Drawn |
 |---|---|---|---|
@@ -166,14 +167,19 @@ met).
 | `conversion_error` | pipeline | Conversion or temporal assembly raised. |
 | `fmriprep_error` | pipeline | fMRIPrep exited non-zero or wrote no report. |
 | `xcpd_error` | pipeline | XCP-D exited non-zero. |
-| `xcpd_min_time` | pipeline | Under 300 s retained after censoring: XCP-D wrote no BOLD. |
+| `xcpd_min_time` | motion | Under 300 s retained after censoring: XCP-D wrote no BOLD. |
 | `visual_review_fail` | pipeline | fMRIPrep/XCP-D report review failed: distortion correction, registration or coverage. The reviewer sees only the reports. |
-| `coverage` | pipeline | More than 10 % of 4S456 parcels (over 45) blanked by XCP-D for coverage. *(Proposed threshold.)* |
+| `coverage` | pipeline | More than 10 % of 4S456 parcels (over 45) blanked by XCP-D for coverage. |
 
 **Acquisition exclusions** are counted and reported by reason, and leave the throughput denominator.
 
-**Pipeline failures count against throughput.** That includes `xcpd_min_time`. Making motion-affected scans usable
-is part of the pipeline's job: at TR 1 s it is exactly what the notch filter is for.
+**Motion losses (`xcpd_min_time`) are reported separately** and also leave the throughput denominator: their count
+and their share of acquisition-eligible scans, per stratum, beside throughput. Decided at the freeze (15 Oct): too
+little retained time reflects how much participants moved more than what the pipeline did. Study 1 lost 44 % of
+scans to its retained-time rule under stricter censoring. Whether the notch filter restores retained time at TR 1 s
+is reported by the no-notch variant below.
+
+**Pipeline failures count against throughput.**
 
 A feature row without age or sex leaves QC-FC only, and is counted.
 
@@ -183,11 +189,11 @@ A protocol can pass while another fails. All values below are fixed at the freez
 
 | Gate | Statistic | Pass | Source of the threshold | Status |
 |---|---|---|---|---|
-| **1. Throughput** | feature rows / (selected − acquisition exclusions) | **≥ 0.80** | PIE plan (`fmriprep.md` §5e; roadmap WS-D) | as planned |
-| **2a. Motion: QC-FC edges** | % of 4S456 edges with FDR-significant QC-FC (Benjamini–Hochberg, q 0.05) | **< 7 %** | Ciric et al. 2017, Results (verified, below) | verified |
-| **2b. Motion: median QC-FC** | median \|QC-FC\| minus its permutation-null median | **≤ (Ciric 36P+scrub median \|QC-FC\| − 0.034) + (null 95th percentile − null median)** | Ciric 2017 **Fig. 3A** | **number to be copied from Ciric 2017 Fig. 3A before freezing** |
-| **2c. Motion: distance dependence** | \|Pearson r\| of QC-FC with inter-parcel distance | **≤ \|Ciric 36P+scrub value\| + null 95th percentile of \|r\|** | Ciric 2017 **Fig. 4A** | **number to be copied from Ciric 2017 Fig. 4A before freezing** |
-| **3. Reliability** (PPMI 2.0 strata only) | median split-half ICC(3,1) over the 4S456 network-pair features | **≥ 0.40** | Cicchetti 1994 "poor" bound; see disclosure | **proposal** |
+| **1. Throughput** | feature rows / (selected − acquisition exclusions − motion losses) | **≥ 0.80** | PIE plan (`fmriprep.md` §5e; roadmap WS-D) | fixed |
+| **2a. Motion: QC-FC edges** | % of 4S456 edges with FDR-significant QC-FC (Benjamini–Hochberg, q 0.05) | **< 7 %** | Ciric et al. 2017, Results (verified, below) | fixed |
+| **2b. Motion: median QC-FC** | median \|QC-FC\| | **≤ the 95th percentile of its permutation null** | Permutation null (Ciric's value is figure-only; below) | fixed |
+| **2c. Motion: distance dependence** | \|Pearson r\| of QC-FC with inter-parcel distance | **≤ the 95th percentile of its permutation null's \|r\|** | Permutation null (Ciric's value is figure-only; below) | fixed |
+| **3. Reliability** (PPMI 2.0 strata only) | median split-half ICC(3,1) over the 4S456 network-pair features | **≥ 0.40** | Cicchetti 1994 "poor" bound; see disclosure | fixed |
 
 **QC-FC** follows `fmri_connectivity.qc_fc`:
 - Across a protocol's feature rows, the partial correlation of each 4S456 edge (XCP-D's Pearson matrix, Fisher z)
@@ -204,13 +210,10 @@ manuscript PMC5483393, read 15 Oct 2026):
   additional benefit, reducing the number of edges that were significantly related to motion to less than 7%."
   Also: "The top-performing method, GSR+spike regression, yielded < 1% of edges".
 - **Figure-only values.** The median |QC-FC| and the distance dependence of each model are given only in Figs. 3 and
-  4. The figures could not be retrieved programmatically, so gates 2b and 2c carry placeholders until the numbers are
-  read off them.
-- **Which bar.** The 36P+scrub bar of the 264-node panel (A) is the comparator. Its censoring (FD > 0.2 mm,
-  retained stretches under 5 frames censored, frames excised) is the closest to XCP-D's (FD > 0.3 mm,
-  `--censor-between 4`, censored output).
-- **2b's correction.** 0.034 is the median |r| expected with no motion effect at Ciric's N: dof 389, t₀.₇₅ /
-  √(dof + t₀.₇₅²). Gate 2b therefore compares excess over chance with excess over chance.
+  4, and could not be retrieved. Gates 2b and 2c therefore do not use Ciric's values (decided at the freeze, 15 Oct).
+  Ciric's 36P+scrub model (FD > 0.2 mm, retained stretches under 5 frames censored, frames excised) remains the
+  closest published comparator to XCP-D's censoring (FD > 0.3 mm, `--censor-between 4`, censored output); gate 2a
+  uses its verified Results value.
 
 **Why a permutation null.** At N ≈ 100 the median |QC-FC| of a motion-free pipeline is not a fixed number:
 - It is centred near 0.068 (Ciric's 393 scans: 0.034).
@@ -219,15 +222,16 @@ manuscript PMC5483393, read 15 Oct 2026):
 - A fixed threshold would fail clean pipelines by chance.
 
 The null is built from mean FD permuted across the protocol's scans: 1,000 permutations, seed 20261015, covariates
-staying with their scans. A protocol fails 2b or 2c only when it is worse than Ciric's value by more than that null's
-95th percentile. This puts the burden on failure. It is deliberately lenient at N = 100, and the protocols' N is
-reported beside each statistic.
+staying with their scans. A protocol fails 2b or 2c when its statistic exceeds that null's 95th percentile: a
+motion–connectivity association detectable at this N (one-sided α 0.05). A clean pipeline fails each by chance about
+5 % of the time, so up to about 10 % of clean protocols fail 2b or 2c. At N ≈ 100 only a moderate artefact is
+detectable, and the protocols' N is reported beside each statistic.
 
 **Gate 2a is lenient at N = 100**, because fewer edges reach FDR significance than at N = 393 for the same artefact.
 Gates 2b and 2c carry most of the weight. In synthetic data, a moderate short-range artefact passed 2a with 0 % of
 edges and failed 2c.
 
-**Gate 3 (proposal) and the export rule.**
+**Gate 3 and the export rule.**
 - **Split:** each scan's retained (censored) frames, from XCP-D's `stat-mean_timeseries.tsv`, into first and second
   halves in time order.
 - **Per half:** Pearson, Fisher z, and network-pair means with XCP-D's grouping (`network_label`, else `atlas_name`),
@@ -252,9 +256,10 @@ strata only; it is computed for PPMI-1 and reported.
 ### What `FMRI_VALIDATED[protocol]` means
 
 **It means**, for that protocol's PPMI scans processed by the pinned pipeline above:
-- at least 80 % of acquisition-eligible scans become a feature row;
-- residual motion–connectivity association is no worse than the published 36P-with-censoring benchmark, beyond what
-  chance allows at this N;
+- at least 80 % of acquisition-eligible scans not lost to motion become a feature row (motion losses reported beside
+  it);
+- fewer than 7 % of edges carry an FDR-significant motion association (the published 36P-with-censoring benchmark),
+  and no median or distance-dependent motion association is detectable beyond a permutation null at this N;
 - (PPMI 2.0) network-level connectivity is at least fair within a session;
 - the exported feature families are those that met 0.40.
 
@@ -272,7 +277,8 @@ per row as `fmri_validated` from the row's protocol. A failed protocol's feature
 
 ## Reported whatever the result (no gate)
 
-- **Flow table per stratum:** selected, each exclusion reason, feature rows, throughput (of eligible and of selected).
+- **Flow table per stratum:** selected, each exclusion reason, feature rows, motion losses (count and share of
+  eligible), throughput (as gated, of eligible including motion losses, and of selected).
   Also header vendor and model, retained seconds (median and IQR), and mean FD.
 - **Biology:** per hemisphere, the partial Pearson r (95 % CI, Fisher) of posterior putamen–SomMot coupling
   (`fmri_xcpd_striatal_putamen_posterior_{l,r}__SomMot`) with the same side's post-commissural putamen SBR.
@@ -294,7 +300,7 @@ per row as `fmri_validated` from the row's protocol. A failed protocol's feature
 **Selection:** `scripts/analyse_fmri_validation.py select --zips <held PPMI 2.0 zips> --census <LONI fMRI
 census.csv> --out <dir outside the repo>`. It reads series names and census TRs only, and prints counts only.
 
-**Run step:** still to be written, as one systemd unit outside the harness (fMRIPrep, then XCP-D, per participant;
+**Run step:** written after the freeze and before any scan runs (see [At the freeze](#at-the-freeze)), as one systemd unit outside the harness (fMRIPrep, then XCP-D, per participant;
 large BOLD derivatives deleted after features). It writes one row per selected scan:
 - `scan` (BIDS label), `patno`, `session_date`, `protocol`, `exclusion` (empty or one reason), `xcpd_dir`;
 - the `xcpd_features` and `xcpd_striatal_features` columns;
@@ -307,13 +313,13 @@ The no-notch variant has rows with protocol `P2_TR1:no_notch`.
   (1e-6).
 - `--synthetic` is the dry run: every value, label and identifier is generated, and nothing real is read.
 - `tests/test_analyse_fmri_validation.py` checks on synthetic data that:
-  - the gates flip: a strong motion artefact fails 2a and 2b, and a short-range one fails 2c;
+  - the gates flip: a strong motion artefact fails 2a and 2b, and a short-range one fails 2c; clean data passes;
   - halves without stable individual connectivity fail gate 3;
-  - acquisition exclusions leave the throughput denominator while pipeline failures count;
+  - acquisition exclusions and motion losses leave the throughput denominator while pipeline failures count;
   - ICC(3,1) ignores a constant offset;
   - the draw is one earliest scan per participant and stratum, and is reproducible.
 
-The sha256 of the script (and of `fmri_connectivity.py`, `xcpd.py`, `fmri_bids.py`) is recorded at the freeze.
+The sha256 of the script (and of `fmri_connectivity.py`, `xcpd.py`, `fmri_bids.py`) at the freeze is in the run log.
 Synthetic dry run only before the freeze. Run once; every number reported.
 
 ## Deviations
@@ -324,31 +330,34 @@ after seeing a result is labelled post hoc.
 Gates are not rerun with new settings after a failure. A bug found during the run is fixed and documented, with the
 scans it affected. Throughput is gated on each scan's first-run outcome, with the post-fix rate reported beside it.
 
-## Before freezing
+## At the freeze
 
-1. **Ciric 2017 figure values.** Copy the 36P+scrub values from Fig. 3A (median |QC-FC|) and Fig. 4A (distance
-   dependence) into this document and `GATES` in the script.
-2. **PPMI-1 census.** Run a LONI fMRI search export. From it, fill:
-   - the eligible counts per TR stratum;
-   - whether PPMI-1 acquired a reverse-PE reference;
-   - the PPMI-1 draw, and then its download.
-3. **User decisions:**
-   - the P2_TR2.5 stratum;
-   - gate 3 at 0.40;
-   - the coverage rule (10 % of parcels);
-   - whether `xcpd_min_time` counts against throughput. It does in this draft. Study 1's pass rates under its
-     stricter censoring were 45 % and 59 %.
-   - drawing PPMI 2.0 from all held scans despite the Study 1 overlap;
-   - confirming the biology disclosure. Checked 15 Oct: no Study 1 document (`study1_virtual_biomarkers/*.md` and its fMRI folder) mentions SomMot, so Study 1 never related posterior putamen–SomMot coupling to DaT SBR.
-4. **Run-step code:**
+**Decided 15 Oct 2026** (the user approved the recommendations as a whole):
+- the P2_TR2.5 stratum is kept;
+- gate 3 at 0.40, and the coverage rule (10 % of parcels);
+- `xcpd_min_time` is a motion loss, reported separately and outside the throughput denominator;
+- gates 2b and 2c are judged against the permutation null only (Ciric's figure values could not be retrieved);
+- gate 2a stays at < 7 % (Ciric 2017 Results, verified);
+- PPMI 2.0 is drawn from all held scans despite the Study 1 overlap (disclosed above);
+- the biology disclosure was checked (no Study 1 document mentions SomMot).
+
+**Still to do before any scan runs** (execution, not analysis; none changes a rule, threshold or statistic above):
+1. **PPMI-1 census.** A LONI fMRI search export. The frozen `select` rule then gives the PPMI-1 eligible counts, the
+   reverse-PE question and the PPMI-1 draw, which is downloaded. Counts go in the run log.
+2. **Run-step code:**
    - the `scans.csv` writer;
    - striatal features on each half of the denoised BOLD;
    - an `XCPDConfig` switch that turns the motion filter off for the no-notch variant (today the flag is reserved and
      set from the TR).
-5. **At the freeze:** record the selection file's sha256 and the code hashes.
+
+   Its sha256, and those of `fmri_bids.py`, `xcpd.py` and `fmri_connectivity.py` at run start, go in the run log
+   before the first scan runs. Any other change to those modules after the freeze is a deviation.
+3. **The selection file's sha256** (`fmri_selection.csv`, outside the repository) goes in the run log when it is
+   written.
 
 ## Run log
 
 | Date | Event |
 |---|---|
 | 2026-10-15 | Draft written. Availability counted from zip member names, LONI metadata, PPMI's MRI metadata and Study 1's summary tables (aggregates only). Draft draw run on the held zips (counts above; list kept outside the repository). Synthetic dry run and tests pass. |
+| 2026-10-15 | **Frozen** with the decisions in [At the freeze](#at-the-freeze). Script changed before the freeze: motion losses reported apart; gates 2b and 2c against the permutation null only; census rows restricted to PPMI-1, so the census cannot change the PPMI 2.0 draw (as the sample rule says). Tests and synthetic dry run pass. sha256: `analyse_fmri_validation.py` `a9f8b37ef340be003910c58f98453ca5edda68d10573c8d093881d69a0a6dfea`; `fmri_connectivity.py` `a411f5e39af098f53b6c5b53ef3a333b5013b18ee424592be34ececfee1c3cc1`; `xcpd.py` `619732baa9f1646ebb1df5fd45a28fb6e5837baa1f686d95b018afde0212c434`; `fmri_bids.py` `a4888b0de17db84fd8dd5f98703ed460d6a22a88090565bc259d454cbfabc45d`. |

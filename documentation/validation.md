@@ -137,7 +137,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 
 **Slab coverage matters more than the measure.** In prodromal participants, slabs under 24 mm through-plane (median 20 mm, almost all GE) carry no DaT signal: AUROC 0.398 against 0.634 on full-coverage slabs, for the same contrast measure. PIE's NM QC requires ≥ 24 mm, which removed 27 % of prodromal sessions.
 
-**What is left** (Amendment 1, drafted 15 Oct and to be frozen before the downloads are opened, adds Stage 2b-R, codes the Stage 3 pass rule in full and excludes any participant analysed before):
+**What is left** (Amendment 1, frozen 15 Oct before the downloads were opened, adds Stage 2b-R, codes the Stage 3 pass rule in full and excludes any participant analysed before):
 - **Stage 2a:** decline in PD on follow-up scans.
 - **Stage 2c:** side-matched DaT; exploratory.
 - **Stage 2b-R:** Stage 2b repeated on 400 prodromal participants whose NM no analysis has used (seeded draw from 1,027 eligible).
@@ -158,7 +158,7 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
   - **Pre-registered test** ([preregistration_dwi_fw.md](preregistration_dwi_fw.md), frozen 14 Oct): prodromal DaT-deficient vs DaT-normal, as NM Stage 2b. PD vs HC is infeasible because PPMI holds three-shell DWI for only 13 controls.
   - **Freeze counts:** 275 DaT-normal, 184 DaT-deficient; power about 0.91 at AUROC 0.60.
   - **Running.** Sessions without a usable b0 reference are counted as exclusions.
-- **Planned:** a QSIPrep/QSIRecon comparator (agreement of nigral free water between pipelines), once the containers are set up.
+- **Pre-registered** ([preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md), frozen 15 Oct): agreement of posterior-SN free water between PIE's preprocessing and QSIPrep 26.0.0 (40 sessions, ICC(2,1) ≥ 0.75), after the FW run.
 
 ### FLAIR white-matter hyperintensities
 
@@ -169,7 +169,7 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
   - FastSurfer preprocessing gives volumes about 10 % smaller.
 
   The cohort run is in progress.
-- **Planned test** (approved 15 Oct, pre-registration to follow):
+- **Pre-registered test** ([preregistration_flair_wmh.md](preregistration_flair_wmh.md), frozen 15 Oct; caveat: whether the distributed `mwsc` weights saw the challenge test set is not yet confirmed):
   - accuracy against manual WMH labels on the public MICCAI WMH 2017 challenge test set, which is independent of TrUE-Net's training data;
   - associations with age and vascular risk in PPMI.
 
@@ -181,13 +181,13 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
   - the repetition time was never checked.
 
   Earlier fMRIPrep outputs predate both.
-- **Plan** ([fmriprep.md §5e](fmriprep.md#5e-validation-plan), to be pre-registered):
-  - end to end on 100 scans per protocol (TR 2.4 s, 2.5 s and 1 s), with every exclusion counted;
-  - QC-FC benchmarked against Ciric et al. 2017;
+- **Pre-registered** ([preregistration_fmri.md](preregistration_fmri.md), frozen 15 Oct):
+  - end to end on 100 scans per protocol (PPMI-1 TR 2.4 s and 2.5 s; PPMI 2.0 TR ≈ 1 s and 2.5 s), with every exclusion counted; scans lost to motion are reported apart from throughput;
+  - QC-FC: under 7 % of edges FDR-significant (Ciric et al. 2017), and median and distance dependence within a permutation null;
   - split-half reliability, dropping features with ICC < 0.4;
   - posterior putamen–sensorimotor coupling against DaT, reported but not a gate.
 - **No PD-vs-HC gate:** PPMI resting-state group differences have not reproduced.
-- **Blockers:** fMRIPrep and XCP-D containers, and PPMI-1 fMRI downloads.
+- **Before it runs:** a LONI fMRI census and the PPMI-1 download, and the run-step code. The fMRIPrep and XCP-D containers are installed.
 
 ### PET
 
@@ -217,16 +217,16 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 | Document | Tests | Status (15 Oct 2026) |
 |---|---|---|
 | [preregistration_nm_snceg.md](preregistration_nm_snceg.md) | snceg NM, PD vs HC, Siemens GRE-MT | Frozen 11 Oct; run; failed against 0.743 (0.631) |
-| [preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md) | NM staged: technical, biological, clinical | Stage 1 and 2b frozen and run (passed; 2b overlap disclosed). Stages 2a, 3 and 2b-R (Amendment 1) DRAFT, awaiting downloads |
+| [preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md) | NM staged: technical, biological, clinical | Stage 1 and 2b frozen and run (passed; 2b overlap disclosed). Stage 3 and 2b-R (Amendment 1) frozen 15 Oct, awaiting downloads. Stages 2a and 2c DRAFT |
 | [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md) | Nucleus basalis (Ch4), CAT12.9 | Frozen 13 Oct; running |
 | [preregistration_dwi_fw.md](preregistration_dwi_fw.md) | Posterior-SN free water, prodromal DaT contrast (+ PD secondaries) | Frozen 14 Oct; running |
-| [preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md) | PIE vs QSIPrep free-water agreement | DRAFT |
-| [preregistration_flair_wmh.md](preregistration_flair_wmh.md) | TrUE-Net WMH accuracy (MICCAI 2017 test set) and PPMI biology | DRAFT |
-| [preregistration_fmri.md](preregistration_fmri.md) | rs-fMRI throughput, motion (QC-FC), reliability, per protocol | DRAFT |
-| [preregistration_t1_surfaces.md](preregistration_t1_surfaces.md) | Cortical thickness vs PPMI FS7, repeatability, age; T1 QC vs MRIQC | DRAFT |
-| [preregistration_t1_longitudinal_pilot.md](preregistration_t1_longitudinal_pilot.md) | Longitudinal FastSurfer stream | DRAFT; needs control follow-up T1s |
-| [preregistration_harmonisation_ppmi.md](preregistration_harmonisation_ppmi.md) | ComBat across PPMI's own scanners | DRAFT |
-| [preregistration_survival_positive_control.md](preregistration_survival_positive_control.md) | Survival layer: baseline DaT predicts phenoconversion | DRAFT |
+| [preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md) | PIE vs QSIPrep free-water agreement | Frozen 15 Oct; runs after the FW run |
+| [preregistration_flair_wmh.md](preregistration_flair_wmh.md) | TrUE-Net WMH accuracy (MICCAI 2017 test set) and PPMI biology | Frozen 15 Oct; awaiting the test-set download and G1 runner; weights caveat open |
+| [preregistration_fmri.md](preregistration_fmri.md) | rs-fMRI throughput, motion (QC-FC), reliability, per protocol | Frozen 15 Oct; awaiting the PPMI-1 census and the run step |
+| [preregistration_t1_surfaces.md](preregistration_t1_surfaces.md) | Cortical thickness vs PPMI FS7, repeatability, age; T1 QC vs MRIQC | Frozen 15 Oct; runs after Ch4 |
+| [preregistration_t1_longitudinal_pilot.md](preregistration_t1_longitudinal_pilot.md) | Longitudinal FastSurfer stream | Frozen 15 Oct; needs control follow-up T1s |
+| [preregistration_harmonisation_ppmi.md](preregistration_harmonisation_ppmi.md) | ComBat across PPMI's own scanners | Frozen 15 Oct; runs after `run --etiv` |
+| [preregistration_survival_positive_control.md](preregistration_survival_positive_control.md) | Survival layer: baseline DaT predicts phenoconversion | Frozen 15 Oct; ready to run |
 
 A DRAFT has a fully synthetic dry run and tests but has computed nothing on real outcomes. It is frozen, with its
 script hashes, before its data are processed.
@@ -236,6 +236,7 @@ script hashes, before its data are processed.
 Newest first.
 
 - **2026-10-15**
+  - Frozen, as recommended and approved: the seven drafts below and NM Amendment 1. Changes at the freeze: fMRI scans lost to motion are reported apart from throughput, and its median and distance-dependence QC-FC gates use a permutation null only (Ciric's values are figure-only); cortical-thickness bars 0.75 (agreement) and 0.85 (repeatability) on about 470 scans. FLAIR is frozen with an open caveat: whether TrUE-Net's distributed weights saw the challenge test set. Script hashes are in each document.
   - Seven pre-registrations drafted (QSIPrep agreement, FLAIR WMH, fMRI, cortical thickness + T1 QC, longitudinal pilot, PPMI harmonisation, survival positive control), each with tests and a synthetic dry run; listed above.
   - DWI: eddy_cuda failures while FastSurfer shared the GPU overnight; failed participants re-run with the same frozen code. The PD arm (210 participants) is queued.
   - NM Stage 2b correction: 224 of its 267 scans had been used by the Study 1 manuscript's NM analysis. Disclosed in the pre-registration; the result is unchanged. Most of its margin comes from the ≥ 24 mm slab rule.

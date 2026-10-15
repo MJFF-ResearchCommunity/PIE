@@ -1,6 +1,6 @@
 # Pre-registration: pilot of the longitudinal FastSurfer stream on 100 PPMI participants (J1)
 
-**Status: DRAFT 2026-10-15.** Not frozen. No longitudinal-stream output exists. The counts below come from dates, QC
+**Status: FROZEN 2026-10-15**, before any gate statistic was computed on real data (hashes in the run log). No longitudinal-stream output exists. The counts below come from dates, QC
 flags and cohort labels only.
 
 ## Why
@@ -82,7 +82,7 @@ dates and cohort only.
 
 ## Gates (both for `T1_LONG_PILOT` = pass)
 
-| Gate (proposed) | Statistic | Threshold | Source |
+| Gate | Statistic | Threshold | Source |
 |---|---|---|---|
 | 1. Zero change | Share of same-day pair × structure values (29 × 15 = 435) whose long-stream difference \|a − b\| lies within that structure's cross-sectional MDC95. MDC95 is in mm³: 1.96 × SD of the 29 cross-sectional same-day differences | **≥ 95 %** | PIE's same-day MDC95 (2–6 %, documentation/imaging.md). About 95 % of the cross-sectional differences fall within their own MDC95 by construction, so the long stream must do at least as well |
 | 2a. Plausibility, hippocampus | HC median annualised change, left + right | **−1.70 to −0.27 %/yr** | Fraser et al. 2015 meta-analysis, studies with mean age 55 to < 70: 0.98 %/yr loss (95 % CI 0.27–1.70) |
@@ -167,10 +167,11 @@ After the freeze, any change is logged in the run log below, with its date, befo
 - a noisy long stream fails gate 1;
 - no atrophy fails gate 2.
 
-sha256 at the freeze: _to be recorded_.
+sha256 at the freeze: in the run log.
 
 ## Run log
 
+- 2026-10-15: **frozen**, gates as drafted (approved). sha256: `analyse_t1_longitudinal_pilot.py` `b94b599190fb2041c95262644e9f567d695be8aa66a6ff3e8404496bf00fcaf3`; `fastsurfer.py` `fb5fb32af9006426934a097d414e90d2fa04182edef42878123654fad76ace07`.
 - 2026-10-15: drafted.
   - The synthetic dry run passed: 100 % of 435 values within MDC95; HC hippocampus −0.90 and putamen −0.49 %/yr against true −0.9 and −0.5.
   - `select` was run once on the real tables to check the code path, printing counts only. It found 0 eligible HC, 138 PD and 162 prodromal, and its output was deleted. It now refuses with fewer than 20 eligible HC.

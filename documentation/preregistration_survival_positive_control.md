@@ -1,6 +1,6 @@
 # Pre-registration: survival-layer positive control (baseline DaT predicts phenoconversion in PPMI prodromal participants)
 
-**Status: DRAFT 2026-10-15.** Not frozen. No model has been fitted to real data. The counts below come from the
+**Status: FROZEN 2026-10-15**, before any gate statistic was computed on real data (hashes in the run log). No model has been fitted to real data. The counts below come from the
 script's loader and flow step only (dates, diagnosis codes, vital status, and whether a DaT value exists). No DaT
 value was summarised or tabulated against outcome.
 
@@ -85,7 +85,7 @@ death_covariates=["age10"], hazard="weibull")`.
 - A participant who dies undiagnosed may have converted unseen before death, and the likelihood integrates over that.
 - **Pre-specified fallback:** if the fit reports `converged = False`, it is refitted once without `death_covariates`, and the fallback is reported. With 6 deaths after conversion, the PD → dead intensity is thin.
 
-| Gate (proposed) | Statistic | Threshold | Source |
+| Gate | Statistic | Threshold | Source |
 |---|---|---|---|
 | **Positive control** | HR (healthy → PD/DLB) per SD lower DaT, adjusted for age and sex | Fit converged **and 95 % CI lower bound > 1** | Direction: Jennings et al. 2017 (PARS RR 17.5) |
 
@@ -145,10 +145,11 @@ The script is run once. Every number it writes is reported.
   - a null effect is not found;
   - Uno's C.
 
-sha256 at the freeze: _to be recorded_.
+sha256 at the freeze: in the run log.
 
 ## Run log
 
+- 2026-10-15: **frozen**, gates as drafted (approved). sha256: `analyse_survival_positive_control.py` `a13b405bcbbd7ce3644997353cc58950dce34abcc5f1dd6aa6c729826aff3f44`; `survive.py` `446fd965d713b089de10890097c15e7f81fdaeccf8d5056a89df30eddd70dcec`.
 - 2026-10-15: drafted.
   - Synthetic dry run: HR 3.00 [2.52, 3.57] against a true 2.5 (n 1,183, 146 conversions, 96 deaths). Across three more seeds the estimates were 2.66, 2.28 and 2.56: sampling variation, not bias.
   - The flow counts above were taken from the real tables (counts only).

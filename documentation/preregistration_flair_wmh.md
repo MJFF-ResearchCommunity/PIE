@@ -1,9 +1,10 @@
 # Pre-registration: TrUE-Net white-matter hyperintensity volume (PIE FastSurfer preparation) as a vascular covariate
 
-**Status: DRAFT 2026-10-15** (design approved 15 Oct: G1 + G2, G3 optional). Not frozen. It is frozen, with the
-script hashes, by the commit that changes this line, after the open items below are closed and before any gate
-statistic is computed. Until then no one relates TrUE-Net WMH volumes to age or vascular risk, and no TrUE-Net
-output is produced on the challenge test set.
+**Status: FROZEN 2026-10-15** (design approved 15 Oct: G1 + G2, G3 optional), by the commit that changes this line,
+before any gate statistic was computed, any challenge file was downloaded, or any TrUE-Net WMH volume was related to
+age or vascular risk. Hashes are in the [run log](#run-log). Items still open at the freeze, and how each is handled,
+are in [Open items at the freeze](#open-items-at-the-freeze). **Caveat:** whether the distributed `mwsc` weights saw
+any challenge test subject is not yet known; if they did, G1 is void and the fallback applies.
 
 ## Why
 
@@ -32,7 +33,7 @@ G3, visual ratings on PPMI, is optional.
 - **The threshold method:** age ρ 0.18 (3D FLAIR 0.24); ρ 0.52 with FastSurfer's T1-based `vol_WM_hypointensities`.
 - **FastSurfer `vol_WM_hypointensities`** tracks age at ρ 0.46 in PPMI.
 - **The preparation comparisons** (10, then 60 PPMI FLAIRs) compared TrUE-Net volumes between the two preparations
-  only. No comparison with age, cohort or vascular risk is known (the user to confirm before the freeze).
+  only. No comparison with age, cohort or vascular risk is known (not yet confirmed by the user; open item 4).
 - **The cohort run** (`Imaging/derived/flair_truenet_fs`) had written 402 of 1,340 participants when this draft was
   written, all 2D slabs so far because of run order. While drafting, only non-outcome columns of that table were read,
   as aggregate counts: `error`, vendor, 2D/3D, slice thickness, and linkage to the T1 table. The G2 loader was checked
@@ -106,8 +107,8 @@ TMI 38(11):2556–2568, doi:10.1109/TMI.2019.2905770.
 
 ### Procedure
 
-The runner is to be written before the freeze (open item 3). For each of the 110 test subjects, with the code at the
-freeze commit:
+The runner is written after the freeze and before any challenge file is downloaded (open item 3); it implements
+exactly this procedure. For each of the 110 test subjects:
 1. **T1:** PIE's pinned FastSurfer on `orig/3DT1.nii.gz`, as for PPMI T1s.
 2. **TrUE-Net:** `flair.run_truenet(orig/FLAIR.nii.gz, t1, <work>, prep="fastsurfer", fastsurfer_dir=…)`, then
    probability ≥ 0.5: the cohort run's lesion definition, unchanged.
@@ -331,23 +332,29 @@ it passes, and every number is reported.
   - `mask_metrics` on tiny arrays: identical masks, disjoint masks, a missed lesion, a label-2 detection,
     26-connectivity;
   - G1 and G2 passing on synthetic effects and failing on synthetic nulls or weak effects.
-- **Hashes:** sha256 at the freeze, with the G1 runner's, to be filled in. Synthetic dry run only before the freeze.
+- **Hashes:** sha256 at the freeze in the run log; the G1 runner's is added there before it runs. Synthetic dry run
+  only before the freeze.
 
-## Open items before the freeze
+## Open items at the freeze
 
-1. **Weights' training data.** Ask TrUE-Net's authors (V. Sundaresan, L. Griffanti) whether `fsl-truenet_data`
-   2508.0 `mwsc` saw any challenge test subject. The FSL docs and README say only "MICCAI WMH Segmentation Challenge
-   Data".
+The design, gates and analysis script were frozen on 15 Oct 2026 with these items open. None changes a gate,
+threshold or statistic.
+1. **Weights' training data (documented caveat).** Ask TrUE-Net's authors (V. Sundaresan, L. Griffanti) whether
+   `fsl-truenet_data` 2508.0 `mwsc` saw any challenge test subject. The FSL docs and README say only "MICCAI WMH
+   Segmentation Challenge Data". The answer is recorded in the run log before G1 is read. If any test subject was
+   used, or no answer comes, G1 is reported with that caveat; if one was used, G1 is void and the fallback applies.
 2. **Data.** The user accepts DataverseNL's terms (CC BY-NC 4.0; terms click-through, guestbook) and downloads the
    110 test subjects' three files to the NVMe (check free space first).
-3. **G1 runner.** Write it, check `mask_metrics` against the challenge's `evaluation.py` on the training-set observer
-   annotations, and pin both hashes. GPU time: FastSurfer on 110 T1s, after the current GPU jobs.
+3. **G1 runner.** Written after the freeze, before any challenge file is downloaded, to the procedure above. Its
+   `mask_metrics` is checked against the challenge's `evaluation.py` on the training-set observer annotations (to
+   1e-6), and both hashes go in the run log before G1 runs. GPU time: FastSurfer on 110 T1s, after the current GPU
+   jobs.
 4. **Seen results.** The user confirms that no TrUE-Net WMH value has been compared with age, cohort or vascular
-   risk.
-5. **G3.** Rater availability, and a verified source for its bar.
+   risk, before G2 runs. The confirmation is recorded in the run log.
+5. **G3.** Rater availability, and a verified source for its bar (an addendum, pre-registered before rating).
 
 ## Run log
 
 | Date | Gate | Commit | Result |
 |---|---|---|---|
-| | | | |
+| 2026-10-15 | — | the freeze commit | **Frozen.** sha256: `analyse_flair_wmh.py` `6fb59500a5650d3d10abfc34eae961f55252ef7859fcc9bcbaf0230a68827b5b`; `flair.py` `7ca4bc11609ae349cd5dd377e613a54955577c6f519f21bf9d80dd8b97741899`. Open items 1–5 as listed. No challenge file downloaded; no gate statistic computed |

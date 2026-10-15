@@ -1,6 +1,6 @@
 # Pre-registration: ComBat harmonisation across PPMI's own T1 scanners and protocol phases (first stage of K4)
 
-**Status: DRAFT 2026-10-15.** Not frozen. No harmonisation, classifier or effect estimate has been computed on real
+**Status: FROZEN 2026-10-15**, before any gate statistic was computed on real data (hashes in the run log). No harmonisation, classifier or effect estimate has been computed on real
 volumes. The counts below come from the script's loader only (cohort, batch labels, missingness).
 
 ## Why
@@ -71,11 +71,11 @@ classifier sees covariate-residualised volumes (below).
 
 ## Gates (all three for `HARMONISATION_PPMI_T1` = pass)
 
-| Gate (proposed) | Statistic | Threshold | Source |
+| Gate | Statistic | Threshold | Source |
 |---|---|---|---|
-| 1. Batch removed | Macro one-vs-rest AUROC of predicting batch from harmonised volumes, out of fold; mean of 10 repeats of stratified 5-fold CV (seeds 20261015 + r) | **≤ 0.60 for both classifiers** (0.50 = chance) | Proposed. No published standard threshold |
-| 2. Age kept | Controls' age β per decade of bilateral hippocampus, thalamus and lateral ventricles (OLS with sex and eTIV), harmonised against the unharmonised within-batch estimate (batch fixed effects) | **\|β_h − β_raw\| / \|β_raw\| ≤ 0.10 for all three** | Proposed |
-| 3. No inflation | PD − HC Cohen's d per volume (OLS with age, sex, eTIV; β / residual SD), ComBat protecting diagnosis against the unharmonised within-batch estimate | **\|d_protected − d_within-batch\| ≤ 0.10 for all 91** | Proposed. Rationale: Nygaard et al. 2016 |
+| 1. Batch removed | Macro one-vs-rest AUROC of predicting batch from harmonised volumes, out of fold; mean of 10 repeats of stratified 5-fold CV (seeds 20261015 + r) | **≤ 0.60 for both classifiers** (0.50 = chance) | Fixed at the freeze. No published standard threshold |
+| 2. Age kept | Controls' age β per decade of bilateral hippocampus, thalamus and lateral ventricles (OLS with sex and eTIV), harmonised against the unharmonised within-batch estimate (batch fixed effects) | **\|β_h − β_raw\| / \|β_raw\| ≤ 0.10 for all three** | Fixed at the freeze |
+| 3. No inflation | PD − HC Cohen's d per volume (OLS with age, sex, eTIV; β / residual SD), ComBat protecting diagnosis against the unharmonised within-batch estimate | **\|d_protected − d_within-batch\| ≤ 0.10 for all 91** | Fixed at the freeze. Rationale: Nygaard et al. 2016 |
 
 **Gate 1, how the classifiers are run.** In every training fold:
 1. ComBat is fitted on the training controls (no label) and applied to the held-out fold (`combat_apply`).
@@ -142,10 +142,11 @@ The script is run once. Every number it writes is reported.
   - all gates pass;
   - unharmonised volumes fail gate 1.
 
-sha256 at the freeze: _to be recorded_.
+sha256 at the freeze: in the run log.
 
 ## Run log
 
+- 2026-10-15: **frozen**, gates as drafted (approved). sha256: `analyse_harmonisation_ppmi.py` `e8ecc147a7c1fe52c76be6cbb32b10150224e5a91c814b00bbf1726db447b592`; `harmonize.py` `b67d0bb66da724fdf4b5fffe633b306a15a290c18e4cac8eb0bfeff8bf4f6245`.
 - 2026-10-15: drafted. The synthetic dry run passed:
   - batch AUROC, logistic: 1.000 raw → 0.483 harmonised;
   - batch AUROC, forest: 0.997 → 0.495;
