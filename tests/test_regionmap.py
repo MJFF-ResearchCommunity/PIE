@@ -69,3 +69,21 @@ def test_cli_writes_map_sidecar_and_one_manifest_entry(tmp_path):
     assert len(stats) == 1 and stats[0]["space"] == "tpl:T1-conformed" and stats[0]["metadata"]["n_shown"] == 2
     scan = Catalog(tmp_path / "repo", manifest=m).scans[stats[0]["id"]]
     assert scan.registration == "verified" and scan.reference_id == "tpl-t1"
+
+
+def test_figures_write_slices_for_participant_maps_even_when_empty(tmp_path):
+    import json
+
+    import matplotlib
+    matplotlib.use("Agg")
+    affine = np.diag([2.0, 2.0, 2.0, 1.0])
+    nib.save(nib.Nifti1Image(np.random.default_rng(0).random((20, 20, 20)).astype(np.float32), affine), tmp_path / "bg.nii.gz")
+    for name, vmax in (("effect", 0.5), ("none", 0.0)):
+        m = np.zeros((20, 20, 20), np.float32)
+        m[5:9, 5:9, 5:9], m[12:16, 12:16, 12:16] = -vmax, vmax
+        nib.save(nib.Nifti1Image(m, affine), tmp_path / f"{name}.nii.gz")
+        (tmp_path / f"{name}.json").write_text(json.dumps({"statistic": "Cohen's d", "vmax": vmax, "threshold": {"p_column": "p", "alpha": 0.05}}))
+        out = regionmap.figures(tmp_path / f"{name}.nii.gz", tmp_path / f"{name}.json", tmp_path / "bg.nii.gz", tmp_path / "fig")
+        assert sorted(p.name for p in out) == [f"{name}_slices.png", f"{name}_slices.svg"] and all(p.stat().st_size for p in out)
+    assert "no region passes the threshold" in (tmp_path / "fig" / "none_slices.svg").read_text()
+    assert "no region passes" not in (tmp_path / "fig" / "effect_slices.svg").read_text()

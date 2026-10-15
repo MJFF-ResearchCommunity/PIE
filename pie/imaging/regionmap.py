@@ -59,6 +59,49 @@ def region_map(table, atlas_path, value, feature="feature", p=None, alpha=None, 
     return paint(atlas, vals), side
 
 
+def figures(map_path, sidecar_path, background, out_dir, template=False):
+    """Publication figures from the same map and sidecar the viewer shows: ortho slices always; for template maps also a
+    glass brain and an fsaverage5 surface view. SVG text stays editable. Returns the files written."""
+    import matplotlib.pyplot as plt
+    from nilearn import datasets, plotting, surface
+
+    side = json.loads(Path(sidecar_path).read_text())
+    vmax, thr = float(side["vmax"]), side.get("threshold")
+    title = side["statistic"] + ("" if not thr else f", {thr['p_column']} < {thr['alpha']}")
+    if vmax == 0:
+        title += " (no region passes the threshold)"
+    img = nib.load(map_path)
+    kw = {"cmap": "cold_hot", "vmax": vmax or 1.0, "threshold": vmax / 1000 or None}
+    out_dir, stem = Path(out_dir), Path(map_path).name.split(".")[0]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+
+    def save(display, name, svg=True):
+        for ext in ("png", "svg") if svg else ("png",):
+            f = out_dir / f"{stem}_{name}.{ext}"
+            display.savefig(f, dpi=300)
+            written.append(f)
+        if hasattr(display, "close"):        # nilearn display; a plain matplotlib figure is closed by pyplot
+            display.close()
+        else:
+            plt.close(display)
+
+    with plt.rc_context({"svg.fonttype": "none"}):
+        save(plotting.plot_stat_map(img, bg_img=str(background), display_mode="ortho", title=title, **kw), "slices")
+        if template:
+            save(plotting.plot_glass_brain(img, plot_abs=False, title=title, colorbar=True, **kw), "glass")
+            fs = datasets.fetch_surf_fsaverage("fsaverage5")
+            fig, axes = plt.subplots(1, 4, figsize=(16, 4), subplot_kw={"projection": "3d"})
+            for ax, (hemi, view) in zip(axes, [(h, v) for h in ("left", "right") for v in ("lateral", "medial")]):
+                tex = surface.vol_to_surf(img, fs[f"pial_{hemi}"])
+                plotting.plot_surf_stat_map(fs[f"infl_{hemi}"], tex, hemi=hemi, view=view, bg_map=fs[f"sulc_{hemi}"],
+                                            axes=ax, figure=fig, colorbar=False, **kw)
+            fig.suptitle(title)
+            fig.text(0.5, 0.02, "MNI152 volume projected to fsaverage (approximate)", ha="center")
+            save(fig, "surface", svg=False)
+    return written
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--table", required=True, help="CSV with one row per region: feature name, value, optional p")
