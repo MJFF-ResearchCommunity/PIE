@@ -1,6 +1,6 @@
 # Pre-registration: nucleus basalis (Ch4) grey-matter volume with CAT12 on PPMI
 
-**Status: FROZEN 2026-10-13**, before any CAT12 value existed for a selected scan. One scan outside the selection (a
+**Status: FROZEN 2026-10-13; RUN 2026-10-15: NOT VALIDATED** (age and convergence gates failed; reliability passed). Frozen before any CAT12 value existed for a selected scan. One scan outside the selection (a
 prodromal participant) was run first to check the plumbing (output names, report fields, run time); no gate statistic
 can be computed from it. It took 13.5 min on one thread. It found two bugs, both fixed before the freeze: a missing
 `stats/` folder, and the basal forebrain names (CAT12.9 writes "Left/Right Basal Forebrain"). The checks printed
@@ -67,3 +67,41 @@ overlap; the method was not chosen on them.
 
 Script: `scripts/ch4_cat12_validation.py`, sha256 `49c79ed5e1f5122a343cd78e8110ff6c2a4975c5117552dcdf54c8269d54bb9e` at the freeze (synthetic dry run only). Run once; every
 number reported.
+
+## Run log and result (15 Oct 2026)
+
+- **Code:** `scripts/ch4_cat12_validation.py` sha256 `49c79ed5…` (as frozen); `pie/imaging/cat12.py` unchanged since the
+  freeze commit (1d63c66). `analyse` run once on 15 Oct.
+- **Deviation (scheduling only):** the first run stopped on 14 Oct after an out-of-memory kill. One 0.5 mm scan took
+  13 GB in CAT12, and three ran at once. A resume script called the frozen `_run_one` on every selected scan without a
+  result: 1 mm scans 6 at a time, then 0.5 mm scans 2 at a time. The method was unchanged. Result: 251/251 and 30/30
+  completed, 0 failed.
+- **Flow:** 223 HC and 223 PD selected and analysed; 0 missing CAT12 results; 0 below the IQR minimum; 58 repeat scans
+  (29 same-day pairs), 0 missing.
+
+| Primary: Ch4 GM, p ≥ 0.5 | Result | Gate |
+|---|---|---|
+| Controls' age r (TIV, sex residualised) | −0.299 [−0.414, −0.174], n 223 | r ≤ −0.30 and CI upper < 0: **fail** (misses by 0.001) |
+| Spearman ρ with ScLimbic basal forebrain | 0.102, n 446 | ≥ 0.40: **fail** |
+| Same-day ICC(2,1) | 0.761 [0.525, 0.925], 29 pairs | ≥ 0.75: **pass** |
+
+**Verdict: not validated.** Ch4 stays out of PIE's validated measures. ScLimbic basal forebrain remains the basal
+forebrain measure.
+
+Reported, no gate:
+- **PD − control:** d 0.204 (primary), 0.175 (probability-weighted), −0.035 (neuromorphometrics basal forebrain).
+- **Median volume:** 157 mm³ (0.0106 % of TIV), against about 270 mm³ for CAT12 Ch4 in the literature.
+- **Left/right ratio:** median 2.04. A roughly symmetric structure should give about 1. This is not a gate, but it
+  points to a problem in how the Ch4 region is defined (the left and right probability maps, their resampling, or the
+  p ≥ 0.5 cut), not only to a weak biomarker. It is the first thing to examine before any revised, newly
+  pre-registered version.
+- **IQR:** median 87.3 %; 22.4 % below 70 %. The sensitivity analysis excluding them gave the same age r (−0.299),
+  ρ 0.105 (n 445) and ICC 0.761 [0.562, 0.921].
+- **Spearman ρ with the failed FAST Ch4:** 0.485.
+- **Secondary measures, every gate statistic:**
+  - **Probability-weighted Ch4:** age r −0.413 [−0.516, −0.298]; ρ 0.217; ICC 0.867 [0.745, 0.963]; median 358 mm³.
+  - **Neuromorphometrics basal forebrain:** age r −0.462 [−0.560, −0.352]; ρ 0.210; ICC 0.956 [0.911, 0.975];
+    median 701 mm³.
+
+  Both would meet the age and reliability bars but not convergence. No measure reached ρ 0.40 with ScLimbic.
+

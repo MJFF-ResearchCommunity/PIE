@@ -43,7 +43,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 | T1 | eTIV (FreeSurfer 7.4.1) | **Validated** | r 0.992 vs PPMI FS7 eTIV, +0.3 % (40 scans; pre-registered gate r ≥ 0.95, < 5 %) | — |
 | T1 | Normative z-scores (age, sex, TIV) | **Validated** | Controls' out-of-fold z: mean within 0.013 of 0, SD 1.01–1.03 | — |
 | T1 | Basal forebrain, ScLimbic | In use; descriptive checks only | Age r −0.43 in controls; no PD–HC difference | Convergence gate within the Ch4 test |
-| T1 | Nucleus basalis (Ch4), CAT12.9 | **In validation** | FSL-FAST version failed (no age effect); rebuilt on CAT12, pre-registered 13 Oct | Result expected mid-October |
+| T1 | Nucleus basalis (Ch4), CAT12.9 | **Not validated** (15 Oct) | Age r −0.299 (bar −0.30), ρ with ScLimbic 0.10 (bar 0.40); ICC 0.76 passed; left/right ratio 2.0 suggests a region-definition problem | Diagnose the region before any new pre-registration |
 | T1 | Cortical thickness, hippocampal subfields, SynthSeg (legacy 1.5 T), medial-temporal index | Not yet run | Code and synthetic tests | Agreement with PPMI's `FS7_APARC_CTH`; same-day ICC |
 | DaT-SPECT | PPMI core-lab SBRs (Xing; Invicro fallback) | **Validated** (reference values) | PPMI's own endpoint; PD vs HC AUROC 0.99 | — |
 | DaT-SPECT | PIE's own reconstruction (`datscan_2026_10`) | **Validated** | 1,452 of 1,459 scans pass QC. vs Xing: putamen r 0.851, CCC 0.87, deficit κ 0.80. vs Invicro: r 0.887. The two core labs agree with each other at r 0.88 | Non-PPMI reconstructed stacks |
@@ -95,12 +95,12 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
   - ρ with ScLimbic was 0.17.
 
   The published nucleus basalis results that link it to α-synuclein seed amplification used SPM/CAT12 modulated grey matter, so the stage was rebuilt that way.
-- **Ch4, CAT12.9 r2665, in validation.** Pre-registered in [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md), frozen 13 Oct. All three gates are needed:
-  - controls' age r ≤ −0.30 with CI upper bound < 0;
-  - ρ ≥ 0.40 with ScLimbic basal forebrain;
-  - same-day ICC(2,1) ≥ 0.75.
+- **Ch4, CAT12.9 r2665, 15 Oct: not validated.** Pre-registered in [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md), frozen 13 Oct, run once on 504 scans (223 HC, 223 PD, 29 same-day pairs):
+  - controls' age r −0.299 [−0.414, −0.174] against ≤ −0.30: fail, by 0.001;
+  - ρ with ScLimbic basal forebrain 0.10 against ≥ 0.40: fail;
+  - same-day ICC(2,1) 0.76 [0.52, 0.93] against ≥ 0.75: pass.
 
-  504 scans, run once.
+  The median volume (157 mm³) is below the literature's about 270 mm³, and the left/right ratio is 2.0 where about 1 is expected. That points to the region definition, which is the next thing to examine. The probability-weighted Ch4 and the neuromorphometrics basal forebrain met the age and reliability bars but not convergence (ρ 0.21–0.22). The run was resumed after an out-of-memory stop, with scheduling changes only (documented).
 - **Software version.** CAT26 was released on 12 Oct 2026. The pre-registered test stays on CAT12.9. Moving to CAT26 would need a version-bridging comparison first (on hold).
 
 ### DaT-SPECT
@@ -218,7 +218,7 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 |---|---|---|
 | [preregistration_nm_snceg.md](preregistration_nm_snceg.md) | snceg NM, PD vs HC, Siemens GRE-MT | Frozen 11 Oct; run; failed against 0.743 (0.631) |
 | [preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md) | NM staged: technical, biological, clinical | Stage 1 and 2b frozen and run (passed; 2b overlap disclosed). Stage 3 and 2b-R (Amendment 1) frozen 15 Oct, awaiting downloads. Stages 2a and 2c DRAFT |
-| [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md) | Nucleus basalis (Ch4), CAT12.9 | Frozen 13 Oct; running |
+| [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md) | Nucleus basalis (Ch4), CAT12.9 | Run 15 Oct: not validated |
 | [preregistration_dwi_fw.md](preregistration_dwi_fw.md) | Posterior-SN free water, prodromal DaT contrast (+ PD secondaries) | Frozen 14 Oct; running |
 | [preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md) | PIE vs QSIPrep free-water agreement | Frozen 15 Oct; runs after the FW run |
 | [preregistration_flair_wmh.md](preregistration_flair_wmh.md) | TrUE-Net WMH accuracy (MICCAI 2017 test set) and PPMI biology | Frozen 15 Oct; awaiting the test-set download and G1 runner; weights caveat open |
@@ -236,6 +236,7 @@ script hashes, before its data are processed.
 Newest first.
 
 - **2026-10-15**
+  - Ch4 (CAT12.9) not validated: age r −0.299 (bar −0.30), ρ with ScLimbic 0.10 (bar 0.40), ICC 0.76 (passed). Left/right ratio 2.0 flags the region definition. Every number is in the pre-registration.
   - Frozen, as recommended and approved: the seven drafts below and NM Amendment 1. Changes at the freeze: fMRI scans lost to motion are reported apart from throughput, and its median and distance-dependence QC-FC gates use a permutation null only (Ciric's values are figure-only); cortical-thickness bars 0.75 (agreement) and 0.85 (repeatability) on about 470 scans. FLAIR is frozen with an open caveat: whether TrUE-Net's distributed weights saw the challenge test set. Script hashes are in each document.
   - Seven pre-registrations drafted (QSIPrep agreement, FLAIR WMH, fMRI, cortical thickness + T1 QC, longitudinal pilot, PPMI harmonisation, survival positive control), each with tests and a synthetic dry run; listed above.
   - DWI: eddy_cuda failures while FastSurfer shared the GPU overnight; failed participants re-run with the same frozen code. The PD arm (210 participants) is queued.
