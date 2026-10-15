@@ -4,8 +4,12 @@ reference T1 by construction (no warping), plus a sidecar with the statistic, th
     python -m pie.imaging.regionmap --table results.csv --value d [--p p --alpha 0.05] --fastsurfer-dir <subject> \
         --out <dir>/<name> [--statistic "Cohen's d (PD - HC)" --units SD] [--manifest viewer.json --reference-id <scan>]
 """
+import argparse
 import hashlib
+import json
+import os
 import re
+from pathlib import Path
 
 import nibabel as nib
 import numpy as np
@@ -53,3 +57,47 @@ def region_map(table, atlas_path, value, feature="feature", p=None, alpha=None, 
             "unmatched": unmatched, "atlas": str(atlas_path),
             "source_sha256": hashlib.sha256(table.to_csv(index=False).encode()).hexdigest()}
     return paint(atlas, vals), side
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--table", required=True, help="CSV with one row per region: feature name, value, optional p")
+    ap.add_argument("--value", required=True)
+    ap.add_argument("--feature", default="feature")
+    ap.add_argument("--p")
+    ap.add_argument("--alpha", type=float)
+    ap.add_argument("--fastsurfer-dir", required=True, type=Path, help="FastSurfer subject folder whose mri/aparc.DKTatlas+aseg.deep.mgz is the canvas")
+    ap.add_argument("--out", required=True, type=Path, help="output prefix: writes PREFIX.nii.gz and PREFIX.json")
+    ap.add_argument("--statistic", default="")
+    ap.add_argument("--units", default="")
+    ap.add_argument("--manifest", type=Path, help="viewer manifest to add the map to, as a verified overlay")
+    ap.add_argument("--reference-id", help="manifest scan the atlas belongs to (required with --manifest)")
+    a = ap.parse_args(argv)
+    img, side = region_map(pd.read_csv(a.table), a.fastsurfer_dir / "mri" / "aparc.DKTatlas+aseg.deep.mgz", a.value, a.feature,
+                           a.p, a.alpha, a.statistic, a.units)
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    nii, js = a.out.with_name(a.out.name + ".nii.gz"), a.out.with_name(a.out.name + ".json")
+    nib.save(img, nii)
+    js.write_text(json.dumps(side, indent=1))
+    print(f"{nii}: {side['n_shown']} of {side['n_matched']} matched regions shown; {len(side['unmatched'])} features unmatched")
+    if a.manifest:
+        if not a.reference_id:
+            ap.error("--manifest needs --reference-id")
+        doc = json.loads(a.manifest.read_text())
+        ref = next((s for s in doc["scans"] if s["id"] == a.reference_id), None)
+        if ref is None:
+            ap.error(f"{a.reference_id} is not a scan in {a.manifest}")
+        sid = f"stat-{a.out.name}"
+        rule = "all matched regions" if side["threshold"] is None else f"{a.p} < {a.alpha}"
+        doc["scans"] = [s for s in doc["scans"] if s["id"] != sid] + [{
+            "id": sid, "subject": ref["subject"], "modality": "Statistic", "kind": "statistic", "visit": ref.get("visit", "Imported acquisition"),
+            "path": os.path.relpath(nii, a.manifest.parent), "space": ref.get("space", f"sub-{ref['subject']}:native:{ref['id']}"), "registration": "verified",
+            "reference_id": a.reference_id, "units": a.units, "description": side["statistic"], "metadata": side,
+            "qc": "Regional statistic painted on the reference's own label grid",
+            "provenance": f"pie.imaging.regionmap from a table with sha256 {side['source_sha256'][:12]}; shown: {rule}."}]
+        a.manifest.write_text(json.dumps(doc, indent=1))
+    return side
+
+
+if __name__ == "__main__":
+    main()
