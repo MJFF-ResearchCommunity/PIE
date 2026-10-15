@@ -7,8 +7,13 @@
   --paper: #fbfaf7;
   --line: #dddfd7;
   --muted: #667064;
-  --green: #345e49;
-  --tint: #e8eee4;
+  /* accents: the PIE logo's orange (assets/icon.png). Orange fills carry dark text; text and thin lines on paper use the
+     logo's deep orange, which keeps WCAG AA contrast (4.6:1 on --paper; white on the bright orange would be 2.2:1). */
+  --accent: #fe9731;
+  --accent-hover: #f08321;
+  --accent-ink: #b45018;
+  --on-accent: #2c2016;
+  --tint: #fdf0e3;
   --canvas: #111416;
   --radius: 6px;
 }
@@ -74,7 +79,7 @@ input:focus-visible,
 select:focus-visible,
 summary:focus-visible,
 canvas:focus-visible {
-  outline: 2px solid #719a68;
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
 input[type="range"]:focus-visible {
@@ -102,7 +107,7 @@ button:disabled:hover {
   background: inherit;
 }
 ::selection {
-  background: #d1dfc6;
+  background: #fbd9b4;
 }
 summary {
   cursor: pointer;
@@ -181,7 +186,7 @@ strong {
   white-space: nowrap;
 }
 .app-header nav button.nav-active {
-  color: var(--green);
+  color: var(--accent-ink);
 }
 .app-header nav button.nav-active:after {
   content: "";
@@ -190,7 +195,7 @@ strong {
   left: 0;
   right: 0;
   height: 2px;
-  background: var(--green);
+  background: var(--accent);
 }
 .header-actions {
   display: flex;
@@ -209,7 +214,7 @@ strong {
 .canvas-bottomline i {
   width: 5px;
   height: 5px;
-  background: #769e67;
+  background: var(--accent);
   border-radius: 50%;
   display: inline-block;
 }
@@ -232,12 +237,12 @@ strong {
   border-color: #c5cebf;
 }
 .button.primary {
-  background: var(--green);
-  color: #fafbf6;
-  border-color: var(--green);
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
 }
 .button.primary:hover {
-  background: #244633;
+  background: var(--accent-hover);
 }
 .icon-button {
   width: 31px;
@@ -251,7 +256,7 @@ strong {
 .icon-button:hover,
 .icon-button.active {
   background: var(--tint);
-  color: var(--green);
+  color: var(--accent-ink);
 }
 .workspace-heading {
   display: flex;
@@ -388,7 +393,7 @@ strong {
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #5b7a4e;
+  background: var(--accent);
 }
 .participant:hover {
   background: #eef1e8;
@@ -416,7 +421,7 @@ strong {
   border-radius: 50%;
 }
 .selected .subject-dot {
-  background: #668957;
+  background: var(--accent);
 }
 .participant-cohort {
   display: block;
@@ -438,8 +443,8 @@ strong {
   color: #7c8974;
 }
 .participant.selected .mini-modalities span {
-  border-color: #c8d5bd;
-  color: #4b6540;
+  border-color: #f6cfa6;
+  color: var(--accent-ink);
 }
 .collection-note {
   padding: 20px 16px;
@@ -466,7 +471,7 @@ strong {
   align-items: center;
   font-size: 10px;
   font-weight: 500;
-  color: #4d6943;
+  color: var(--accent-ink);
   padding: 12px 0 0;
 }
 .viewer-column {
@@ -496,8 +501,8 @@ strong {
   font-size: 9px;
   letter-spacing: 0;
   background: #e7ecdf;
-  border: 1px solid #d8e1cc;
-  color: #6e815e;
+  border: 1px solid #f6d9bb;
+  color: var(--accent-ink);
   padding: 4px 7px;
   border-radius: 4px;
   max-width: 160px;
@@ -552,8 +557,8 @@ strong {
   border-radius: 50%;
 }
 .modality-dot.available {
-  background: #7e9a65;
-  border-color: #7e9a65;
+  background: var(--accent);
+  border-color: var(--accent);
 }
 .modality-space {
   margin-left: auto;
@@ -597,8 +602,8 @@ strong {
   border-bottom: 2px solid transparent;
 }
 .context-switch button[aria-pressed="true"] {
-  color: var(--green);
-  border-bottom-color: var(--green);
+  color: var(--accent-ink);
+  border-bottom-color: var(--accent);
   font-weight: 600;
 }
 .anatomy-layer-controls {
@@ -734,8 +739,8 @@ strong {
   white-space: nowrap;
 }
 .view-switch button.active {
-  background: #43563c;
-  color: #eef3e7;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .view-switch button:hover {
   color: #e5ebdf;
@@ -746,8 +751,8 @@ strong {
   color: #bdcbb4;
 }
 .zoom-tools .icon-button:hover {
-  background: #43563c;
-  color: #eef3e7;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .canvas-bottomline {
   position: absolute;
@@ -1030,14 +1035,14 @@ input[type="range"] {
   height: 3px;
   border-radius: 3px;
   cursor: pointer;
-  accent-color: #617d4c;
+  accent-color: var(--accent);
 }
 input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   width: 11px;
   height: 11px;
   background: #fafbf6;
-  border: 2px solid #748b5a;
+  border: 2px solid var(--accent-ink);
   border-radius: 50%;
   box-shadow: 0 1px 3px #58623b22;
 }
@@ -1045,7 +1050,7 @@ input[type="range"]::-moz-range-thumb {
   width: 8px;
   height: 8px;
   background: #fafbf6;
-  border: 2px solid #748b5a;
+  border: 2px solid var(--accent-ink);
   border-radius: 50%;
 }
 input[type="range"]:disabled {
@@ -2390,7 +2395,7 @@ td details,
   color: #a2afa6;
 }
 .canvas-empty .button {
-  color: var(--green);
+  color: var(--accent-ink);
 }
 .canvas-empty .button.primary {
   color: #fafbf6;
@@ -2437,8 +2442,8 @@ td details,
   font-weight: 600;
 }
 .structure-master.enabled {
-  color: var(--green);
-  border-color: var(--green);
+  color: var(--accent-ink);
+  border-color: var(--accent);
   background: var(--tint);
 }
 .structure-status {
@@ -2588,7 +2593,7 @@ td details,
 .fmri-frame-range input {
   width: 100%;
   cursor: pointer;
-  accent-color: var(--green);
+  accent-color: var(--accent);
 }
 .fmri-frame-range output {
   font-variant-numeric: tabular-nums;
@@ -2623,7 +2628,7 @@ td details,
 .trace-plot {
   display: flex;
   gap: 8px;
-  color: var(--green);
+  color: var(--accent-ink);
 }
 .trace-y {
   display: flex;
@@ -2681,12 +2686,12 @@ td details,
 }
 .canvas-frame:fullscreen.has-bold-transport .fmri-transport button {
   color: #d6deda;
-  background: #26352e;
+  background: #2e2419;
   border-color: #405047;
 }
 .canvas-frame:fullscreen.has-bold-transport .fmri-speed select {
   color: #d6deda;
-  background: #26352e;
+  background: #2e2419;
   border-color: #405047;
 }
 .canvas-frame:fullscreen.has-bold-transport .canvas-toolbar {
@@ -2982,4 +2987,28 @@ td details,
 .next-downloads-note p {
   font-size: 13px;
   line-height: 1.7;
+}
+
+.stat-howto {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.stat-howto p {
+  margin: 0 0 6px;
+}
+.stat-command {
+  display: block;
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  background: var(--tint);
+  border-radius: var(--radius);
+  color: #2c3431;
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: all;
 }

@@ -3,6 +3,10 @@ reference T1 by construction (no warping), plus a sidecar with the statistic, th
 
     python -m pie.imaging.regionmap --table results.csv --value d [--p p --alpha 0.05] --fastsurfer-dir <subject> \
         --out <dir>/<name> [--statistic "Cohen's d (PD - HC)" --units SD] [--manifest viewer.json --reference-id <scan>]
+
+    # one participant: their row of a per-scan table (e.g. normative z-scores, columns z_vol_*), on their own segmentation
+    python -m pie.imaging.regionmap --table zscores.csv --image-id <image id> [--measure vol|cth|area] --out maps/<id>_z \
+        --units z --manifest viewer.json [--repo .]
 """
 import argparse
 import hashlib
@@ -15,7 +19,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-PREFIX = re.compile(r"^(vol|cth|area)_")
+PREFIX = re.compile(r"^(?:z_)?(vol|cth|area)_")      # z_ as written by pie.imaging.normative
 
 
 def _diverging():
@@ -156,12 +160,18 @@ def figures(map_path, sidecar_path, background, out_dir, template=False):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--table", required=True, help="CSV with one row per region: feature name, value, optional p")
-    ap.add_argument("--value", required=True)
+    ap.add_argument("--table", required=True, help="CSV with one row per region (feature, value, optional p); with --image-id, "
+                                                   "one row per scan instead (e.g. normative z-scores)")
+    ap.add_argument("--value", help="the value column of a per-region table")
+    ap.add_argument("--image-id", help="participant mode: paint this scan's row of a per-scan --table on its own segmentation")
+    ap.add_argument("--id-column", default="IMAGEID")
+    ap.add_argument("--measure", choices=["vol", "cth", "area"], default="vol",
+                    help="participant mode: the columns to paint (vol_*, cth_* or area_*, optionally z_-prefixed); one measure per map")
     ap.add_argument("--feature", default="feature")
     ap.add_argument("--p")
     ap.add_argument("--alpha", type=float)
-    ap.add_argument("--fastsurfer-dir", required=True, type=Path, help="FastSurfer subject folder whose mri/aparc.DKTatlas+aseg.deep.mgz is the canvas")
+    ap.add_argument("--fastsurfer-dir", type=Path, help="FastSurfer subject folder whose mri/aparc.DKTatlas+aseg.deep.mgz is the canvas "
+                                                         "(participant mode default: <repo>/Imaging/derived/fastsurfer/<image id>)")
     ap.add_argument("--out", required=True, type=Path, help="output prefix: writes PREFIX.nii.gz and PREFIX.json")
     ap.add_argument("--statistic", default="")
     ap.add_argument("--units", default="")
@@ -171,7 +181,22 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if (a.p is None) != (a.alpha is None):
         ap.error("--p and --alpha go together: a p column without a level would show every region")
-    img, side = region_map(pd.read_csv(a.table), a.fastsurfer_dir / "mri" / "aparc.DKTatlas+aseg.deep.mgz", a.value, a.feature,
+    table = pd.read_csv(a.table)
+    if a.image_id:                                   # one scan's row of a per-scan table, as a per-region table
+        row = table[table[a.id_column].astype(str) == a.image_id]
+        if row.empty:
+            ap.error(f"{a.table} has no {a.id_column} {a.image_id}")
+        cols = [c for c in table.columns if re.match(rf"^(?:z_)?{a.measure}_", c)]
+        table = pd.DataFrame({"feature": cols, "value": pd.to_numeric(row.iloc[0][cols], errors="coerce").to_numpy(float)})
+        a.value, a.feature = "value", "feature"
+        a.statistic = a.statistic or f"{a.measure} of {a.image_id}"
+        a.fastsurfer_dir = a.fastsurfer_dir or a.repo / "Imaging/derived/fastsurfer" / a.image_id
+        a.reference_id = a.reference_id or f"mri-{a.image_id}"
+    elif not a.value:
+        ap.error("--value is required (or --image-id to paint one scan's row of a per-scan table)")
+    if not a.fastsurfer_dir:
+        ap.error("--fastsurfer-dir is required")
+    img, side = region_map(table, a.fastsurfer_dir / "mri" / "aparc.DKTatlas+aseg.deep.mgz", a.value, a.feature,
                            a.p, a.alpha, a.statistic, a.units, source_sha256=_sha256(a.table))
     a.out.parent.mkdir(parents=True, exist_ok=True)
     nii, js = a.out.with_name(a.out.name + ".nii.gz"), a.out.with_name(a.out.name + ".json")

@@ -46,3 +46,13 @@ export function statisticNote(scan: StatisticScan) {
   const m = scan.metadata as Sidecar;
   return `${m.statistic ?? scan.description} · ${statisticRule(scan.metadata)} · ±${Number(m.vmax ?? 0).toPrecision(2)} ${scan.units} · painted on this scan's own label grid; regional, not voxelwise`;
 }
+
+/** The command that makes a statistic map for the open scan: participant mode (its row of a per-scan table, e.g.
+ * normative z-scores) when PIE found the T1, otherwise a per-region table painted on the scan's own segmentation. */
+export function statisticRecipe(scan: { id: string; metadata: Record<string, unknown> }) {
+  const run = "venv_imaging/bin/python -m pie.imaging.regionmap";
+  const imageId = scan.metadata.image_id;
+  return imageId
+    ? `${run} --table zscores.csv --image-id ${imageId} --measure vol --units z --out maps/${scan.id}_z --manifest viewer.json`
+    : `${run} --table results.csv --value d --fastsurfer-dir <this scan's FastSurfer folder> --reference-id ${scan.id} --out maps/${scan.id}_d --manifest <this viewer's manifest>`;
+}

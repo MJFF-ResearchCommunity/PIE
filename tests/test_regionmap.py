@@ -268,3 +268,48 @@ def test_figure_colours_match_the_viewers_warm_and_cool_scales():
     c = regionmap.STAT_CMAP
     assert np.allclose(c(1.0)[:3], (1, 254 / 255, 0), atol=0.01) and np.allclose(c(0.0)[:3], (0, 254 / 255, 1), atol=0.01)
     assert np.allclose(c(0.499)[:3], (0, 127 / 255, 1), atol=0.02) and np.allclose(c(0.501)[:3], (1, 127 / 255, 0), atol=0.02)
+
+
+def test_z_prefixed_normative_columns_match_their_regions():
+    got, unmatched = regionmap.match_features(["z_vol_Left_Putamen", "z_cth_lh_precentral"], LUT)
+    assert got == {"z_vol_Left_Putamen": 12, "z_cth_lh_precentral": 1024} and unmatched == []
+
+
+def _pie_repo(tmp_path):
+    repo = tmp_path / "repo"
+    _fs(repo / "Imaging/derived/fastsurfer/A")
+    (repo / "Imaging/derived/sessions.csv").write_text("patno,image_id,series_desc\n1,A,T1\n")
+    pd.DataFrame({"IMAGEID": ["A", "B"], "PATNO": [1, 2], "z_vol_Left_Putamen": [-2.4, 0.3],
+                  "z_vol_Right_Putamen": [-1.1, 0.2], "z_cth_lh_precentral": [0.9, -0.5]}).to_csv(tmp_path / "z.csv", index=False)
+    return repo
+
+
+def test_participant_mode_paints_that_scans_row_of_a_wide_table(tmp_path):
+    import json
+
+    from pie.imaging.viewer.catalog import Catalog
+    repo = _pie_repo(tmp_path)
+    m = tmp_path / "viewer.json"
+    m.write_text(json.dumps({"version": 1, "scans": []}))
+    side = regionmap.main(["--table", str(tmp_path / "z.csv"), "--image-id", "A", "--out", str(tmp_path / "A_z"),
+                           "--manifest", str(m), "--repo", str(repo)])
+    out = np.asarray(nib.load(tmp_path / "A_z.nii.gz").dataobj)
+    assert out[0].min() == np.float32(-2.4) and out[1].min() == np.float32(-1.1) and not out[2].any()   # vol only
+    assert side["n_shown"] == 2 and side["unmatched"] == []
+    scan = Catalog(repo, manifest=m).scans["stat-A_z"]
+    assert scan.reference_id == "mri-A" and scan.subject == "1"
+
+
+def test_participant_mode_measure_picks_thickness(tmp_path):
+    repo = _pie_repo(tmp_path)
+    side = regionmap.main(["--table", str(tmp_path / "z.csv"), "--image-id", "A", "--measure", "cth", "--out", str(tmp_path / "A_cth"),
+                           "--repo", str(repo)])
+    assert side["n_shown"] == 1 and side["vmax"] == np.float32(0.9)
+
+
+def test_participant_mode_unknown_image_id_is_an_error(tmp_path, capsys):
+    import pytest
+    repo = _pie_repo(tmp_path)
+    with pytest.raises(SystemExit):
+        regionmap.main(["--table", str(tmp_path / "z.csv"), "--image-id", "C", "--out", str(tmp_path / "C"), "--repo", str(repo)])
+    assert "no IMAGEID C" in capsys.readouterr().err

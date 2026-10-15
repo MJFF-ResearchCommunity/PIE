@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { statisticDisplay, statisticLabel, statisticNote } from "./statDisplay";
+import { statisticDisplay, statisticLabel, statisticNote, statisticRecipe } from "./statDisplay";
 
 describe("statisticDisplay", () => {
   it("is symmetric so negative effects stay visible", () => {
@@ -30,5 +30,18 @@ describe("statistic overlay text", () => {
     expect(note).toContain("p_fdr < 0.05");
     expect(note).toContain("±0.50 SD");
     expect(note).not.toContain("acquired");
+  });
+});
+
+describe("how to make a statistic map for the open scan", () => {
+  it("uses participant mode for a T1 found in PIE's outputs", () => {
+    const cmd = statisticRecipe({ id: "mri-X1", metadata: { image_id: "X1" } });
+    expect(cmd).toContain("--image-id X1");
+    expect(cmd).not.toContain("--reference-id");
+  });
+  it("names the scan as the reference for a manifest scan", () => {
+    const cmd = statisticRecipe({ id: "mni152-t1", metadata: {} });
+    expect(cmd).toContain("--reference-id mni152-t1");
+    expect(cmd).toContain("--fastsurfer-dir");
   });
 });

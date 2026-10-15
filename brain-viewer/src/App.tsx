@@ -68,7 +68,7 @@ import {
   subjectLabel,
 } from "./model";
 import { serviceUnavailableMessage } from "./apiTarget";
-import { statisticDisplay, statisticLabel, statisticNote } from "./statDisplay";
+import { statisticDisplay, statisticLabel, statisticNote, statisticRecipe } from "./statDisplay";
 
 const names: Record<Modality, string> = {
   MRI: "Structural MRI",
@@ -220,6 +220,7 @@ export default function App() {
   const [playbackSpeed, setPlaybackSpeed] = useState(2);
   const [retry, setRetry] = useState(0);
   const api = useRef<ViewerApi | null>(null);
+  const statisticPanel = useRef<HTMLDetailsElement>(null);
   const localScans = useRef(new Map<string, Prepared>());
   const urls = useRef<string[]>([]);
   const requestCounter = useRef(0);
@@ -468,6 +469,20 @@ export default function App() {
     if (!subject) return;
     const next = nearestScan(subject, m, currentDate);
     if (next) setScanId(next.id);
+  };
+  // Statistic maps are overlays on a segmented T1, not acquisitions: go to the T1 and open its overlay menu,
+  // which lists the maps and shows the command that makes one for that scan.
+  const showStatistics = () => {
+    if (subject && !scan?.has_atlas) {
+      const t1 = nearestScan(subject, "MRI", currentDate);
+      if (t1) setScanId(t1.id);
+    }
+    requestAnimationFrame(() => {
+      const panel = statisticPanel.current;
+      if (!panel) return;
+      panel.open = true;
+      panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
   };
   async function selectOverlay(id: string) {
     const epoch = ++requestCounter.current;
@@ -881,23 +896,31 @@ export default function App() {
                   aria-label="Imaging modality"
                 >
                   {MODALITIES.map((m) => {
-                    const available = subject?.modalities.includes(m);
+                    const statistic = m === "Statistic";
+                    const present = subject?.modalities.includes(m);
+                    const available = statistic
+                      ? subject?.scans.some((s) => s.has_atlas)
+                      : present;
                     return (
                       <button
                         key={m}
-                        className={scan?.modality === m ? "active" : ""}
-                        aria-pressed={scan?.modality === m}
+                        className={!statistic && scan?.modality === m ? "active" : ""}
+                        aria-pressed={!statistic && scan?.modality === m}
                         disabled={!available}
                         title={
-                          available
-                            ? `View ${names[m]}; selects nearest actual acquisition`
-                            : `No local ${m} for this participant. Import a scan or consult Sample plan.`
+                          statistic
+                            ? available
+                              ? "Statistic maps: regional results painted on this participant's segmentation. Opens Registered overlay on the T1, with the maps and the command that makes one."
+                              : "Statistic maps need a segmented T1 for this participant."
+                            : available
+                              ? `View ${names[m]}; selects nearest actual acquisition`
+                              : `No local ${m} for this participant. Import a scan or consult Sample plan.`
                         }
-                        onClick={() => selectModality(m)}
+                        onClick={() => (statistic ? showStatistics() : selectModality(m))}
                       >
                         {m}
                         <span
-                          className={`modality-dot ${available ? "available" : ""}`}
+                          className={`modality-dot ${present ? "available" : ""}`}
                         />
                       </button>
                     );
@@ -1502,7 +1525,7 @@ export default function App() {
                       )}
                     </>
                   )}
-                  <details className="fusion-details">
+                  <details className="fusion-details" ref={statisticPanel}>
                     <summary>
                       Registered overlay <Plus size={13} />
                     </summary>
@@ -1532,6 +1555,20 @@ export default function App() {
                         Register and review an image, then add it with its
                         reference ID in a viewer manifest.
                       </p>
+                    )}
+                    {scan?.has_atlas && (
+                      <div className="stat-howto">
+                        <p>
+                          <strong>Statistic maps</strong> paint regional results on this scan's own segmentation:
+                          this participant's z-scores against controls (<code>pie.imaging.normative</code>), or a group
+                          effect on a template. To make one:
+                        </p>
+                        <code className="stat-command">{statisticRecipe(scan)}</code>
+                        <p>
+                          Serve the viewer with that manifest and the map appears in the menu above. Details:
+                          documentation/brain_viewer.md, "Statistic maps".
+                        </p>
+                      </div>
                     )}
                     {overlay && (
                       <div>

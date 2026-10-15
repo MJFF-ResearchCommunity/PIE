@@ -700,7 +700,22 @@ venv_imaging/bin/python -m pie.imaging.regionmap --table results.csv --value d -
 venv_imaging/bin/python -m pie.imaging.viewer serve --manifest Imaging/examples/manifest_statmaps.json
 ```
 
-- **Input:** one row per region, with a feature name, a value and an optional p column. PIE names such as
+- **One participant's map.** In the viewer, **Statistic** (beside the modality buttons) opens **Registered overlay**
+  on the participant's segmented T1, lists their maps and shows the command that makes one for that scan. The usual
+  input is their row of normative z-scores against controls (`pie.imaging.normative`, columns `z_vol_*`, one row per
+  scan with an `IMAGEID` column):
+
+  ```bash
+  echo '{"version": 1, "scans": []}' > viewer.json            # or any manifest you already serve
+  venv_imaging/bin/python -m pie.imaging.regionmap --table zscores.csv --image-id <image id> --measure vol \
+      --units z --out maps/<image id>_z --manifest viewer.json
+  venv_imaging/bin/python -m pie.imaging.viewer serve --manifest viewer.json
+  ```
+
+  `--image-id` paints that scan's row on `Imaging/derived/fastsurfer/<image id>` and attaches it to the viewer's
+  `mri-<image id>`. `--measure` picks `vol`, `cth` or `area` columns (one measure per map).
+- **Input (group or other per-region results):** one row per region, with a feature name, a value and an optional p
+  column. PIE names such as
   `vol_Left_Putamen`, `vol_ctx_lh_precentral` and `cth_lh_precentral` match atlas labels. Anything else (eTIV, sums,
   asymmetry indices, DK-only regions) is listed as **unmatched**, never dropped silently. **One measure per map:**
   a table holding both `vol_ctx_lh_precentral` and `cth_lh_precentral` is refused, because both are the same region.
