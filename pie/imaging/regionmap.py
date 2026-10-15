@@ -59,6 +59,14 @@ def region_map(table, atlas_path, value, feature="feature", p=None, alpha=None, 
     return paint(atlas, vals), side
 
 
+def cortex_only(map_img, atlas_img, hemi):
+    """The map restricted to one hemisphere's cortical labels (FreeSurfer ctx-lh 1000-1999, ctx-rh 2000-2999), so a
+    surface projection never shows ventricle or deep-nucleus values as cortex."""
+    lo = 1000 if hemi == "left" else 2000
+    a = np.asarray(atlas_img.dataobj)
+    return nib.Nifti1Image(np.where((a >= lo) & (a < lo + 1000), np.asarray(map_img.dataobj), 0).astype(np.float32), map_img.affine)
+
+
 def figures(map_path, sidecar_path, background, out_dir, template=False):
     """Publication figures from the same map and sidecar the viewer shows: ortho slices always; for template maps also a
     glass brain and an fsaverage5 surface view. SVG text stays editable. Returns the files written."""
@@ -71,7 +79,8 @@ def figures(map_path, sidecar_path, background, out_dir, template=False):
     if vmax == 0:
         title += " (no region passes the threshold)"
     img = nib.load(map_path)
-    kw = {"cmap": "cold_hot", "vmax": vmax or 1.0, "threshold": vmax / 1000 or None}
+    # symmetric in every view: nilearn otherwise maps a one-signed map onto the whole diverging scale
+    kw = {"cmap": "cold_hot", "vmax": vmax or 1.0, "threshold": vmax / 1000 or None, "symmetric_cbar": True}
     out_dir, stem = Path(out_dir), Path(map_path).name.split(".")[0]
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
@@ -90,14 +99,17 @@ def figures(map_path, sidecar_path, background, out_dir, template=False):
         save(plotting.plot_stat_map(img, bg_img=str(background), display_mode="ortho", title=title, **kw), "slices")
         if template:
             save(plotting.plot_glass_brain(img, plot_abs=False, title=title, colorbar=True, **kw), "glass")
+            atlas = nib.load(side["atlas"])          # the label grid the map was painted on (sidecar)
             fs = datasets.fetch_surf_fsaverage("fsaverage5")
             fig, axes = plt.subplots(1, 4, figsize=(16, 4), subplot_kw={"projection": "3d"})
             for ax, (hemi, view) in zip(axes, [(h, v) for h in ("left", "right") for v in ("lateral", "medial")]):
-                tex = surface.vol_to_surf(img, fs[f"pial_{hemi}"])
+                tex = surface.vol_to_surf(cortex_only(img, atlas, hemi), fs[f"pial_{hemi}"])
                 plotting.plot_surf_stat_map(fs[f"infl_{hemi}"], tex, hemi=hemi, view=view, bg_map=fs[f"sulc_{hemi}"],
                                             axes=ax, figure=fig, colorbar=False, **kw)
+            fig.colorbar(plt.cm.ScalarMappable(norm=plt.Normalize(-kw["vmax"], kw["vmax"]), cmap=plotting.cm.cold_hot),
+                         ax=axes, shrink=0.6, label=side.get("units") or None)
             fig.suptitle(title)
-            fig.text(0.5, 0.02, "MNI152 volume projected to fsaverage (approximate)", ha="center")
+            fig.text(0.5, 0.02, "MNI152 volume projected to fsaverage (approximate); cortical labels only", ha="center")
             save(fig, "surface", svg=False)
     return written
 

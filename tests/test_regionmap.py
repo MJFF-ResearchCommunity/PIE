@@ -87,3 +87,42 @@ def test_figures_write_slices_for_participant_maps_even_when_empty(tmp_path):
         assert sorted(p.name for p in out) == [f"{name}_slices.png", f"{name}_slices.svg"] and all(p.stat().st_size for p in out)
     assert "no region passes the threshold" in (tmp_path / "fig" / "none_slices.svg").read_text()
     assert "no region passes" not in (tmp_path / "fig" / "effect_slices.svg").read_text()
+
+
+def test_surface_projection_keeps_only_that_hemispheres_cortex():
+    a = np.zeros((4, 4, 4), np.int16)
+    a[0], a[1], a[2] = 4, 1024, 2024                  # lateral ventricle, ctx-lh-precentral, ctx-rh-precentral
+    m = nib.Nifti1Image(np.where(a > 0, 0.5, 0).astype(np.float32), np.eye(4))
+    left = np.asarray(regionmap.cortex_only(m, nib.Nifti1Image(a, np.eye(4)), "left").dataobj)
+    assert left[1].min() == np.float32(0.5) and not left[0].any() and not left[2].any()
+    right = np.asarray(regionmap.cortex_only(m, nib.Nifti1Image(a, np.eye(4)), "right").dataobj)
+    assert right[2].min() == np.float32(0.5) and not right[:2].any()
+
+
+def test_surface_view_keeps_positive_effects_warm(tmp_path, monkeypatch):
+    """An all-positive cortical map must not borrow the blue (negative) half of the colour scale on the surface."""
+    import json
+
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.image import imread
+    from nilearn import datasets
+    from scipy.spatial import ConvexHull
+
+    a = np.zeros((12, 12, 12), np.int16)
+    a[2:10, 2:10, 2:10] = 1024
+    m = np.where(a > 0, np.random.default_rng(1).uniform(0.05, 0.6, a.shape), 0).astype(np.float32)
+    nib.save(nib.Nifti1Image(a, np.eye(4)), tmp_path / "atlas.nii.gz")
+    nib.save(nib.Nifti1Image(m, np.eye(4)), tmp_path / "pos.nii.gz")
+    (tmp_path / "pos.json").write_text(json.dumps({"statistic": "d", "units": "SD", "vmax": 0.6, "threshold": None,
+                                                   "atlas": str(tmp_path / "atlas.nii.gz")}))
+    pts = np.random.default_rng(2).uniform(3, 8, (200, 3))
+    mesh = (pts, ConvexHull(pts).simplices)
+    fake = {f"{k}_{h}": mesh for k in ("pial", "infl") for h in ("left", "right")}
+    fake |= {f"sulc_{h}": np.zeros(len(pts)) for h in ("left", "right")}
+    monkeypatch.setattr(datasets, "fetch_surf_fsaverage", lambda *args, **kwargs: fake)
+    out = regionmap.figures(tmp_path / "pos.nii.gz", tmp_path / "pos.json", tmp_path / "pos.nii.gz", tmp_path / "fig", template=True)
+    img = imread(next(p for p in out if p.name.endswith("_surface.png")))
+    brains = img[:, : int(0.75 * img.shape[1]), :3]                # the four views, not the colour bar
+    blue = (brains[..., 2] > brains[..., 0] + 0.3) & (brains[..., 2] > 0.5)
+    assert not blue.any()

@@ -18,6 +18,7 @@ derived images        ──Brain Explorer──► interactive 3-D / slice revi
 | Walkthrough: a basic `COHORT` classification, stage by stage | [basic_classification.ipynb](../walkthroughs/basic_classification.ipynb) | — |
 | Walkthrough: LONI download → imaging-derived phenotypes | [imaging_features.ipynb](../walkthroughs/imaging_features.ipynb) | — |
 | Walkthrough: Brain Explorer, on open data and on your PPMI outputs | [brain_viewer.ipynb](../walkthroughs/brain_viewer.ipynb) | — |
+| Walkthrough: from a group comparison to a brain map (viewer overlay + manuscript figures) | [region_effect_maps.ipynb](../walkthroughs/region_effect_maps.ipynb) | `pie/imaging/regionmap.py` |
 | Loading raw PPMI tables (PIE-clean) | [data_loader.md](data_loader.md) | `pie_clean` (companion package) |
 | Cleaning raw PPMI tables (PIE-clean) | [data_preprocessor.md](data_preprocessor.md) | `pie_clean` |
 | Dropping low-value columns, merging tables | [data_reducer.md](data_reducer.md) | `pie/data_reducer.py` |
