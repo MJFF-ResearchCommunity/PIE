@@ -12,6 +12,7 @@ import {
 } from "./structureDisplay";
 import { captureView } from "./captureView";
 import { voxelTimeSeries } from "./fmriDisplay";
+import { statisticDisplay, statisticVolume } from "./statDisplay";
 import {
   INITIAL_SPECT_CUTOFF,
   clipEmissionToAnatomy,
@@ -234,6 +235,17 @@ export default function BrainCanvas({
       // setColormap can recalibrate: apply the user's window afterwards.
       primary.cal_min = s.window[0];
       primary.cal_max = s.window[1];
+      if (prepared.scan.kind === "statistic") {
+        // A statistic map keeps its sidecar's symmetric limits; the window slider does not apply.
+        const d = statisticDisplay(prepared.scan.metadata);
+        if (primary.colormap !== d.colormap) primary.setColormap(d.colormap);
+        primary.colormapNegative = d.colormapNegative;
+        primary.cal_min = d.cal_min;
+        primary.cal_max = d.cal_max;
+        primary.cal_minNeg = d.cal_minNeg;
+        primary.cal_maxNeg = d.cal_maxNeg;
+        primary.colorbarVisible = true;
+      }
       primary.opacity = s.hideSignal && prepared.context ? 0 : s.opacity;
       if ((primary.nFrame4D ?? 1) > 1)
         nv.setFrame4D(
@@ -480,10 +492,13 @@ export default function BrainCanvas({
                 colormap:
                   overlay.scan.modality === "fMRI" ? "warm" : ov.colormap,
                 opacity: 0.6,
+                ...(overlay.scan.kind === "statistic" && statisticVolume(overlay.scan.metadata)),
               },
             );
         }
         descriptors.current = volumes;
+        nv.opts.isColorbar =
+          prepared.scan.kind === "statistic" || overlay?.scan.kind === "statistic";
         if (volumes.length)
           await nv.loadVolumes(
             volumes.map((v) => ({
@@ -491,7 +506,7 @@ export default function BrainCanvas({
               name: v.url.startsWith("blob:")
                 ? v.name
                 : decodeURIComponent(v.url.split("/").pop()!),
-              colorbarVisible: false,
+              colorbarVisible: v.colorbarVisible ?? false,
               trustCalMinMax: true,
             })),
           );

@@ -68,6 +68,7 @@ import {
   subjectLabel,
 } from "./model";
 import { serviceUnavailableMessage } from "./apiTarget";
+import { statisticDisplay } from "./statDisplay";
 
 const names: Record<Modality, string> = {
   MRI: "Structural MRI",
@@ -76,6 +77,7 @@ const names: Record<Modality, string> = {
   PET: "PET emission",
   CT: "Computed tomography",
   fMRI: "Functional MRI",
+  Statistic: "Statistic map",
 };
 const modalityNotes: Record<Modality, string> = {
   MRI: "Native anatomy from the measured MRI. The brain mask removes extracranial tissue; anatomical labels come from the participant’s segmentation.",
@@ -85,6 +87,7 @@ const modalityNotes: Record<Modality, string> = {
   PET: "Interpret signal in the context of the tracer, acquisition timing, reconstruction, and intensity units. Uncalibrated PET counts are not SUV or SUVR.",
   CT: "Window and level control Hounsfield-unit contrast when the source is calibrated. Bone and brain windows show the same measured data differently.",
   fMRI: "Raw BOLD frames describe a time series, not an activation map. Statistical maps require an explicit analysis and registration to the anatomical reference.",
+  Statistic: "A regional result painted on this segmentation's own label grid (warm positive, cool negative); not a voxelwise test. The colour limits and threshold come from the map's sidecar.",
 };
 const defaults: Display = {
   atlasOutline: false,
@@ -1515,8 +1518,9 @@ export default function App() {
                           <option value="">No additional overlay</option>
                           {compatible.map((s) => (
                             <option key={s.id} value={s.id}>
-                              {s.modality} · {dateLabel(s.date, true)} ·{" "}
-                              {s.description}
+                              {s.kind === "statistic"
+                                ? String(s.metadata.statistic ?? s.description)
+                                : `${s.modality} · ${dateLabel(s.date, true)} · ${s.description}`}
                             </option>
                           ))}
                         </select>
@@ -1544,6 +1548,10 @@ export default function App() {
                           {overlay.scan.date !== scan?.date &&
                             "These are different acquisition dates."}
                         </p>
+                        {overlay.scan.kind === "statistic" &&
+                          statisticDisplay(overlay.scan.metadata).empty && (
+                            <p className="fusion-note">No region passes the threshold.</p>
+                          )}
                       </div>
                     )}
                   </details>
@@ -1951,6 +1959,7 @@ export default function App() {
           <span>{names[scan.modality]}</span>
           <p>
             {modalityNotes[scan.modality]} <strong>{scan.qc}.</strong>
+            {scan.kind === "statistic" && statisticDisplay(scan.metadata).empty && " No region passes the threshold."}
             {prepared?.geometry?.spatial_unit === "unknown" &&
               " Source spatial units are unspecified: coordinates and volumes assume millimetres. Verify the source header before interpreting measurements."}
           </p>

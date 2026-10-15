@@ -1,4 +1,4 @@
-export type Modality = "CT" | "DTI" | "MRI" | "PET" | "SPECT" | "fMRI";
+export type Modality = "CT" | "DTI" | "MRI" | "PET" | "SPECT" | "fMRI" | "Statistic";
 export const MODALITIES: Modality[] = [
   "MRI",
   "DTI",
@@ -6,6 +6,7 @@ export const MODALITIES: Modality[] = [
   "PET",
   "CT",
   "fMRI",
+  "Statistic",
 ];
 export interface Scan {
   id: string;
@@ -15,7 +16,7 @@ export interface Scan {
   visit: string;
   description: string;
   space: string;
-  kind: "scalar" | "timeseries" | "tracts";
+  kind: "scalar" | "timeseries" | "tracts" | "statistic";
   units: string;
   reference_id: string | null;
   registration: string;
@@ -75,6 +76,10 @@ export interface Volume {
   cal_min: number;
   cal_max: number;
   opacity: number;
+  colormapNegative?: string;
+  cal_minNeg?: number;
+  cal_maxNeg?: number;
+  colorbarVisible?: boolean;
 }
 export interface Geometry {
   spatial_unit?: string;
