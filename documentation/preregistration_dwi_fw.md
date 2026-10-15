@@ -123,3 +123,16 @@ sha256 at the freeze (14 Oct 2026): `analyse_dwi_fw.py` ef22dda5d559c9f65b117faa
 `dwi_fw_index.py` 8f253245ff856e7ef74277cf921bab904ed58f332be260e26ec4735fc584d2df; `nm_staged.py` (its AUROC and CI)
 3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f. Synthetic dry run only before the freeze. Run once;
 every number reported.
+
+## Run log (processing only; no `dwisf_*` value was looked at)
+
+- **14–15 Oct 2026: eddy failures while the GPU was shared.**
+  - From about 00:30 on 15 Oct, FastSurfer (the new-T1 run) shared the 8 GB GPU with three `eddy_cuda` workers. From then on, almost every eddy run failed with an FSL exception in eddy's outlier-replacement step: 79 participants, against about 20 successes before.
+  - The failures stopped when the GPU was no longer shared. One failed participant was re-run alone with full eddy logging, and it completed normally.
+  - The failed participants are re-run with the same frozen code (`--retry-errors`, which drops the error rows before re-running them). A pre-retry copy of the table is kept.
+  - The GPU now runs one job type at a time: the DWI passes, then the PD arm, then TrUE-Net.
+- **15 Oct 2026: registration-cache check.** 7 participants failed the registration-cache provenance check at the end of the new-T1 run, most likely a timing clash while that run was writing.
+  - All 496 cached T1→MNI registrations were then checked against their current T1s. All matched, and none was stale.
+  - The 30 participants finished before the incident were all measured on their current T1.
+  - The 7 are re-run.
+- **15 Oct 2026: PD arm queued.** `pd_dwi*.zip` (210 PD, all with a three-shell session; 209 with a finished T1 within 180 days, 1 without any T1) runs after the prodromal pass, with the same frozen command. The restricted index is rebuilt with `dwi_fw_index.py` over all zips, because `load_index` never adds new zips to an existing index.
