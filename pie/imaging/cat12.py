@@ -1,8 +1,9 @@
 """Nucleus basalis (Ch4) grey-matter volume with CAT12, the method of the PD, PPMI and SAA Ch4 literature (Grothe et al.
 2012 Cereb Cortex; Ray et al. 2018 Brain, on PPMI; Wisse, Spotorno et al. 2024): CAT12 segments the raw T1 and
 registers it to its MNI152NLin2009cAsym Shooting template; grey matter modulated for the warp (``mwp1``: native mm^3
-per voxel) is summed inside the Julich-Brain Ch4 maps (Zaborszky et al. 2008; ``atlases.ch4_maps``) at p >= 0.5, and
-weighted by probability. CAT12's TIV gives head size and its IQR the image quality. The neuromorphometrics atlas's
+per voxel) is summed inside a Ch4 probability map (Zaborszky et al. 2008 histology; ``atlases.CH4_MAPS``) at p >= 0.5,
+and weighted by probability. A configuration (``CONFIGS``) names the map and CAT12's output voxel size; the default is
+the best-evidenced one. CAT12's TIV gives head size and its IQR the image quality. The neuromorphometrics atlas's
 basal forebrain (CAT12's own ROI output) is kept as a second definition.
 
 This replaces FSL FAST grey matter in the SyN-pulled maps, which failed plausibility on PPMI (no age effect in
@@ -29,17 +30,21 @@ MCR = Path(os.environ.get("PIE_MCR", Path.home() / "cat12" / "MCR" / "R2023b"))
 # A Ch4 configuration is a probability map (atlases.CH4_MAPS) and CAT12's output voxel size. Every result records its
 # configuration; the default is the best-evidenced one, with the reason next to it. Keep old entries reproducible.
 CONFIGS = {
-    "julich3-1.5mm": {"map": "julich3", "vox": 1.5,
-                      "status": "pre-registered 13 Oct 2026; not validated 15 Oct (controls' age r -0.299, rho with ScLimbic "
-                                "0.10, ICC 0.76); its map is asymmetric (left/right 2.0)",
-                      "why_default": "the only configuration so far"},
+    "julich303-1mm": {"map": "julich303", "vox": 1.0, "status": "candidate for the next pre-registered Ch4 test; not validated",
+                      "why_default": "the 13 Oct configuration failed and its Julich-Brain v3.1 map has a truncated right Ch4 "
+                                     "(left/right 2.0); v3.0.3 holds the same 10 brains, near-symmetric; 1 mm output for a "
+                                     "structure about 2 mm thick (CAT12's 1.5 mm default blurs it)"},
+    "julich303-1.5mm": {"map": "julich303", "vox": 1.5, "status": "comparison: the corrected map on the 13 Oct CAT12 runs"},
+    "julich31-1.5mm": {"map": "julich31", "vox": 1.5,
+                       "status": "pre-registered 13 Oct 2026; not validated 15 Oct (controls' age r -0.299, rho with ScLimbic "
+                                 "0.10, ICC 0.76); its map's right Ch4 is truncated (left/right 2.0)"},
 }
-DEFAULT_CONFIG = "julich3-1.5mm"
+DEFAULT_CONFIG = "julich303-1mm"
 
 
 def result_name(config):
     """stats/ file of a configuration's result; the 13 Oct configuration keeps the name its frozen script reads."""
-    return "cat12_ch4.json" if config == "julich3-1.5mm" else f"cat12_ch4_{config}.json"
+    return "cat12_ch4.json" if config == "julich31-1.5mm" else f"cat12_ch4_{config}.json"
 
 
 def work_name(vox):

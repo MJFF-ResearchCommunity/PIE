@@ -55,18 +55,29 @@ def test_output_voxel_size_is_an_option_that_hits_one_line(tmp_path):
 
 def test_configurations_keep_the_15_oct_result_reproducible():
     from pie.imaging import cat12
-    legacy = cat12.CONFIGS["julich3-1.5mm"]
-    assert (legacy["map"], legacy["vox"]) == ("julich3", 1.5)
-    assert cat12.result_name("julich3-1.5mm") == "cat12_ch4.json"          # the file the frozen 13 Oct script reads
+    legacy = cat12.CONFIGS["julich31-1.5mm"]
+    assert (legacy["map"], legacy["vox"]) == ("julich31", 1.5)
+    assert cat12.result_name("julich31-1.5mm") == "cat12_ch4.json"          # the file the frozen 13 Oct script reads
     assert cat12.work_name(1.5) == "cat12" and cat12.work_name(1) == "cat12_1mm"
     assert cat12.DEFAULT_CONFIG in cat12.CONFIGS and cat12.CONFIGS[cat12.DEFAULT_CONFIG].get("why_default")
     for name in cat12.CONFIGS:
-        if name != "julich3-1.5mm":
+        if name != "julich31-1.5mm":
             assert cat12.result_name(name) == f"cat12_ch4_{name}.json"
 
 
 def test_unknown_ch4_map_is_refused_with_the_options():
     from pie.imaging.atlases import CH4_MAPS, ch4_maps
-    assert "julich3" in CH4_MAPS
-    with pytest.raises(ValueError, match="julich3"):
+    assert "julich31" in CH4_MAPS
+    with pytest.raises(ValueError, match="julich31"):
         ch4_maps("no-such-map")
+
+
+def test_default_is_the_symmetric_julich_303_map_at_1_mm():
+    from pie.imaging import cat12
+    from pie.imaging.atlases import CH4_MAPS
+    m = CH4_MAPS["julich303"]
+    assert m["lh"][0].endswith("Ch-4_pmap_l_N10_nlin2ICBM152asym2009c_4.3_public_f39cf20c67befc68c70fe6226d00be88.nii.gz")
+    assert m["rh"][1] == "e08827bf9ae749a04c060c3b9bcdc8b8162ce2c614b9e5ac5724b76960f90020"
+    assert cat12.DEFAULT_CONFIG == "julich303-1mm" and cat12.CONFIGS["julich303-1mm"] == {**cat12.CONFIGS["julich303-1mm"], "map": "julich303", "vox": 1.0}
+    assert "v3.1" in cat12.CONFIGS["julich303-1mm"]["why_default"]
+    assert cat12.CONFIGS["julich303-1.5mm"]["vox"] == 1.5                  # reuses the 1.5 mm CAT12 runs: isolates the map

@@ -105,10 +105,21 @@ CH4_FILES = {'lh': ('BasalForebrain-Ch-4/BasalForebrain-Ch-4_lh_MNI152.nii.gz', 
 
 # Ch4 probability maps PIE can use (pie.imaging.cat12.CONFIGS pairs one with a CAT12 output voxel size). Each entry:
 # {"lh"|"rh": (url, sha256)}, values 0-1 in MNI152NLin2009cAsym. Keep old entries: past results name the map they used.
+# Julich-Brain maps are CC BY-NC-SA 4.0: fetched at run time, never bundled.
+JULICH303 = ('https://data-proxy.ebrains.eu/api/v1/public/buckets/d-d69b70e2-3002-4eaf-9c61-9c56f019bbc8/'
+             'probabilistic_maps_pmaps_157areas/Ch-4/')
 CH4_MAPS = {
-    # Julich-Brain v3 (EBRAINS, CC BY 4.0). Strongly asymmetric: left 261 / right 111 mm^3 at p >= 0.5, mirror Dice 0.48
-    # (measured 15 Oct 2026); the 13 Oct pre-registered test with it failed.
-    "julich3": {h: (JULICH + rel, sha) for h, (rel, sha) in CH4_FILES.items()},
+    # Julich-Brain v3.0.3, Ch 4 dataset v4.3 (doi:10.25493/KQAX-ADP): the 10 brains of Zaborszky et al. 2008 (NeuroImage
+    # 42:1127), whose histology is symmetric. Measured 15 Oct 2026: left 252 / right 211 mm^3 at p >= 0.5, summed
+    # probability 489 / 448, mirror Dice 0.65.
+    "julich303": {"lh": (JULICH303 + "Ch-4_pmap_l_N10_nlin2ICBM152asym2009c_4.3_public_f39cf20c67befc68c70fe6226d00be88.nii.gz",
+                         "fb504f849a445569531896744a7de14106435c713b8eb18f87ac38359e15b4d5"),
+                  "rh": (JULICH303 + "Ch-4_pmap_r_N10_nlin2ICBM152asym2009c_4.3_public_86d192b1a1c3156fb8c9558d90c962e9.nii.gz",
+                         "e08827bf9ae749a04c060c3b9bcdc8b8162ce2c614b9e5ac5724b76960f90020")},
+    # Julich-Brain v3.1: same 10 brains, but its right Ch4 map looks truncated (about 55 % of v3.0.3's mass, nothing behind
+    # y = -8): left 261 / right 111 mm^3 at p >= 0.5, mirror Dice 0.48. Every other release is near-symmetric. The 13 Oct
+    # pre-registered test used it and failed (left/right 2.04). Kept so that result stays reproducible.
+    "julich31": {h: (JULICH + rel, sha) for h, (rel, sha) in CH4_FILES.items()},
 }
 
 

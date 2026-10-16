@@ -100,7 +100,14 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
   - ρ with ScLimbic basal forebrain 0.10 against ≥ 0.40: fail;
   - same-day ICC(2,1) 0.76 [0.52, 0.93] against ≥ 0.75: pass.
 
-  The median volume (157 mm³) is below the literature's about 270 mm³, and the left/right ratio is 2.0 where about 1 is expected. That points to the region definition, which is the next thing to examine. The probability-weighted Ch4 and the neuromorphometrics basal forebrain met the age and reliability bars but not convergence (ρ 0.21–0.22). The run was resumed after an out-of-memory stop, with scheduling changes only (documented).
+  The median volume (157 mm³) is below the literature's about 270 mm³, and the left/right ratio is 2.0 where about 1 is expected.
+- **Why, found 15 Oct: the map.** The Julich-Brain v3.1 Ch4 map used here has a truncated right hemisphere:
+  - **Size:** left 261 vs right 111 mm³ at p ≥ 0.5; mirror Dice 0.48.
+  - **Same brains:** it comes from the same 10 brains as Zaborszky et al. 2008, whose histology is symmetric (85 vs 90 mm³).
+  - **Every other release is near-symmetric**, left/right 0.99–1.14.
+  - **The fix:** PIE now defaults to the v3.0.3 Ch4 map (left 252 vs right 211 mm³; mirror Dice 0.65), with CAT12 output at 1 mm (configuration `julich303-1mm`). The 13 Oct configuration stays available as `julich31-1.5mm`.
+  - **Still not validated:** the new configuration needs its own pre-registered test on data not used here.
+- **Convergence diagnostics, 15 Oct.** ScLimbic's basal forebrain is highly repeatable (same-day ICC 0.97) and symmetric (left/right 0.94). Yet CAT12's whole basal forebrain, also reliable (ICC 0.96), agrees with it at only ρ 0.21 after head size, whichever head-size measure is used, and about 0.05 after age and sex too. The two methods track different person-to-person variation, so a ρ ≥ 0.40 bar against ScLimbic cannot tell a right Ch4 from a wrong one. The next test needs a different convergence check. The probability-weighted Ch4 and the neuromorphometrics basal forebrain met the age and reliability bars but not convergence (ρ 0.21–0.22). The run was resumed after an out-of-memory stop, with scheduling changes only (documented).
 - **Software version.** CAT26 was released on 12 Oct 2026. The pre-registered test stays on CAT12.9. Moving to CAT26 would need a version-bridging comparison first (on hold).
 
 ### DaT-SPECT
@@ -236,7 +243,8 @@ script hashes, before its data are processed.
 Newest first.
 
 - **2026-10-15**
-  - Ch4 (CAT12.9) not validated: age r −0.299 (bar −0.30), ρ with ScLimbic 0.10 (bar 0.40), ICC 0.76 (passed). Left/right ratio 2.0 flags the region definition. Every number is in the pre-registration.
+  - Ch4 (CAT12.9) not validated: age r −0.299 (bar −0.30), ρ with ScLimbic 0.10 (bar 0.40), ICC 0.76 (passed). Every number is in the pre-registration.
+  - Cause found: the Julich-Brain v3.1 Ch4 map has a truncated right hemisphere. The default is now the near-symmetric v3.0.3 map at 1 mm, not yet validated, and the old configuration is kept as an option. ScLimbic's basal forebrain is reliable (ICC 0.97), but it shares little person-to-person variation with CAT12 measures.
   - Frozen, as recommended and approved: the seven drafts below and NM Amendment 1. Changes at the freeze: fMRI scans lost to motion are reported apart from throughput, and its median and distance-dependence QC-FC gates use a permutation null only (Ciric's values are figure-only); cortical-thickness bars 0.75 (agreement) and 0.85 (repeatability) on about 470 scans. FLAIR is frozen with an open caveat: whether TrUE-Net's distributed weights saw the challenge test set. Script hashes are in each document.
   - Seven pre-registrations drafted (QSIPrep agreement, FLAIR WMH, fMRI, cortical thickness + T1 QC, longitudinal pilot, PPMI harmonisation, survival positive control), each with tests and a synthetic dry run; listed above.
   - DWI: eddy_cuda failures while FastSurfer shared the GPU overnight; failed participants re-run with the same frozen code. The PD arm (210 participants) is queued.

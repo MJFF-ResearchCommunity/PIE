@@ -298,7 +298,7 @@ def main(argv=None):
                     "fornix, septal nuclei) for every finished subject, then rebuild the table; ~1 min and ~3.3 GB per scan")
     ap.add_argument("--subfields", action="store_true", help="hippocampal subfields and amygdala nuclei (segment_subregions) for every "
                     "subject that has run --surfaces, then rebuild the table")
-    ap.add_argument("--ch4", action="store_true", help="nucleus basalis (Julich-Brain Ch4) grey-matter volume with CAT12 (modulated GM "
+    ap.add_argument("--ch4", action="store_true", help="nucleus basalis (Ch4 probability map, --ch4-config) grey-matter volume with CAT12 (modulated GM "
                     "after Shooting, the published method; pie.imaging.cat12), on the raw T1 of every finished subject; needs PIE_CAT12 "
                     "and PIE_MCR; ~10-20 CPU-min per scan")
     ap.add_argument("--ch4-config", choices=sorted(cat12.CONFIGS), help="Ch4 map and CAT12 voxel size for --ch4 (default: "
