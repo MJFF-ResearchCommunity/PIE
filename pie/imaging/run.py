@@ -15,6 +15,7 @@ fastsurfer_idps.csv (rebuilt on every call from whatever has finished).
 import argparse
 import csv
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -300,6 +301,8 @@ def main(argv=None):
     ap.add_argument("--ch4", action="store_true", help="nucleus basalis (Julich-Brain Ch4) grey-matter volume with CAT12 (modulated GM "
                     "after Shooting, the published method; pie.imaging.cat12), on the raw T1 of every finished subject; needs PIE_CAT12 "
                     "and PIE_MCR; ~10-20 CPU-min per scan")
+    ap.add_argument("--ch4-config", choices=sorted(cat12.CONFIGS), help="Ch4 map and CAT12 voxel size for --ch4 (default: "
+                    "pie.imaging.cat12.DEFAULT_CONFIG, the best-evidenced configuration)")
     ap.add_argument("--synthseg", action="store_true", help="SynthSeg-robust volumes and QC on the raw T1 of every finished subject "
                     "(legacy 1.5 T / thick-slice robustness, FastSurfer cross-check), then rebuild the table")
     ap.add_argument("--etiv", action="store_true", help="add FreeSurfer eTIV (talairach registration) to every finished subject, then "
@@ -325,6 +328,8 @@ def main(argv=None):
         log.info("long IDP table: %s", write_long_idps(sessions, work, tps).shape)
         return
 
+    if a.ch4_config:
+        os.environ["PIE_CH4_CONFIG"] = a.ch4_config        # read by cat12.ch4_volume in every worker
     stages = [st for st in STAGES if getattr(a, st)]     # surfaces before subfields, which need them
     if stages:
         _freesurfer_ready()

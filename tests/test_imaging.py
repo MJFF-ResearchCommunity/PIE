@@ -156,3 +156,19 @@ def test_optional_freesurfer_stages_are_parsed_into_the_idp_row(tmp_path):
     assert row["vol_nmm_lh_basal_forebrain"] == 400.0
     assert row["vol_sclimbic_Left_Basal_Forebrain"] == 359.6 and row["sclimbic_qa_z_max"] == 2.5
     assert row["vol_hsf_lh_CA1"] == 600.5 and row["synthseg_left_hippocampus"] == 3500.0 and row["synthseg_qc_min"] == 0.6
+
+
+def test_idp_row_takes_the_default_ch4_configuration_and_names_it(tmp_path, monkeypatch):
+    from pie.imaging import cat12
+    from pie.imaging.features import extra_t1_columns
+
+    subj = tmp_path / "I1"
+    (subj / "stats").mkdir(parents=True)
+    (subj / "stats" / "cat12_ch4.json").write_text('{"ch4_lh_gm_mm3": 140.0}')          # 13 Oct configuration, no config key
+    assert extra_t1_columns(subj)["cat12_ch4_config"] == "julich3-1.5mm"
+    monkeypatch.setitem(cat12.CONFIGS, "x-1mm", {"map": "x", "vox": 1.0})
+    monkeypatch.setattr(cat12, "DEFAULT_CONFIG", "x-1mm")
+    assert "vol_ch4_lh_gm" not in extra_t1_columns(subj)                                  # never another configuration's value
+    (subj / "stats" / "cat12_ch4_x-1mm.json").write_text('{"ch4_lh_gm_mm3": 200.0, "cat12_ch4_config": "x-1mm", "cat12_ch4_map": "x"}')
+    row = extra_t1_columns(subj)
+    assert row["vol_ch4_lh_gm"] == 200.0 and row["cat12_ch4_config"] == "x-1mm" and "vol_ch4_config" not in row

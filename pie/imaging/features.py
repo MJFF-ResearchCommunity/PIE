@@ -98,9 +98,11 @@ def extra_t1_columns(subj):
             f = subj / "mri" / f"{h}.{kind}.txt"
             if f.exists():
                 out.update({f"vol_{prefix}_{h}_{_clean(k)}": v for k, v in parse_volume_txt(f).items()})
-    ch4 = subj / "stats" / "cat12_ch4.json"
+    from .cat12 import DEFAULT_CONFIG, result_name
+    ch4 = subj / "stats" / result_name(DEFAULT_CONFIG)     # the default configuration only, named in cat12_ch4_config
     if ch4.exists():      # pie.imaging.cat12: vol_ch4_{lh,rh}_{gm,pgm}, vol_nmm_*_basal_forebrain, cat12_tiv_mm3, cat12_iqr_pct
         import json
+        out["cat12_ch4_config"] = DEFAULT_CONFIG
         for k, v in json.loads(ch4.read_text()).items():
             out[f"vol_{k.removesuffix('_mm3')}" if k.startswith(("ch4_", "nmm_")) else k] = v
     ss = subj / "synthseg"

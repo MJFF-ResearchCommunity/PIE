@@ -26,17 +26,37 @@ import numpy as np
 
 CAT12 = Path(os.environ.get("PIE_CAT12", Path.home() / "cat12" / "CAT12.9_R2023b_MCR_Linux"))
 MCR = Path(os.environ.get("PIE_MCR", Path.home() / "cat12" / "MCR" / "R2023b"))
-OUT_JSON = "cat12_ch4.json"
+# A Ch4 configuration is a probability map (atlases.CH4_MAPS) and CAT12's output voxel size. Every result records its
+# configuration; the default is the best-evidenced one, with the reason next to it. Keep old entries reproducible.
+CONFIGS = {
+    "julich3-1.5mm": {"map": "julich3", "vox": 1.5,
+                      "status": "pre-registered 13 Oct 2026; not validated 15 Oct (controls' age r -0.299, rho with ScLimbic "
+                                "0.10, ICC 0.76); its map is asymmetric (left/right 2.0)",
+                      "why_default": "the only configuration so far"},
+}
+DEFAULT_CONFIG = "julich3-1.5mm"
+
+
+def result_name(config):
+    """stats/ file of a configuration's result; the 13 Oct configuration keeps the name its frozen script reads."""
+    return "cat12_ch4.json" if config == "julich3-1.5mm" else f"cat12_ch4_{config}.json"
+
+
+def work_name(vox):
+    """CAT12's working folder for an output voxel size; any map at that size reuses its modulated grey matter."""
+    return "cat12" if vox == 1.5 else f"cat12_{vox:g}mm"
 # Changes to CAT12's shipped default batch (standalone/cat_standalone_segment.m), all outputs we do not use: no
 # surfaces (most of the run time), only modulated GM, only the neuromorphometrics ROIs, no report figure.
 OVERRIDES = {"output.surface": "0", "output.ROImenu.atlases.cobra": "0", "output.WM.mod": "0", "output.label.native": "0",
              "output.bias.warped": "0", "output.warps": "[0 0]", "extopts.admin.print": "0"}
 
 
-def batch_text(shipped):
-    """CAT12's default segmentation batch with ``OVERRIDES`` applied; every override must hit exactly one line."""
+def batch_text(shipped, vox=None):
+    """CAT12's default segmentation batch with ``OVERRIDES`` (and the output voxel size, when given) applied; every
+    override must hit exactly one line."""
     text = Path(shipped).read_text()
-    for key, val in OVERRIDES.items():
+    overrides = OVERRIDES if vox is None else {**OVERRIDES, "extopts.registration.vox": f"{vox:g}"}
+    for key, val in overrides.items():
         pat = re.compile(rf"^(matlabbatch\{{1\}}\.spm\.tools\.cat\.estwrite\.{re.escape(key)}\s*=).*$", re.M)
         text, n = pat.subn(rf"\g<1> {val};", text)
         if n != 1:
@@ -81,23 +101,36 @@ def report_values(report_xml, roi_xml=None):
     return out
 
 
-def ch4_volume(subjects_dir, sid, nii, threads=1):
-    """Run CAT12 on the subject's raw T1 (``nii``) into <subj>/cat12 and write ``stats/cat12_ch4.json`` (keys of
-    ``ch4_from_mwp1`` and ``report_values``). Kept: the modulated GM (mwp1, gzipped) and CAT12's report and ROI XML."""
+def ch4_volume(subjects_dir, sid, nii, threads=1, config=None):
+    """Ch4 volume of one configuration (``CONFIGS``; default ``PIE_CH4_CONFIG`` or ``DEFAULT_CONFIG``) into
+    ``stats/<result_name>``: the keys of ``ch4_from_mwp1`` and ``report_values`` plus the configuration. CAT12 runs on
+    the raw T1 (``nii``) into <subj>/<work_name> unless a finished run at that voxel size is there to reuse. Kept: the
+    modulated GM (mwp1, gzipped) and CAT12's report and ROI XML."""
     from .atlases import ch4_maps
 
+    config = config or os.environ.get("PIE_CH4_CONFIG", DEFAULT_CONFIG)
+    if config not in CONFIGS:
+        raise ValueError(f"unknown Ch4 configuration {config!r}; options: {', '.join(CONFIGS)}")
+    cfg = CONFIGS[config]
     subj = Path(subjects_dir).resolve() / sid
-    out = subj / "stats" / OUT_JSON
+    out = subj / "stats" / result_name(config)
     if out.exists():
         return json.loads(out.read_text())
+    work = subj / work_name(cfg["vox"])
+    done = work / "mwp1t1.nii.gz", work / "report" / "cat_t1.xml", work / "label" / "catROI_t1.xml"
+    if all(p.exists() for p in done):                # this voxel size already ran: only the map differs
+        row = {**ch4_from_mwp1(done[0], ch4_maps(cfg["map"])), **report_values(done[1], done[2]),
+               "cat12_ch4_config": config, "cat12_ch4_map": cfg["map"], "cat12_vox_mm": cfg["vox"]}
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(row, indent=1))
+        return row
     if not nii or not Path(nii).exists():
         raise FileNotFoundError(f"raw T1 missing: {nii}")
-    work = subj / "cat12"
     shutil.rmtree(work, ignore_errors=True)          # a failed attempt's outputs must not pass for this one's
     work.mkdir(parents=True)
     t1 = work / "t1.nii"
     nib.save(nib.load(nii), t1)
-    (work / "batch.m").write_text(batch_text(CAT12 / "standalone" / "cat_standalone_segment.m"))
+    (work / "batch.m").write_text(batch_text(CAT12 / "standalone" / "cat_standalone_segment.m", vox=cfg["vox"]))
     env = dict(os.environ, OMP_NUM_THREADS=str(threads), MKL_NUM_THREADS=str(threads))
     r = subprocess.run(["bash", str(CAT12 / "standalone" / "cat_standalone.sh"), "-m", str(MCR), "-b", str(work / "batch.m"), str(t1)],
                        cwd=work, env=env, capture_output=True, text=True, timeout=4 * 3600)
@@ -105,7 +138,8 @@ def ch4_volume(subjects_dir, sid, nii, threads=1):
     mwp1, report = work / "mri" / "mwp1t1.nii", work / "report" / "cat_t1.xml"
     if r.returncode or not mwp1.exists() or not report.exists():
         raise RuntimeError(f"CAT12 failed (exit {r.returncode}): {(r.stderr or r.stdout)[-300:]}")
-    row = {**ch4_from_mwp1(mwp1, ch4_maps()), **report_values(report, work / "label" / "catROI_t1.xml")}
+    row = {**ch4_from_mwp1(mwp1, ch4_maps(cfg["map"])), **report_values(report, work / "label" / "catROI_t1.xml"),
+           "cat12_ch4_config": config, "cat12_ch4_map": cfg["map"], "cat12_vox_mm": cfg["vox"]}
     with open(mwp1, "rb") as f, gzip.open(work / "mwp1t1.nii.gz", "wb") as g:
         shutil.copyfileobj(f, g)
     for p in work.iterdir():                         # keep mwp1t1.nii.gz, the report/label XML and the log

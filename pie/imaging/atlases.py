@@ -103,9 +103,20 @@ CH4_FILES = {'lh': ('BasalForebrain-Ch-4/BasalForebrain-Ch-4_lh_MNI152.nii.gz', 
              'rh': ('BasalForebrain-Ch-4/BasalForebrain-Ch-4_rh_MNI152.nii.gz', '42a855edcde456ed28554356bf58a0df1d41a17063398622a3000f14b6aa3cc3')}
 
 
-def ch4_maps(cache_dir=Path.home() / '.cache' / 'pie' / 'julich'):
-    """{"lh", "rh"} -> path of the pinned Ch4 probability map (values 0-1, MNI152NLin2009cAsym 1 mm)."""
-    return {h: _pinned(JULICH + rel, Path(cache_dir) / Path(rel).name, sha) for h, (rel, sha) in CH4_FILES.items()}
+# Ch4 probability maps PIE can use (pie.imaging.cat12.CONFIGS pairs one with a CAT12 output voxel size). Each entry:
+# {"lh"|"rh": (url, sha256)}, values 0-1 in MNI152NLin2009cAsym. Keep old entries: past results name the map they used.
+CH4_MAPS = {
+    # Julich-Brain v3 (EBRAINS, CC BY 4.0). Strongly asymmetric: left 261 / right 111 mm^3 at p >= 0.5, mirror Dice 0.48
+    # (measured 15 Oct 2026); the 13 Oct pre-registered test with it failed.
+    "julich3": {h: (JULICH + rel, sha) for h, (rel, sha) in CH4_FILES.items()},
+}
+
+
+def ch4_maps(source, cache_dir=Path.home() / '.cache' / 'pie' / 'julich'):
+    """{"lh", "rh"} -> path of the pinned Ch4 probability map ``source`` (a key of ``CH4_MAPS``)."""
+    if source not in CH4_MAPS:
+        raise ValueError(f"unknown Ch4 map {source!r}; options: {', '.join(CH4_MAPS)}")
+    return {h: _pinned(url, Path(cache_dir) / source / Path(url).name, sha) for h, (url, sha) in CH4_MAPS[source].items()}
 
 
 def mni2009c_brain_1mm(cache_dir=CACHE_DIR):

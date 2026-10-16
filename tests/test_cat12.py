@@ -43,3 +43,30 @@ def test_report_values_converts_units_and_reads_the_basal_forebrain(tmp_path):
     v = report_values(tmp_path / "cat.xml", tmp_path / "roi.xml")
     assert v["cat12_tiv_mm3"] == 1.5e6 and v["cat12_iqr_pct"] == 85
     assert v["nmm_lh_basal_forebrain_mm3"] == pytest.approx(400) and v["nmm_rh_basal_forebrain_mm3"] == pytest.approx(380)
+
+
+def test_output_voxel_size_is_an_option_that_hits_one_line(tmp_path):
+    pre = "matlabbatch{1}.spm.tools.cat.estwrite."
+    shipped = "".join(f"{pre}{k} = 1;\n" for k in OVERRIDES) + f"{pre}extopts.registration.vox = 1.5;\n"
+    (tmp_path / "b.m").write_text(shipped)
+    assert f"{pre}extopts.registration.vox = 1;\n" in batch_text(tmp_path / "b.m", vox=1)
+    assert f"{pre}extopts.registration.vox = 1.5;\n" in batch_text(tmp_path / "b.m", vox=1.5)
+
+
+def test_configurations_keep_the_15_oct_result_reproducible():
+    from pie.imaging import cat12
+    legacy = cat12.CONFIGS["julich3-1.5mm"]
+    assert (legacy["map"], legacy["vox"]) == ("julich3", 1.5)
+    assert cat12.result_name("julich3-1.5mm") == "cat12_ch4.json"          # the file the frozen 13 Oct script reads
+    assert cat12.work_name(1.5) == "cat12" and cat12.work_name(1) == "cat12_1mm"
+    assert cat12.DEFAULT_CONFIG in cat12.CONFIGS and cat12.CONFIGS[cat12.DEFAULT_CONFIG].get("why_default")
+    for name in cat12.CONFIGS:
+        if name != "julich3-1.5mm":
+            assert cat12.result_name(name) == f"cat12_ch4_{name}.json"
+
+
+def test_unknown_ch4_map_is_refused_with_the_options():
+    from pie.imaging.atlases import CH4_MAPS, ch4_maps
+    assert "julich3" in CH4_MAPS
+    with pytest.raises(ValueError, match="julich3"):
+        ch4_maps("no-such-map")
