@@ -226,6 +226,7 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 | [preregistration_nm_snceg.md](preregistration_nm_snceg.md) | snceg NM, PD vs HC, Siemens GRE-MT | Frozen 11 Oct; run; failed against 0.743 (0.631) |
 | [preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md) | NM staged: technical, biological, clinical | Stage 1 and 2b frozen and run (passed; 2b overlap disclosed). Stage 3 and 2b-R (Amendment 1) frozen 15 Oct, awaiting downloads. Stages 2a and 2c DRAFT |
 | [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md) | Nucleus basalis (Ch4), CAT12.9 | Run 15 Oct: not validated |
+| [preregistration_ch4_v2.md](preregistration_ch4_v2.md) | Ch4 v2: v3.0.3 map, 1 mm, probability-weighted; IXI ≥ 50 for age; symmetry gate | DRAFT 15 Oct; convergence decision pending |
 | [preregistration_dwi_fw.md](preregistration_dwi_fw.md) | Posterior-SN free water, prodromal DaT contrast (+ PD secondaries) | Frozen 14 Oct; running |
 | [preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md) | PIE vs QSIPrep free-water agreement | Frozen 15 Oct; runs after the FW run |
 | [preregistration_flair_wmh.md](preregistration_flair_wmh.md) | TrUE-Net WMH accuracy (MICCAI 2017 test set) and PPMI biology | Frozen 15 Oct; awaiting the test-set download and G1 runner; weights caveat open |
@@ -244,6 +245,7 @@ Newest first.
 
 - **2026-10-15**
   - Ch4 (CAT12.9) not validated: age r −0.299 (bar −0.30), ρ with ScLimbic 0.10 (bar 0.40), ICC 0.76 (passed). Every number is in the pre-registration.
+  - Ch4 v2 pre-registration drafted: corrected map, 1 mm, probability-weighted primary measure, IQR ≥ 70 %, IXI controls ≥ 50 for the age gate, a symmetry gate; the convergence gate is a decision for the freeze.
   - Cause found: the Julich-Brain v3.1 Ch4 map has a truncated right hemisphere. The default is now the near-symmetric v3.0.3 map at 1 mm, not yet validated, and the old configuration is kept as an option. ScLimbic's basal forebrain is reliable (ICC 0.97), but it shares little person-to-person variation with CAT12 measures.
   - Frozen, as recommended and approved: the seven drafts below and NM Amendment 1. Changes at the freeze: fMRI scans lost to motion are reported apart from throughput, and its median and distance-dependence QC-FC gates use a permutation null only (Ciric's values are figure-only); cortical-thickness bars 0.75 (agreement) and 0.85 (repeatability) on about 470 scans. FLAIR is frozen with an open caveat: whether TrUE-Net's distributed weights saw the challenge test set. Script hashes are in each document.
   - Seven pre-registrations drafted (QSIPrep agreement, FLAIR WMH, fMRI, cortical thickness + T1 QC, longitudinal pilot, PPMI harmonisation, survival positive control), each with tests and a synthetic dry run; listed above.
