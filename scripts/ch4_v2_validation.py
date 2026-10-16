@@ -1,4 +1,4 @@
-"""Ch4 v2 validation (documentation/preregistration_ch4_v2.md, DRAFT): configuration ``julich303-1mm`` (Julich-Brain v3.0.3
+"""Ch4 v2 validation (documentation/preregistration_ch4_v2.md, frozen 15 Oct 2026): configuration ``julich303-1mm`` (Julich-Brain v3.0.3
 Ch4 map, CAT12 output at 1 mm), probability-weighted grey matter as the primary measure, gates on data the 13 Oct test
 did not use.
 
@@ -29,7 +29,7 @@ from ch4_cat12_validation import D, _icc, _r_ci, _resid, baseline, same_day_pair
 CONFIG, SEED, B = "julich303-1mm", 20261016, 2000
 AGE_MIN, IQR_MIN, N_PD = 50.0, 70.0, 223
 GATE_AGE_R, GATE_ICC, SYMMETRY = -0.30, 0.75, (0.9, 1.2)
-GATE_RHO = None            # DRAFT decision at the freeze: None = convergence reported without a gate, or a number (e.g. 0.30)
+GATE_RHO = None            # frozen 15 Oct, option B: convergence with ScLimbic reported without a gate
 MEASURES = {"ch4_p": "Ch4 GM, probability-weighted (primary)", "ch4": "Ch4 GM, p >= 0.5", "nmm_bf": "neuromorphometrics basal forebrain"}
 IXI_T1 = re.compile(r"^(IXI\d{3})-(Guys|HH|IOP)-\d{4}-T1\.nii\.gz$")
 
@@ -85,20 +85,30 @@ def _run_one(job):
         return sid, f"{type(e).__name__}: {str(e)[:200]}"
 
 
+def split_jobs(jobs, voxels=3e7):
+    """(regular, large): inputs over ``voxels`` (the 0.5 mm PPMI scans; one took 13 GB in CAT12 on 13 Oct) run 2 at a time."""
+    import nibabel as nib
+
+    big = lambda nii: Path(nii).exists() and np.prod(nib.load(nii).header.get_data_shape()[:3]) > voxels
+    flags = [big(j[2]) for j in jobs]
+    return [j for j, b in zip(jobs, flags) if not b], [j for j, b in zip(jobs, flags) if b]
+
+
 def run(ixi_dir, out, workers):
     s = pd.read_csv(out / "sids.csv").drop_duplicates("IMAGEID")
-    jobs = [_job(r, ixi_dir) for _, r in s.iterrows()]
-    print(f"{len(jobs)} scans", flush=True)
-    fails = 0
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        for k, f in enumerate(as_completed([ex.submit(_run_one, j) for j in jobs]), start=1):
-            sid, err = f.result()
-            fails += bool(err)
-            if err:
-                print(f"{k}/{len(jobs)} {sid} ERROR {err}", flush=True)
-            elif k % 20 == 0:
-                print(f"{k}/{len(jobs)} done, {fails} failed", flush=True)
-    print(f"finished: {len(jobs) - fails}/{len(jobs)} ok", flush=True)
+    regular, large = split_jobs([_job(r, ixi_dir) for _, r in s.iterrows()])
+    for name, part, w in (("regular", regular, workers), ("large", large, min(2, workers))):
+        print(f"{name}: {len(part)} scans, {w} workers", flush=True)
+        fails = 0
+        with ProcessPoolExecutor(max_workers=w) as ex:
+            for k, f in enumerate(as_completed([ex.submit(_run_one, j) for j in part]), start=1):
+                sid, err = f.result()
+                fails += bool(err)
+                if err:
+                    print(f"{name} {k}/{len(part)} {sid} ERROR {err}", flush=True)
+                elif k % 20 == 0:
+                    print(f"{name} {k}/{len(part)} done, {fails} failed", flush=True)
+        print(f"{name} finished: {len(part) - fails}/{len(part)} ok", flush=True)
 
 
 def _values(subjects_dir, sids):

@@ -43,3 +43,13 @@ def test_dry_run_uses_fake_data_only(tmp_path):
     saved = json.loads((tmp_path / "synthetic_ch4_v2.json").read_text())
     assert saved["config"] == "julich303-1mm" and set(res["gates"]) == {"symmetry", "age", "reliability"}
     assert saved["flow"]["ixi_selected"] == 280 and "sensitivity_iqr_60" in saved["descriptive"]
+
+
+def test_large_scans_are_scheduled_separately(tmp_path):
+    import nibabel as nib
+    import numpy as np
+    small, big = tmp_path / "s.nii.gz", tmp_path / "b.nii.gz"
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.int8), np.eye(4)), small)
+    nib.save(nib.Nifti1Image(np.zeros((400, 400, 300), np.int8), np.eye(4)), big)     # 4.8e7 voxels, like the 0.5 mm scans
+    regular, large = v2.split_jobs([("a", "x", str(small)), ("b", "x", str(tmp_path / "missing.nii.gz")), ("c", "x", str(big))])
+    assert [j[0] for j in regular] == ["a", "b"] and [j[0] for j in large] == ["c"]

@@ -1,7 +1,11 @@
 # Pre-registration: nucleus basalis (Ch4) volume, version 2 (CAT12.9, Julich-Brain v3.0.3 map, 1 mm)
 
-**Status: DRAFT 2026-10-15. Not frozen; nothing has been run on the data named below.** It freezes once the open
-decision (convergence, below) is made, with the script's sha256 recorded here.
+**Status: FROZEN 2026-10-15**, before IXI was downloaded and before any version-2 value existed for a selected scan.
+Convergence: **option B** (decided 15 Oct). Frozen code:
+- `scripts/ch4_v2_validation.py` 792264984e592303b1a2ad330b95175ca42f580dc5b43a43f48d77c55f76d8ed
+- `scripts/ch4_cat12_validation.py` 49c79ed5e1f5122a343cd78e8110ff6c2a4975c5117552dcdf54c8269d54bb9e (its helpers are imported; unchanged since 13 Oct)
+- `pie/imaging/cat12.py` 08b48f9ec20f25bd96c8270465c0212eded1b20bfde41fbafe2b564fb2f93251
+- `pie/imaging/atlases.py` 32023a110612d101f38f35a523de808eb3a10a2c7e6efa6b10816ae0d69b9650
 
 ## Why a version 2
 
@@ -69,7 +73,7 @@ modulated grey matter). It is PIE's default Ch4 configuration since 15 Oct, mark
 3. **Reliability.** ICC(2,1) of the primary measure across the 29 same-day pairs (both scans passing quality):
    **≥ 0.75**, with a 2,000-resample pair bootstrap CI (seed 20261016).
 
-### Decision at the freeze: convergence
+### Convergence: option B chosen at the freeze
 
 | Option | What | Assessment |
 |---|---|---|
@@ -77,7 +81,7 @@ modulated grey matter). It is PIE's default Ch4 configuration since 15 Oct, mark
 | **B (recommended)** | Report ρ with ScLimbic in the fresh PD, with no gate; symmetry joins as gate 1 | It is honest about what the diagnostics showed. The gap the gate was meant to close (is the region right?) is covered by the symmetry gate and the corrected map. Convergence against a gold standard is left to option C or the clinical stage. |
 | **C** | Gate against manual Ch4 tracing on 20 scans by a trained rater, blind to the automated values | The proper convergence test. It needs a rater and a tracing protocol. |
 
-The script codes A and B (`GATE_RHO`: a number, or `None` for B). C would need a protocol amendment.
+Chosen: **B** (`GATE_RHO = None`). ρ with ScLimbic in the 223 fresh PD is reported without a gate, and symmetry is gate 1.
 
 ## Reported, with no gate
 
@@ -94,7 +98,7 @@ The script codes A and B (`GATE_RHO`: a number, or `None` for B). C would need a
 ## Limits
 
 - **IXI differs from PPMI:** UK, 2005–2007, partly 1.5 T. The age bar is applied at ≥ 50 to resemble PPMI's ages.
-- **Convergence is reported only** (if option B is chosen).
+- **Convergence is reported only** (option B).
 - **The reliability pairs are reused**, as disclosed above.
 - **Later stages:** prognostic validity (Ch4 against later cognitive decline in de novo PD, Ray 2018) and the SAA
   association (Wisse/Spotorno 2024).
@@ -106,7 +110,7 @@ CAT12 at 1 mm on about 580 scans (299 IXI, 223 PD, 58 repeats): about 14 CPU-min
 - Runs go in a systemd unit, without the GPU.
 
 Script: `scripts/ch4_v2_validation.py` (select / run / analyse / `--synthetic`), tests `tests/test_ch4_v2_validation.py`;
-synthetic dry run only. The sha256 is recorded at the freeze.
+synthetic dry run only. The scan scheduling (inputs over 3e7 voxels run 2 at a time) was added before the freeze.
 
 ## Run log
 
