@@ -114,4 +114,11 @@ synthetic dry run only. The scan scheduling (inputs over 3e7 voxels run 2 at a t
 
 ## Run log
 
-(empty)
+- **15 Oct 2026, data:**
+  - IXI downloaded after the freeze:
+    - `IXI-T1.tar` sha256 `56bbe911fbe967f7d1b830a552995263bdba281e0a6eb78e62f1c38d88a946a9`
+    - `IXI.xls` sha256 `8880c4417d8c22f9489439f1b8977b1003ed7908be0294e44462aa71c2a3e78f`
+  - 581 T1 files.
+- **Selected:** 274 IXI aged ≥ 50 with a T1 (of 299 with a recorded age); 223 fresh PPMI PD; 29 same-day pairs.
+  - CAT12 started in the `pie-ch4-v2` unit: 529 regular scans with 4 workers, then the large (0.5 mm) inputs 2 at a time.
+- **Environment:** `xlrd` 2.0.2 added to `venv_imaging` to read `IXI.xls` (the only new package).
