@@ -122,3 +122,10 @@ synthetic dry run only. The scan scheduling (inputs over 3e7 voxels run 2 at a t
 - **Selected:** 274 IXI aged ≥ 50 with a T1 (of 299 with a recorded age); 223 fresh PPMI PD; 29 same-day pairs.
   - CAT12 started in the `pie-ch4-v2` unit: 529 regular scans with 4 workers, then the large (0.5 mm) inputs 2 at a time.
 - **Environment:** `xlrd` 2.0.2 added to `venv_imaging` to read `IXI.xls` (the only new package).
+- **16–20 Oct, pause (scheduling only):**
+  - The unit was frozen at 120/529 regular scans, with 0 failed, and thawed on 20 Oct.
+  - CAT12's 4-hour time limit counts wall-clock time, so the 4 scans in flight raised `TimeoutExpired` on thaw. They are
+    IXI scans; no other process was left over from them.
+  - They are re-run after the main pass, with the same command. `ch4_volume` reuses finished scans and clears a failed
+    scan's work directory first.
+  - No value had been read and the analysis code is unchanged.
