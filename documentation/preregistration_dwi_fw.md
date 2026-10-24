@@ -136,3 +136,19 @@ every number reported.
   - The 30 participants finished before the incident were all measured on their current T1.
   - The 7 are re-run.
 - **15 Oct 2026: PD arm queued.** `pd_dwi*.zip` (210 PD, all with a three-shell session; 209 with a finished T1 within 180 days, 1 without any T1) runs after the prodromal pass, with the same frozen command. The restricted index is rebuilt with `dwi_fw_index.py` over all zips, because `load_index` never adds new zips to an existing index.
+- **16–20 Oct 2026: pause (scheduling only).** All analysis units were frozen from 16 to 20 Oct.
+  - 4 runs that were mid-flight hit their `eddy_cuda` / `topup` time limit on thaw, because the limit counts wall-clock
+    time.
+- **24 Oct 2026: stale registration caches.**
+  - Cause: 35 participants in pass 4, and 31 of the PD arm's first 110, failed the registration-cache provenance check.
+    - 461 cached T1→MNI registrations were fitted from 25 to 29 Sep with sampling seed 0.
+    - b1a6327 (11 Oct, before the freeze) set the frozen code's seed to `ITK_SEED` (20260909), so the check correctly
+      refused to reuse them.
+    - Every cache was fitted on the current `orig.mgz`, and the template and transform hashes all matched. The 15 Oct
+      check compared the T1s but not the seed.
+  - Action, as the check's message prescribes:
+    - The 461 were set aside, not deleted, as `*.seed0.tfm` / `*.seed0.json`, so the frozen code refits them.
+    - Pass 5 (`--retry-errors`) re-runs every error row with the same frozen command after the PD arm and TrUE-Net,
+      because the GPU runs one job type at a time. A pre-retry copy of the table is kept.
+  - No `dwisf_*` value had been looked at, and no value was ever computed on a seed-0 registration under the frozen
+    code.
