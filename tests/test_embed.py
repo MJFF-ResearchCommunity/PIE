@@ -33,7 +33,9 @@ def test_to_mni_shape_and_masking(tmp_path):
     v = to_mni(tmp_path, "I1", shape, origin)
     assert v.shape == shape and v.dtype == np.float32
     from pie.imaging.dwi import mni_cache_path
-    assert mni_cache_path(tmp_path / "I1").exists()                                            # affine cached for reuse
+    from pie.imaging.embed import nu_cache_path
+    assert nu_cache_path(tmp_path / "I1").exists()                                             # affine cached for reuse,
+    assert not mni_cache_path(tmp_path / "I1").exists()                                        # not in dwi's orig.mgz cache
     inside = v[v != 0]
     assert 0.3 < (v != 0).mean() < 0.9 and 80 < inside.mean() < 120 and inside.max() < 200      # background stays exactly 0
     v2 = to_mni(tmp_path, "I1", shape, origin)                                                  # cached transform: identical

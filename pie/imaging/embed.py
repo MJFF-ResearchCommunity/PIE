@@ -61,6 +61,12 @@ DIM = {"brainiac": 768, "simclr": 512, "sfcn": 64}
 SFCN_AGES = np.arange(42, 82) + 0.5
 
 
+def nu_cache_path(sub):
+    """T1->MNI affine cache for ``orig_nu``. dwi fits ``orig.mgz`` into ``mni_cache_path``; one shared file would make
+    each refuse the other's provenance."""
+    return mni_cache_path(sub).with_name("orig_nu_to_MNI152NLin2009cAsym_affine_v2.tfm")
+
+
 def to_mni(fastsurfer_dir, image_id, shape, origin):
     """Brain-masked `orig_nu` resampled (linear) with the cached T1->MNI affine onto a 1 mm RAS grid of ``shape`` voxels
     whose first voxel sits at RAS ``origin`` (mm). Returns float32 (x, y, z) with zeros outside the brain."""
@@ -68,7 +74,7 @@ def to_mni(fastsurfer_dir, image_id, shape, origin):
 
     sub = Path(fastsurfer_dir) / image_id
     t1, mask = nib.load(sub / "mri" / "orig_nu.mgz"), nib.load(sub / "mri" / "mask.mgz")
-    tx, _ = register_t1_to_mni(t1, mask, cache_path=mni_cache_path(sub))
+    tx, _ = register_t1_to_mni(t1, mask, cache_path=nu_cache_path(sub))
     ref = sitk.Image([int(s) for s in shape], sitk.sitkFloat32)
     ref.SetOrigin((-origin[0], -origin[1], origin[2]))                      # RAS -> LPS, as in dwi._sitk_from_nib
     ref.SetDirection((-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0))

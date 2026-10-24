@@ -84,14 +84,15 @@ and PPMI-2 Siemens Prisma three-shell (b = 700/1000/2000, 64 directions each, re
    also get the free-water-corrected MD `mdt` (tissue compartment of the same fit) and the DKI mean kurtosis `mk`
    (DIPY WLS on b <= 2050, clipped to [0, 3]; kurtosis is noise-sensitive, so use `--denoise`), both inside
    `fw_mask`; single-shell rows leave those columns empty.
-7. **`register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=0)`** — rigid MI, mean b0 → brain-masked
+7. **`register_b0_to_t1(b0_img, t1_img, t1_mask_img, sampling_seed=ITK_SEED)`** — rigid MI, mean b0 → brain-masked
    conformed T1 at 2 mm; returns (T1→b0 transform, metric). **`register_t1_to_mni(t1_img, t1_mask_img,
-   cache_path=None, sampling_seed=0)`** — affine MI, brain-masked T1 → the bundled, checksummed
+   cache_path=None, sampling_seed=ITK_SEED)`** — affine MI, brain-masked T1 → the bundled, checksummed
    MNI152NLin2009cAsym 2 mm template (`atlases.mni2009c_template()`, not nilearn's default, which is a 2009a
    image); with `cache_path` (`mni_cache_path(fs_subject)` =
    `<fastsurfer>/<IMAGE_ID>/mri/transforms/t1_to_MNI152NLin2009cAsym_affine_v2.tfm`, versioned so a legacy cache
-   is not reused by name) it is fitted once and shared by NM and
-   `embed` (a cached read returns metric NaN). The cache carries a `.json` sidecar recording the reference space
+   is not reused by name) it is fitted once per subject on `orig.mgz` (a cached read returns metric NaN). `embed`
+   fits `orig_nu.mgz` into its own `orig_nu_to_MNI152NLin2009cAsym_affine_v2.tfm` beside it
+   (`embed.nu_cache_path`), since one shared file would make each refuse the other's. The cache carries a `.json` sidecar recording the reference space
    and SHA-256, a registration version, the transform's own hash and the T1/mask hashes and sampling seed;
    **`load_mni_cache(path, expected_inputs=None)`** raises on anything unverified or mismatched and leaves the file
    in place, so a legacy 2009a cache is never silently reused.
