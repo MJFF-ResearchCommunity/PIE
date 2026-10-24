@@ -30,7 +30,9 @@ MCR = Path(os.environ.get("PIE_MCR", Path.home() / "cat12" / "MCR" / "R2023b"))
 # A Ch4 configuration is a probability map (atlases.CH4_MAPS) and CAT12's output voxel size. Every result records its
 # configuration; the default is the best-evidenced one, with the reason next to it. Keep old entries reproducible.
 CONFIGS = {
-    "julich303-1mm": {"map": "julich303", "vox": 1.0, "status": "candidate for the next pre-registered Ch4 test; not validated",
+    "julich303-1mm": {"map": "julich303", "vox": 1.0,
+                      "status": "validated 24 Oct 2026 for the probability-weighted GM, vol_ch4_*_pgm (preregistration_ch4_v2.md: "
+                                "IXI >= 50 left/right 1.04, age r -0.39; same-day ICC 0.87); the GM at p >= 0.5 (vol_ch4_*_gm) is not",
                       "why_default": "the 13 Oct configuration failed and its Julich-Brain v3.1 map has a truncated right Ch4 "
                                      "(left/right 2.0); v3.0.3 holds the same 10 brains, near-symmetric; 1 mm output for a "
                                      "structure about 2 mm thick (CAT12's 1.5 mm default blurs it)"},

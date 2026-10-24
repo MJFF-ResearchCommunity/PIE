@@ -1,6 +1,6 @@
 # Pre-registration: nucleus basalis (Ch4) volume, version 2 (CAT12.9, Julich-Brain v3.0.3 map, 1 mm)
 
-**Status: FROZEN 2026-10-15**, before IXI was downloaded and before any version-2 value existed for a selected scan.
+**Status: RUN 24 Oct 2026, VALIDATED** (result below). Frozen 2026-10-15, before IXI was downloaded and before any version-2 value existed for a selected scan.
 Convergence: **option B** (decided 15 Oct). Frozen code:
 - `scripts/ch4_v2_validation.py` 792264984e592303b1a2ad330b95175ca42f580dc5b43a43f48d77c55f76d8ed
 - `scripts/ch4_cat12_validation.py` 49c79ed5e1f5122a343cd78e8110ff6c2a4975c5117552dcdf54c8269d54bb9e (its helpers are imported; unchanged since 13 Oct)
@@ -129,3 +129,65 @@ synthetic dry run only. The scan scheduling (inputs over 3e7 voxels run 2 at a t
   - They are re-run after the main pass, with the same command. `ch4_volume` reuses finished scans and clears a failed
     scan's work directory first.
   - No value had been read and the analysis code is unchanged.
+- **24 Oct:**
+  - The 4 timed-out scans were re-run, and all 555 finished (529 regular, 26 large).
+  - The frozen files' hashes were checked against those above.
+  - The analysis was run once: `scripts/ch4_v2_validation.py analyse`; its output is `ch4_v2_result.json` in the run
+    directory.
+
+## Result (24 Oct 2026): VALIDATED
+
+All three gates pass for the primary measure, probability-weighted grey matter in the v3.0.3 Ch4 map (`julich303-1mm`).
+
+| Gate | Result | Bar | |
+|---|---|---|---|
+| 1. Symmetry, IXI ≥ 50 | median left/right **1.04** | 0.9–1.2 | pass |
+| 2. Age, IXI ≥ 50 (TIV, sex residualised) | r **−0.394** [−0.489, −0.288], n 274 | ≤ −0.30, CI upper < 0 | pass |
+| 3. Same-day reliability | ICC(2,1) **0.874** [0.747, 0.966], 29 pairs | ≥ 0.75 | pass |
+
+**Flow.**
+- IXI: 274 selected, none missing and none below IQR 70, so all 274 were analysed (Guy's 170, Hammersmith 87, IOP 17).
+- PD: 223 selected, none missing and none below IQR 70.
+  - 162 entered the convergence analysis. The other 61 have FastSurfer outputs but no ScLimbic run, so they have
+    neither ScLimbic nor eTIV values.
+- Repeats: 58 scans (29 pairs), none missing and none below IQR 70.
+
+**Reported, with no gate.**
+- **Convergence:**
+  - Spearman ρ with ScLimbic basal forebrain in the fresh PD: **0.144** (n 162).
+  - As the 15 Oct diagnostics predicted, the two methods share little person-to-person variation.
+- **Age r by site:** Guy's −0.351, Hammersmith −0.505. IOP (n 17) is below the script's minimum of 20 for a site
+  estimate.
+- **Median volume:** 367.8 mm³, 0.0260 % of TIV.
+- **Secondary, grey matter at p ≥ 0.5:**
+  - age r −0.286 [−0.391, −0.173] (by site: Guy's −0.217, Hammersmith −0.389);
+  - ρ 0.066;
+  - ICC 0.748 [0.557, 0.883];
+  - median 166.8 mm³ (0.0118 % of TIV).
+  - As a primary measure it would have failed the age and reliability gates.
+- **Secondary, neuromorphometrics basal forebrain:**
+  - age r −0.333 [−0.434, −0.223] (Guy's −0.287, Hammersmith −0.461);
+  - ρ 0.272;
+  - ICC 0.956 [0.911, 0.975];
+  - median 641.9 mm³ (0.0456 % of TIV).
+- **IQR:** median 87.4 % in IXI and 87.5 % in PD. IXI ages ranged from 50.0 to 86.3.
+- **Sensitivity at IQR ≥ 60:** the same scans as the primary analysis, because none had IQR between 60 and 70.
+  - Age r −0.394 and ICC 0.874, with a bootstrap CI of [0.763, 0.965]. It used 200 resamples rather than 2,000, so
+    the interval differs slightly from the primary one.
+- **The map alone on the 13 Oct scans** (`julich303-1.5mm`, the 13 Oct CAT12 runs; 446 scans, all in the 13 Oct
+  analysed set; `scripts/ch4_v2_map_only.py`):
+  - Grey matter at p ≥ 0.5: median left/right **0.99**, against 2.04 with the v3.1 map on the same scans. Median
+    173.7 mm³, against 156.9.
+  - Probability-weighted: left/right 1.02; median 394.4 mm³, against 358.2.
+  - So the map alone accounts for the 13 Oct asymmetry.
+- **Post hoc, not pre-registered:** median left/right of the primary measure by IXI site was Guy's 1.045,
+  Hammersmith 1.03 and IOP 0.926 (n 17).
+
+**What this does and does not establish.**
+- Established: the region is symmetric, the measure tracks age in healthy adults over 50 from another cohort, and it
+  repeats within a day.
+- Not established:
+  - convergence with a gold standard: manual tracing (option C) is still needed;
+  - the clinical stages: prognosis (Ray 2018) and the SAA association.
+- The validated measure is `vol_ch4_{lh,rh}_pgm` under `julich303-1mm`. The p ≥ 0.5 measure (`_gm`) is not
+  validated.

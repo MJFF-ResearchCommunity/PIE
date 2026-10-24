@@ -43,7 +43,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 | T1 | eTIV (FreeSurfer 7.4.1) | **Validated** | r 0.992 vs PPMI FS7 eTIV, +0.3 % (40 scans; pre-registered gate r ≥ 0.95, < 5 %) | — |
 | T1 | Normative z-scores (age, sex, TIV) | **Validated** | Controls' out-of-fold z: mean within 0.013 of 0, SD 1.01–1.03 | — |
 | T1 | Basal forebrain, ScLimbic | In use; descriptive checks only | Age r −0.43 in controls; no PD–HC difference | Convergence gate within the Ch4 test |
-| T1 | Nucleus basalis (Ch4), CAT12.9 | **Not validated** (15 Oct) | Age r −0.299 (bar −0.30), ρ with ScLimbic 0.10 (bar 0.40); ICC 0.76 passed; left/right ratio 2.0 suggests a region-definition problem | Diagnose the region before any new pre-registration |
+| T1 | Nucleus basalis (Ch4), CAT12.9, `julich303-1mm` | **Validated** (24 Oct), probability-weighted grey matter (`vol_ch4_*_pgm`) | IXI ≥ 50: left/right 1.04 (bar 0.9–1.2), age r −0.39 [−0.49, −0.29] (bar ≤ −0.30); same-day ICC 0.87 [0.75, 0.97] (bar 0.75). ρ with ScLimbic 0.14 in 162 PD (reported, no gate). The 13 Oct configuration (v3.1 map) failed | Convergence against manual tracing; prognosis (Ray 2018) and SAA association |
 | T1 | Cortical thickness, hippocampal subfields, SynthSeg (legacy 1.5 T), medial-temporal index | Not yet run | Code and synthetic tests | Agreement with PPMI's `FS7_APARC_CTH`; same-day ICC |
 | DaT-SPECT | PPMI core-lab SBRs (Xing; Invicro fallback) | **Validated** (reference values) | PPMI's own endpoint; PD vs HC AUROC 0.99 | — |
 | DaT-SPECT | PIE's own reconstruction (`datscan_2026_10`) | **Validated** | 1,452 of 1,459 scans pass QC. vs Xing: putamen r 0.851, CCC 0.87, deficit κ 0.80. vs Invicro: r 0.887. The two core labs agree with each other at r 0.88 | Non-PPMI reconstructed stacks |
@@ -106,8 +106,21 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
   - **Same brains:** it comes from the same 10 brains as Zaborszky et al. 2008, whose histology is symmetric (85 vs 90 mm³).
   - **Every other release is near-symmetric**, left/right 0.99–1.14.
   - **The fix:** PIE now defaults to the v3.0.3 Ch4 map (left 252 vs right 211 mm³; mirror Dice 0.65), with CAT12 output at 1 mm (configuration `julich303-1mm`). The 13 Oct configuration stays available as `julich31-1.5mm`.
-  - **Still not validated:** the new configuration needs its own pre-registered test on data not used here.
+  - **Tested separately:** the new configuration had its own pre-registered test on data not used here (below).
 - **Convergence diagnostics, 15 Oct.** ScLimbic's basal forebrain is highly repeatable (same-day ICC 0.97) and symmetric (left/right 0.94). Yet CAT12's whole basal forebrain, also reliable (ICC 0.96), agrees with it at only ρ 0.21 after head size, whichever head-size measure is used, and about 0.05 after age and sex too. The two methods track different person-to-person variation, so a ρ ≥ 0.40 bar against ScLimbic cannot tell a right Ch4 from a wrong one. The next test needs a different convergence check. The probability-weighted Ch4 and the neuromorphometrics basal forebrain met the age and reliability bars but not convergence (ρ 0.21–0.22). The run was resumed after an out-of-memory stop, with scheduling changes only (documented).
+- **Ch4 v2, `julich303-1mm`, 24 Oct: validated** for the probability-weighted grey matter (`vol_ch4_*_pgm`).
+  Pre-registered in [preregistration_ch4_v2.md](preregistration_ch4_v2.md), frozen 15 Oct and run once:
+  - symmetry: median left/right 1.04 in 274 IXI adults aged ≥ 50, against 0.9–1.2: pass;
+  - age: r −0.394 [−0.489, −0.288] in the same adults, against ≤ −0.30: pass;
+  - same-day ICC(2,1): 0.874 [0.747, 0.966] on 29 pairs, against ≥ 0.75: pass.
+
+  Reported without a gate:
+  - ρ with ScLimbic 0.14 in 162 fresh PD;
+  - the p ≥ 0.5 measure (age r −0.29, ICC 0.75) is not validated;
+  - median 368 mm³;
+  - the v3.0.3 map alone on the 13 Oct runs takes left/right from 2.04 to 0.99.
+
+  Not yet tested: convergence against manual tracing, prognosis and the SAA association.
 - **Software version.** CAT26 was released on 12 Oct 2026. The pre-registered test stays on CAT12.9. Moving to CAT26 would need a version-bridging comparison first (on hold).
 
 ### DaT-SPECT
@@ -226,7 +239,7 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 | [preregistration_nm_snceg.md](preregistration_nm_snceg.md) | snceg NM, PD vs HC, Siemens GRE-MT | Frozen 11 Oct; run; failed against 0.743 (0.631) |
 | [preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md) | NM staged: technical, biological, clinical | Stage 1 and 2b frozen and run (passed; 2b overlap disclosed). Stage 3 and 2b-R (Amendment 1) frozen 15 Oct, awaiting downloads. Stages 2a and 2c DRAFT |
 | [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md) | Nucleus basalis (Ch4), CAT12.9 | Run 15 Oct: not validated |
-| [preregistration_ch4_v2.md](preregistration_ch4_v2.md) | Ch4 v2: v3.0.3 map, 1 mm, probability-weighted; IXI ≥ 50 for age; symmetry gate | Frozen 15 Oct (convergence reported, option B); running |
+| [preregistration_ch4_v2.md](preregistration_ch4_v2.md) | Ch4 v2: v3.0.3 map, 1 mm, probability-weighted; IXI ≥ 50 for age; symmetry gate | Run 24 Oct: **validated** |
 | [preregistration_dwi_fw.md](preregistration_dwi_fw.md) | Posterior-SN free water, prodromal DaT contrast (+ PD secondaries) | Frozen 14 Oct; running |
 | [preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md) | PIE vs QSIPrep free-water agreement | Frozen 15 Oct; runs after the FW run |
 | [preregistration_flair_wmh.md](preregistration_flair_wmh.md) | TrUE-Net WMH accuracy (MICCAI 2017 test set) and PPMI biology | Frozen 15 Oct; awaiting the test-set download and G1 runner; weights caveat open |
@@ -243,6 +256,16 @@ script hashes, before its data are processed.
 
 Newest first.
 
+- **2026-10-24**
+  - Ch4 v2 validated (`julich303-1mm`, probability-weighted grey matter):
+    - left/right 1.04;
+    - IXI ≥ 50 age r −0.394;
+    - same-day ICC 0.874;
+    - ρ with ScLimbic 0.14, reported.
+    Every number is in the pre-registration.
+  - DWI: 461 T1→MNI registrations cached before the 11 Oct seed change were correctly refused by the provenance
+    check. They were set aside, and a retry pass is queued. `embed` now keeps its own `orig_nu` cache file instead of
+    sharing DWI's.
 - **2026-10-15**
   - Ch4 (CAT12.9) not validated: age r −0.299 (bar −0.30), ρ with ScLimbic 0.10 (bar 0.40), ICC 0.76 (passed). Every number is in the pre-registration.
   - Ch4 v2 pre-registration frozen: corrected map, 1 mm, probability-weighted primary measure, IQR ≥ 70 %, IXI controls ≥ 50 for the age gate, a symmetry gate; convergence with ScLimbic reported without a gate (option B).
