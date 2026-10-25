@@ -168,3 +168,19 @@ def test_striatal_features_are_recomputed_on_the_denoised_bold(tmp_path):
     assert abs(z["fmri_xcpd_striatal_putamen_posterior_l__Vis"]) < 0.3
     assert abs(z["fmri_xcpd_striatal_putamen_anterior_l__SomMot"]) < 0.3 and abs(z["fmri_xcpd_striatal_putamen_posterior_r__SomMot"]) < 0.3
     assert not any("CIT168" in k for k in z)                                         # cortical targets only
+
+
+def test_motion_filter_can_be_switched_off_for_the_no_notch_variant(tmp_path):
+    argv, _ = build_command(config(tmp_path, tr=1.0, motion_filter=False))
+    assert flag(argv, "--motion-filter-type") == "none" and "--band-stop-min" not in argv
+    with pytest.raises(ValueError, match="motion filter"):
+        build_command(config(tmp_path / "b", tr=2.5, motion_filter=True))      # no notch above TR 1.5 s
+
+
+def test_striatal_features_on_each_half_of_the_retained_frames(tmp_path):
+    root, _ = xcpd_tree(tmp_path)
+    whole = xcpd_striatal_features(root, "A01")
+    assert xcpd_striatal_features(root, "A01", frames=slice(0, 150)) == whole
+    h1, h2 = (xcpd_striatal_features(root, "A01", frames=f) for f in (slice(0, 75), slice(75, None)))
+    k = "fmri_xcpd_striatal_putamen_posterior_l__SomMot"
+    assert h1[k] > 0.4 and h2[k] > 0.4 and h1[k] != whole[k] != h2[k]

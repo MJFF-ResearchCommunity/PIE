@@ -64,6 +64,7 @@ class XCPDConfig:
     fs_license_file: Optional[str] = None
     random_seed: int = 42
     extra_args: list[str] = field(default_factory=list)
+    motion_filter: Optional[bool] = None     # None: from the TR (notch at TR <= 1.5 s); False: off (no-notch variant)
 
     def paths(self):
         return {key: Path(getattr(self, key)).expanduser().resolve()
@@ -105,6 +106,8 @@ class XCPDConfig:
             raise ValueError("FreeSurfer license file does not exist")
         if any(x.split("=", 1)[0].replace("_", "-") in _RESERVED for x in self.extra_args):
             raise ValueError("Set this in the configuration, not extra_args")
+        if self.motion_filter and self.repetition_time > ConnectivityConfig.motion_filter_max_tr:
+            raise ValueError("The respiratory motion filter applies only at TR <= 1.5 s")
 
 
 def build_command(config: XCPDConfig, *, version_only=False):
@@ -121,7 +124,8 @@ def build_command(config: XCPDConfig, *, version_only=False):
         config, config.paths()["fmriprep_dir"], "xcp_d", templateflow=IMAGE_TEMPLATEFLOW)
     if version_only:
         return prefix + ["--version"], env
-    if config.repetition_time <= ConnectivityConfig.motion_filter_max_tr:
+    notch = config.repetition_time <= ConnectivityConfig.motion_filter_max_tr if config.motion_filter is None else config.motion_filter
+    if notch:
         motion = ["--motion-filter-type", "notch", "--band-stop-min", str(RESPIRATORY_BAND_BPM[0]),
                   "--band-stop-max", str(RESPIRATORY_BAND_BPM[1]), "--motion-filter-order", "4"]
     else:
@@ -238,12 +242,13 @@ def xcpd_features(xcpd_dir, subject, *, atlases=("4S456Parcels",), task="rest"):
 
 
 def xcpd_striatal_features(xcpd_dir, subject, *, atlas="4S456Parcels", task="rest", putamen_split_y=0.0,
-                           min_voxels=5):
+                           min_voxels=5, frames=None):
     """PIE's striatal seed connectivity on XCP-D's denoised, censored BOLD (MNI152NLin2009cAsym): CIT168 caudate,
     putamen (anterior and posterior at ``putamen_split_y``; None keeps it whole) and accumbens per hemisphere,
     against the cortical networks of ``atlas`` from XCP-D's parcel time series of the same BOLD. Keyed
     ``fmri_xcpd_striatal_<seed>__<network>``; ``{}`` when XCP-D wrote no BOLD. XCP-D's denoising is the nuisance model:
-    nothing is regressed again. Holds the BOLD in memory (about 2.6 GB for 600 frames at 2 mm)."""
+    nothing is regressed again. Holds the BOLD in memory (about 2.6 GB for 600 frames at 2 mm). ``frames`` (a slice
+    of the retained frames) gives the split-half features of the fMRI validation."""
     func = Path(xcpd_dir) / f"sub-{subject}"
     bold = _one(func, f"sub-{subject}_*task-{task}_*space-MNI152NLin2009cAsym_*desc-denoised_bold.nii.gz")
     timeseries = _one(func, f"sub-{subject}_*task-{task}_*atlas-{atlas}_*stat-mean_timeseries.tsv")
@@ -253,6 +258,8 @@ def xcpd_striatal_features(xcpd_dir, subject, *, atlas="4S456Parcels", task="res
     parcels = pd.read_table(timeseries)
     if len(parcels) != img.shape[3]:
         raise ValueError("Denoised BOLD and parcel time series differ in length: XCP-D must write censored outputs")
+    if frames is not None:
+        img, parcels = img.slicer[..., frames], parcels.iloc[frames]
     groups, cortical = _atlas(xcpd_dir, atlas)
     columns = [c for c in parcels.columns if c in cortical]
     rois, names = striatal_rois(img, putamen_split_y=putamen_split_y)
