@@ -60,6 +60,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 | — | CT, α-synuclein PET, DPA-714, iron (QSM/SWI) | **Not offered** | PPMI's CT is 121 low-dose attenuation-correction series (58 participants, 2014–2020) from its AV-133 PET/CT and DaT SPECT/CT sessions; no diagnostic or post-DBS CT. PPMI does not acquire QSM/SWI | CT as a PET/SPECT companion under review |
 | Longitudinal | Per-visit runs, longitudinal FastSurfer stream | Not yet piloted | Same-day MDC95 2–6 % gives the noise floor | Pilot on 100 participants |
 | Multi-cohort | BIDS/ADNI input, ComBat harmonisation | Synthetic tests only | — | Harmonisation across PPMI's own scanners; then a public BIDS dataset and ADNI |
+| Statistics | Survival layer (interval-censored illness-death, competing risks) | **Validated** (24 Oct, positive control) | Baseline DaT predicts PD/DLB in 1,992 prodromal participants: HR 2.41 [2.09, 2.78] per SD lower (218 conversions); Cox, Fine–Gray and AFT agree (2.34–2.41) | The 2012 prodromal cohort; the MRI SAA consortium |
 
 ## How each modality was validated
 
@@ -247,7 +248,7 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 | [preregistration_t1_surfaces.md](preregistration_t1_surfaces.md) | Cortical thickness vs PPMI FS7, repeatability, age; T1 QC vs MRIQC | Frozen 15 Oct; runs after Ch4 |
 | [preregistration_t1_longitudinal_pilot.md](preregistration_t1_longitudinal_pilot.md) | Longitudinal FastSurfer stream | Frozen 15 Oct; needs control follow-up T1s |
 | [preregistration_harmonisation_ppmi.md](preregistration_harmonisation_ppmi.md) | ComBat across PPMI's own scanners | Frozen 15 Oct; runs after `run --etiv` |
-| [preregistration_survival_positive_control.md](preregistration_survival_positive_control.md) | Survival layer: baseline DaT predicts phenoconversion | Frozen 15 Oct; ready to run |
+| [preregistration_survival_positive_control.md](preregistration_survival_positive_control.md) | Survival layer: baseline DaT predicts phenoconversion | Run 24 Oct: **passed** (HR 2.41 [2.09, 2.78]) |
 
 A DRAFT has a fully synthetic dry run and tests but has computed nothing on real outcomes. It is frozen, with its
 script hashes, before its data are processed.
@@ -257,6 +258,8 @@ script hashes, before its data are processed.
 Newest first.
 
 - **2026-10-24**
+  - Survival positive control passed: baseline DaT predicts PD/DLB in 1,992 prodromal participants, HR 2.41
+    [2.09, 2.78] per SD lower.
   - Ch4 v2 validated (`julich303-1mm`, probability-weighted grey matter):
     - left/right 1.04;
     - IXI ≥ 50 age r −0.394;

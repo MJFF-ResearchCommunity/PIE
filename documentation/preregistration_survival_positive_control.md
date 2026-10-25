@@ -1,6 +1,6 @@
 # Pre-registration: survival-layer positive control (baseline DaT predicts phenoconversion in PPMI prodromal participants)
 
-**Status: FROZEN 2026-10-15**, before any gate statistic was computed on real data (hashes in the run log). No model has been fitted to real data. The counts below come from the
+**Status: RUN 24 Oct 2026, PASSED** (result below). Frozen 2026-10-15, before any gate statistic was computed on real data (hashes in the run log). No model has been fitted to real data. The counts below come from the
 script's loader and flow step only (dates, diagnosis codes, vital status, and whether a DaT value exists). No DaT
 value was summarised or tabulated against outcome.
 
@@ -149,10 +149,83 @@ sha256 at the freeze: in the run log.
 
 ## Run log
 
+- 2026-10-24: **run once.**
+  - The frozen hashes were checked: both match.
+  - Command: `analyse_survival_positive_control.py --ppmi PPMI` with `venv_py311`, in a systemd unit. Output is
+    `survival_positive_control_result.json`, outside the repository.
 - 2026-10-15: **frozen**, gates as drafted (approved). sha256: `analyse_survival_positive_control.py` `a13b405bcbbd7ce3644997353cc58950dce34abcc5f1dd6aa6c729826aff3f44`; `survive.py` `446fd965d713b089de10890097c15e7f81fdaeccf8d5056a89df30eddd70dcec`.
 - 2026-10-15: drafted.
   - Synthetic dry run: HR 3.00 [2.52, 3.57] against a true 2.5 (n 1,183, 146 conversions, 96 deaths). Across three more seeds the estimates were 2.66, 2.28 and 2.56: sampling variation, not bias.
   - The flow counts above were taken from the real tables (counts only).
+
+## Result (24 Oct 2026): PASSED
+
+**Gate.** Illness-death Weibull model, healthy → PD/DLB:
+- HR **2.41 per SD lower DaT [2.09, 2.78]**, adjusted for age and sex;
+- converged, with no fallback;
+- p 2.2e-33.
+
+**Flow.** The counts match those recorded at the freeze:
+- 3,156 prodromal participants with a dated diagnosis record;
+- excluded: 95 prevalent at the first record, 877 with no follow-up, 192 with no baseline DaT, 0 missing age or sex;
+- **1,992 analysed**: 218 conversions, 30 deaths (6 after conversion), median follow-up 2.16 years;
+- 1,992 had baseline DaT from Xing, none from Invicro;
+- 51 reverted after conversion;
+- no undated deaths, and no death clipped;
+- 350 enrolled before 2020.
+
+**Every coefficient of the primary fit** (HR [95 % CI]):
+
+| Transition | Predictor | HR | 95 % CI |
+|---|---|---|---|
+| healthy → PD/DLB | DaT, per SD lower | 2.41 | 2.09–2.78 |
+| healthy → PD/DLB | age, per decade | 1.92 | 1.54–2.39 |
+| healthy → PD/DLB | sex (male) | 1.98 | 1.49–2.62 |
+| healthy → dead | age, per decade | 2.80 | 1.44–5.43 |
+| PD/DLB → dead | age, per decade | 2.35 | 0.84–6.57 |
+
+**Weibull baseline intensities (shape, scale):**
+- healthy → PD/DLB: 1.112, 39.9;
+- healthy → dead: 1.668, 61.2;
+- PD/DLB → dead: 1.113, 61.9.
+
+**Absolute risk of conversion** (mean DaT, age 65, female, deaths accounted for): 3.5 % at 2 years, 7.4 % at 4 years
+and 11.4 % at 6 years.
+
+**Comparator, cause-specific Cox:**
+- HR 2.41 [2.09, 2.78];
+- Harrell's C of the model 0.764;
+- Schoenfeld PH test: DaT p 0.86, age p 0.45, sex p 0.65, so no violation.
+
+**Discrimination, DaT alone:** Harrell's C 0.718; Uno's C at τ = 5 years 0.709.
+
+**Secondary analyses:**
+
+| Analysis | HR [95 % CI] |
+|---|---|
+| Illness-death, without age and sex | 2.52 [2.19, 2.90] |
+| Fine–Gray | 2.34 [1.98, 2.77] |
+| Interval-censored Weibull, deaths censored | 2.40 [2.08, 2.77] |
+
+**Aalen–Johansen cumulative incidence of conversion:**
+- with an NSD-ISS DaT deficit: 10.6 % at 2 years, 30.8 % at 4 years and 38.0 % at 6 years;
+- without one: 3.3 %, 8.5 % and 9.9 %.
+
+**Sensitivity analyses** (illness-death HR):
+
+| Analysis | Conversions | HR [95 % CI] |
+|---|---|---|
+| MSA counted as conversion | 223 | 2.37 [2.06, 2.73] |
+| Reverted conversions not counted | 171 | 2.97 [2.52, 3.49] |
+| Xing rows only | 218 | 2.41 [2.09, 2.78] (identical: every baseline was Xing) |
+| Enrolled before 2020 (350 participants, median follow-up 8.3 years) | 60 | 1.88 [1.46, 2.43] |
+
+**What it means.**
+- Shown: PIE's outcome coding, interval construction, death handling and illness-death fit recover the known DaT
+  effect on PPMI's visit-dated data. The illness-death, Cox, Fine–Gray and AFT estimates all agree.
+- So the survival layer may be used on the 2012 prodromal cohort, with its coding rules adapted to that cohort's
+  tables.
+- Not shown: calibrated absolute risks, or unbiased estimates for weaker predictors.
 
 ## References
 
