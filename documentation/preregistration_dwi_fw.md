@@ -148,7 +148,7 @@ every number reported.
       check compared the T1s but not the seed.
   - Action, as the check's message prescribes:
     - The 461 were set aside, not deleted, as `*.seed0.tfm` / `*.seed0.json`, so the frozen code refits them.
-    - Pass 5 (`--retry-errors`) re-runs every error row with the same frozen command after the PD arm and TrUE-Net,
-      because the GPU runs one job type at a time. A pre-retry copy of the table is kept.
+    - Pass 5 (`--retry-errors`) re-runs every error row with the same frozen command after the PD arm. The GPU runs
+      one job type at a time, so TrUE-Net now waits for pass 5 (reordered 24 Oct so the paper's analysis comes first). A pre-retry copy of the table is kept.
   - No `dwisf_*` value had been looked at, and no value was ever computed on a seed-0 registration under the frozen
     code.

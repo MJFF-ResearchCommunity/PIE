@@ -35,14 +35,14 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 `PET_AV133_VALIDATED` (True), all in `pie/imaging/manifest.py`. They are exported as `nm_validated`,
 `dwi_nigral_validated` and `pet_av133_validated`.
 
-## Summary (15 October 2026)
+## Summary (25 October 2026)
 
 | Modality | Measure | Status | Key evidence | Next |
 |---|---|---|---|---|
 | T1 | Subcortical volumes (FastSurfer, pinned build) | **Validated** | vs PPMI FreeSurfer 7: r 0.81–0.96, median CCC 0.87 (1,080 scans); same-day ICC 0.97–1.00 (29 pairs) | Visual QC ratings of flagged scans |
 | T1 | eTIV (FreeSurfer 7.4.1) | **Validated** | r 0.992 vs PPMI FS7 eTIV, +0.3 % (40 scans; pre-registered gate r ≥ 0.95, < 5 %) | — |
 | T1 | Normative z-scores (age, sex, TIV) | **Validated** | Controls' out-of-fold z: mean within 0.013 of 0, SD 1.01–1.03 | — |
-| T1 | Basal forebrain, ScLimbic | In use; descriptive checks only | Age r −0.43 in controls; no PD–HC difference | Convergence gate within the Ch4 test |
+| T1 | Basal forebrain, ScLimbic | In use; descriptive checks only | Age r −0.43 in controls; no PD–HC difference; same-day ICC 0.97 | None planned: Ch4 v2 dropped the convergence gate (ρ with Ch4 0.14, reported); 1,055 October scans still to run |
 | T1 | Nucleus basalis (Ch4), CAT12.9, `julich303-1mm` | **Validated** (24 Oct), probability-weighted grey matter (`vol_ch4_*_pgm`) | IXI ≥ 50: left/right 1.04 (bar 0.9–1.2), age r −0.39 [−0.49, −0.29] (bar ≤ −0.30); same-day ICC 0.87 [0.75, 0.97] (bar 0.75). ρ with ScLimbic 0.14 in 162 PD (reported, no gate). The 13 Oct configuration (v3.1 map) failed | Convergence against manual tracing; prognosis (Ray 2018) and SAA association |
 | T1 | Cortical thickness, hippocampal subfields, SynthSeg (legacy 1.5 T), medial-temporal index | Not yet run | Code and synthetic tests | Agreement with PPMI's `FS7_APARC_CTH`; same-day ICC |
 | DaT-SPECT | PPMI core-lab SBRs (Xing; Invicro fallback) | **Validated** (reference values) | PPMI's own endpoint; PD vs HC AUROC 0.99 | — |
