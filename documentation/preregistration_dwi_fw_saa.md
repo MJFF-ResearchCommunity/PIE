@@ -1,7 +1,8 @@
 # Pre-registration: posterior-SN free water and CSF seed status (SAA) in PPMI prodromal participants
 
-**Status: DRAFT 25 Oct 2026, for user approval.** It must be frozen before the frozen DaT test
-(`preregistration_dwi_fw.md`) is run, which is expected on 26 Oct. At the draft:
+**Status: FROZEN 30 Oct 2026** (user-approved, all three decisions below as recommended). Drafted 25 Oct; frozen
+before the frozen DaT test (`preregistration_dwi_fw.md`) was run. The commit that adds this line is the frozen code.
+At the freeze:
 - No `dwisf_*` value had been looked at.
 - The counts below come from the DWI series index, the paper's frozen clinical-cohort tables, and labels and dates only.
 
@@ -167,11 +168,11 @@ PYTHONPATH=. python scripts/analyse_dwi_fw_saa.py --tables <dwi_features.csv>[,.
 **Dry run** (`--synthetic`): every value, label and identifier is generated. It ran end to end through the paper's real
 engine (37 s).
 
-**sha256 at the draft** (re-recorded at the freeze):
+**sha256 at the freeze (30 Oct 2026)**, every input re-hashed; all unchanged since the 25 Oct draft except the new script:
 
 | File | sha256 |
 |---|---|
-| `analyse_dwi_fw_saa.py` | _at freeze_ |
+| `analyse_dwi_fw_saa.py` | 292c3c43d844dc39912ac679a8314391101dd098cd03e04aedb622cf4cd66a1c |
 | `analyse_dwi_fw.py` | ef22dda5d559c9f65b117faa10e9bbc3f4c110ca9714a26a25912993fe557d17 (the DaT test's frozen hash) |
 | `nm_staged.py` | 3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f |
 | Paper: `scientific_prediction.py` | f27d8cff353988a5222de255597b927cc98fc11d768963e3bd2fc2dc50fae2ff (as in the paper's run) |
@@ -187,7 +188,7 @@ The paper's `run.py` is its 18 Sep amended version: the hash differs from `plan_
 
 Run once; every number reported. The result goes to the paper session.
 
-## Decisions for the user (defaults above, recommended)
+## Decisions (user, 30 Oct 2026: all three as recommended)
 
 1. **Gate on the DaT test** (recommended, as the paper and the DWI re-test did). The alternative is to run regardless
    and label the result as descriptive.
