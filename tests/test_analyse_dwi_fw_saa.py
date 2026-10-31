@@ -31,6 +31,9 @@ def test_age_confounded_saa_difference_is_removed_by_adjustment_and_a_real_one_s
     assert set(real["secondary"]) >= {"unadjusted", "mwu_one_sided_p", "odds_ratio_per_sd", "dat_normal_only", "saa_by_dat",
                                       "within_6_months", "anterior_sn_fw"}
     assert real["increment"]["demonstrated"] is False                         # 98.75 % lower bound below zero
+    by_role = real["secondary"]["by_role"]
+    assert set(by_role) == {"test", "development_calibration"} and all(v["auroc"] > 0.55 for v in by_role.values())
+    assert sum(sum(v.values()) for v in real["flow"]["analysed_by_role"].values()) == 300
 
 
 def test_increment_rule_needs_the_9875_bound_all_repeats_and_no_reversal():

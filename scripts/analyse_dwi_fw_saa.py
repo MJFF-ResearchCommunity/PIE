@@ -60,6 +60,7 @@ def synthetic(n=300, saa_shift=0.3):
                       "age": age, "sex": sex, VALUE: fw, ANTERIOR: fw - 0.02 + 0.02 * rng.normal(size=n),
                       "stratum": rng.choice(["Siemens|topup_eddy", "GE|eddy_only", "Philips|eddy_only"], n, p=[0.7, 0.15, 0.15]),
                       "csf_gap_months": np.where(rng.random(n) < 0.8, 0.0, rng.uniform(0, 18, n)),
+                      "role": rng.choice(ROLES, n, p=[0.2, 0.2, 0.6]),
                       "age_at_scan": age, "sex_male": sex, "upsit": rng.normal(25 - 6 * saa, 6), "updrs3": rng.normal(4, 3, n)})
     for c in ["LRRK2_carrier", "GBA_carrier", "SNCA_carrier", "APOE_e4"]:
         m[c] = (rng.random(n) < 0.1).astype(float)
@@ -106,6 +107,7 @@ def analyse(m, pro, flow, n_boot=B, increment=increment):
     x = m.assign(fw_adj=m["patno"].map(adj), fw_anterior_adj=m["patno"].map(adj_a)).dropna(subset=[VALUE, "fw_adj", "saa_prodromal"])
     pos, neg = x[x["saa_prodromal"].eq(1)], x[x["saa_prodromal"].eq(0)]
     res = {"flow": {**flow, "analysed": {"saa_positive": len(pos), "saa_negative": len(neg)},
+                    "analysed_by_role": x.groupby(["role", "saa_prodromal"]).size().unstack(fill_value=0).to_dict("index"),
                     "strata": x.groupby(["stratum", "saa_prodromal"]).size().unstack(fill_value=0).to_dict("index")}}
     res["primary"] = _auc(x, "fw_adj", n_boot)
     res["associated"] = bool(res["primary"]["ci95"][0] > 0.50)
@@ -121,7 +123,10 @@ def analyse(m, pro, flow, n_boot=B, increment=increment):
         "saa_by_dat": {f"saa{int(s)}_dat{int(dd)}": {"n": len(g), "median_fw_adj": float(g["fw_adj"].median())}
                        for (s, dd), g in x.dropna(subset=["dat_d_nsdiss"]).groupby(["saa_prodromal", "dat_d_nsdiss"])},
         "within_6_months": _auc(x[x["csf_gap_months"] <= 6], "fw_adj", n_boot),
-        "anterior_sn_fw": _auc(x.dropna(subset=["fw_anterior_adj"]), "fw_anterior_adj", n_boot)}
+        "anterior_sn_fw": _auc(x.dropna(subset=["fw_anterior_adj"]), "fw_anterior_adj", n_boot),
+        # Amendment 30 Oct (before the run): test-role participants enter a structural/diffusion comparison for the first time
+        "by_role": {"test": _auc(x[x["role"].eq("test")], "fw_adj", n_boot),
+                    "development_calibration": _auc(x[x["role"].isin(["development", "calibration"])], "fw_adj", n_boot)}}
     f = x.assign(**{FEATURE: x[VALUE], "tier": x["dwisf_tier"].map(TIER)}).sort_values("PATNO").reset_index(drop=True)
     counts = f["saa_prodromal"].value_counts()
     if len(f) < 80 or counts.min() < 20:                         # the paper's minimum (run.py dataset)

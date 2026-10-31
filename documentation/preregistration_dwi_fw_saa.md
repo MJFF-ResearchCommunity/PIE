@@ -1,6 +1,7 @@
 # Pre-registration: posterior-SN free water and CSF seed status (SAA) in PPMI prodromal participants
 
-**Status: FROZEN 30 Oct 2026** (user-approved, all three decisions below as recommended). Drafted 25 Oct; frozen
+**Status: FROZEN 30 Oct 2026** (user-approved, all three decisions below as recommended), **amended 30 Oct 2026
+before the run** (user-approved; see Amendment 1). Drafted 25 Oct; frozen
 before the frozen DaT test (`preregistration_dwi_fw.md`) was run. The commit that adds this line is the frozen code.
 At the freeze:
 - No `dwisf_*` value had been looked at.
@@ -77,9 +78,13 @@ Counts at the draft, from labels and dates only; QC counts come after the run:
 | … within 6 months (sensitivity) | 261 | 179 | 82 |
 | Passing QC with a finished T1 (after the run) | _ | _ | _ |
 
-- **Clinical-cohort roles:** 209 of the 342 are in the paper's held-out test set. The prediction analysis below
-  cross-validates in all of them, as the paper's own MRI-versus-clinical comparisons did
-  (`mri_clinical_comparator_20260918`).
+- **Clinical-cohort roles:** 209 of the 342 are in the paper's held-out test set, 72 in calibration and 61 in
+  development. Within 18 months: test 202 (139 SAA+ / 63 SAA−), calibration 70 (47 / 23), development 60 (41 / 19).
+  The analyses use all roles. ~~The prediction analysis below cross-validates in all of them, as the paper's own
+  MRI-versus-clinical comparisons did (`mri_clinical_comparator_20260918`).~~ **Corrected 30 Oct (Amendment 1):** the
+  paper's MRI-versus-clinical comparisons were development-only (274 NM and 229 DTI participants, all development
+  role; their PROTOCOL.md and Methods say so). This is the first structural or diffusion comparison in the paper's
+  cohort to use calibration- and test-role participants.
 - **Gap from the CSF month:** median 0 months, 90th percentile 13.5 months.
 
 ## Primary analysis (biology) and decision rule
@@ -139,7 +144,9 @@ compares the clinical model + free water (one feature, `dwi_fw_sn_posterior`) ag
   synuclein biology before dopaminergic loss?);
 - SAA × DaT: n and median adjusted free water per cell (the paper's neuromelanin table);
 - DWI within 6 months of the CSF month: the adjusted AUROC;
-- anterior-SN free water, adjusted AUROC (specificity; expected smaller).
+- anterior-SN free water, adjusted AUROC (specificity; expected smaller);
+- by clinical-cohort role (Amendment 1): the analysed counts by role × SAA, and the adjusted AUROC within test-role
+  participants and within development + calibration participants.
 
 ## What a result would mean
 
@@ -172,7 +179,7 @@ engine (37 s).
 
 | File | sha256 |
 |---|---|
-| `analyse_dwi_fw_saa.py` | 292c3c43d844dc39912ac679a8314391101dd098cd03e04aedb622cf4cd66a1c |
+| `analyse_dwi_fw_saa.py` | 00c6cd25ea243deec7ca87349e98a89dc01b7118116a4a29d7cf4b8e87ffd358 (Amendment 1; frozen 30 Oct as 292c3c43d844dc39912ac679a8314391101dd098cd03e04aedb622cf4cd66a1c) |
 | `analyse_dwi_fw.py` | ef22dda5d559c9f65b117faa10e9bbc3f4c110ca9714a26a25912993fe557d17 (the DaT test's frozen hash) |
 | `nm_staged.py` | 3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f |
 | Paper: `scientific_prediction.py` | f27d8cff353988a5222de255597b927cc98fc11d768963e3bd2fc2dc50fae2ff (as in the paper's run) |
@@ -197,3 +204,21 @@ Run once; every number reported. The result goes to the paper session.
    reported anyway.
 3. **The increment uses the paper's 98.75 % rule** (recommended, so free water meets the same bar as T1, NM and DTI).
    The alternative is the 95 % interval, as the paper's Amendment 3 used.
+
+## Amendment 1 (30 Oct 2026, before the run; user-approved)
+
+The paper's session found that the frozen text wrongly said the paper's MRI-versus-clinical comparisons used all
+clinical-cohort roles. They used development-role participants only. Recounted from the frozen tables, NM had 274
+participants and DTI 229, all in the development role.
+
+**Changes:**
+- The sentence is corrected in place, with the old text struck through.
+- All roles are kept. Development + calibration alone would leave at most 130 participants within 18 months, too few
+  for this test.
+- No gate, sample, statistic or decision rule changed.
+- Added, reported with no gate: the analysed counts by role × SAA, and the adjusted AUROC within test-role participants
+  and within development + calibration participants.
+  - They were added before any `dwisf_*` value was seen, so they are prospective.
+  - The new code computes only these additions. It has a synthetic test, and the synthetic dry run was repeated.
+
+At the amendment, no `dwisf_*` value had been looked at, and neither the DaT test nor this analysis had run.
