@@ -1,6 +1,6 @@
 # Pre-registration: multi-shell posterior-SN free water in PPMI 2.0 prodromal participants (DaT-deficient vs DaT-normal)
 
-**Status: FROZEN 2026-10-14** (user-approved; contrast changed 13 Oct by user decision), before `dwi --eddy --study`
+**Status: RUN 31 Oct 2026: FAILED** (AUROC 0.483 [0.418, 0.545]; see Result). **FROZEN 2026-10-14** (user-approved; contrast changed 13 Oct by user decision), before `dwi --eddy --study`
 produced any `dwisf_*` value for the sample. The commit that adds this line is the frozen code. The candidate counts
 below come from the DWI series index, `sessions.csv`, cohort and DaT labels only. T1s for most participants were still
 to be downloaded at the freeze; the sample is defined by the rule below, not by who is processed first.
@@ -70,7 +70,7 @@ Counts at the freeze (14 Oct), from labels and dates only; QC counts come after 
 |---|---|---|---|---|
 | Three-shell session held | 275 | 184 | 7 | 30 |
 | … with a finished T1 within 180 days at the freeze | 45 | 22 | 0 | 26 |
-| Passing `dwisf_qc_pass` (after the run, in the flow) | _ | _ | _ | _ |
+| Passing `dwisf_qc_pass` (after the run, in the flow) | 239 | 146 | 7 | 209 |
 
 The 28 Siemens sessions with stripped gradient tags are single-shell PPMI-1 and not in this sample.
 
@@ -124,7 +124,79 @@ sha256 at the freeze (14 Oct 2026): `analyse_dwi_fw.py` ef22dda5d559c9f65b117faa
 3ab1bc26e088b5e46551a280b31754ce8842a18e68fcbc9e80069c061b4fee3f. Synthetic dry run only before the freeze. Run once;
 every number reported.
 
-## Run log (processing only; no `dwisf_*` value was looked at)
+## Result (run once, 31 Oct 2026): FAILED
+
+`scripts/analyse_dwi_fw.py` (frozen hash) on `dwi_features.csv` after passes 5 and 6; output `fw_result.json`
+(sha256 603d9514…). `DWI_FW_VALIDATED` is **not** reached.
+
+**Flow.**
+- The feature table has 708 participants, one row each.
+- **15 error rows (12 prodromal, 3 PD).** All are data exclusions, and none has an acquisition date, so `load` drops them
+  at its 2020 filter:
+  - 8 with no acquisition that has its own b0 and ≥ 12 directions;
+  - 6 with no b0 reference;
+  - 1 with no diffusion-weighted run.
+- **PPMI 2.0 candidates:** 453 prodromal and 236 PD. The other 19 rows are the 15 error rows and the 4 controls; no row
+  is before 2020.
+- **Excluded by `dwisf_qc_pass`:** 61 prodromal and 27 PD. All are QC failures; no error row reaches this step.
+- **No DaT label within 18 months:** 7 prodromal and 2 PD.
+- **Prodromal flow:** 466 in the census, 465 feature rows, 12 errors, 453 candidates, 61 QC failures, 392 passing,
+  7 without a DaT label, 385 analysed.
+- **Analysed:** 146 DaT-deficient and 239 DaT-normal prodromal participants. Every participant fell in a stratum shared
+  by both groups:
+
+  | Stratum | DaT-deficient | DaT-normal |
+  |---|---|---|
+  | Siemens, topup + eddy | 134 | 225 |
+  | Siemens, eddy without reverse PE | 11 | 13 |
+  | Philips, topup + eddy | 1 | 1 |
+
+**Primary.** AUROC P(deficient > normal) **0.483 [0.418, 0.545]**.
+- The lower bound is not above 0.50, so the test **fails**.
+- The point estimate is on the wrong side of chance.
+- The upper bound is below the expected 0.55–0.62 and below the PD − HC equivalent of 0.61–0.64.
+
+**Reported, no gate:**
+
+| Analysis | Result | Expected |
+|---|---|---|
+| Age- and sex-adjusted AUROC | 0.491 [0.427, 0.553] (146 / 239) | |
+| 0.65 SBR deficit label | 0.540 [0.466, 0.610] (85 / 300) | |
+| Spearman ρ with percent-expected putamen SBR (prodromal) | +0.042 (n 385) | negative |
+| Positive control: ρ with age in DaT-normal | +0.111 (n 239) | > 0 |
+| Specificity: anterior-SN free water | 0.501 [0.439, 0.565] (130 / 208) | smaller |
+| Posterior-SN FAt | 0.451 [0.390, 0.513] (146 / 239) | |
+| PD vs DaT-normal prodromal | 0.532 [0.476, 0.585] (209 / 239) | > the primary |
+| PD: ρ with the lowest putamen SBR (Xing CWM, the only source with ≥ 10) | −0.079 (n 203) | negative |
+
+**Reading.**
+- PIE's atlas-based multi-shell posterior-SN free water separates neither DaT-deficient from DaT-normal prodromal
+  participants, nor manifest PD from them.
+- It does not track striatal binding.
+- **Weak age association.** In the 392 QC-passing prodromal participants, Spearman ρ with age is +0.09 for posterior-SN
+  free water and +0.22 for whole-brain median free water (`fw_brain_median`). Corrected 31 Oct: an earlier draft of this
+  line compared the pre-registered +0.11 with a whole-brain +0.49 from a different sample.
+- The test was adequately powered (about 0.91 at AUROC 0.60).
+
+**Post hoc diagnostics (31 Oct, after the run; no gate, no SAA value read).**
+- **QC loss was selective.** DaT-deficient participants made up 34 of the 61 QC failures (56 %), against 146 of the 385
+  analysed (38 %); Fisher P 0.011. The paper's diagnostic (`droby_review_20261014/fw_measure_diagnostic.py`) restored
+  the 44 failures with at least one measurable side and found AUROC 0.493 [0.435, 0.551]. The other 17 have no value.
+  Why fits fail more often with a deficit is unexplained.
+- **Effectively Siemens-only.** 390 of the 392 passing participants are Siemens; 16 of 18 Philips and GE sessions failed
+  QC.
+- **Repetition time.** The paper's diagnostic found TR 3.8–5.0 s in all 52 b ≈ 1000 series it sampled. That is below
+  the > 6 s the method's originators recommend for nigral free water.
+- **Reliability.** Left/right Spearman ρ is 0.61 (0.53 net of whole-brain free water and motion, from the paper's
+  diagnostic), so measurement noise alone does not explain the null.
+
+**Scope of the conclusion.** Posterior-SN free water does not mark a DaT deficit in these PPMI 2.0 scans, at this TR,
+on Siemens. This does not show that multi-shell nigral free water fails in general, and striatal free water was not
+tested.
+- The SAA follow-on ([preregistration_dwi_fw_saa.md](preregistration_dwi_fw_saa.md)) is gated on this test and did not
+  run.
+
+## Run log (processing only; no `dwisf_*` value was looked at before the run)
 
 - **14–15 Oct 2026: eddy failures while the GPU was shared.**
   - From about 00:30 on 15 Oct, FastSurfer (the new-T1 run) shared the 8 GB GPU with three `eddy_cuda` workers. From then on, almost every eddy run failed with an FSL exception in eddy's outlier-replacement step: 79 participants, against about 20 successes before.
@@ -158,3 +230,8 @@ every number reported.
   - The 3 runs in flight (1 `topup`, 2 `eddy_cuda`) hit their wall-clock limit on thaw.
   - Pass 6 (`--retry-errors`, the same frozen command) re-runs them after pass 5. A pre-retry copy of the table is kept.
   - No `dwisf_*` value had been looked at.
+- **31 Oct 2026: processing complete.**
+  - Pass 5 finished, and pass 6 (01:36–03:25) recovered the 3 runs that timed out on thaw.
+  - The table holds 708 participants. 693 are error-free; the 15 errors are data exclusions only, with no timeouts or
+    registration errors left.
+  - The analysis then ran once (03:28): see Result.

@@ -35,7 +35,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 `PET_AV133_VALIDATED` (True), all in `pie/imaging/manifest.py`. They are exported as `nm_validated`,
 `dwi_nigral_validated` and `pet_av133_validated`.
 
-## Summary (25 October 2026)
+## Summary (31 October 2026)
 
 | Modality | Measure | Status | Key evidence | Next |
 |---|---|---|---|---|
@@ -51,7 +51,7 @@ Manifest flags that encode a status today: `NM_VALIDATED` (False), `DWI_NIGRAL_V
 | DWI | Stripped-gradient recovery | **Validated** | 36 series rebuilt across 5 protocols; leave-one-out error ≤ 0.42°; MD r > 0.9999 | — |
 | DWI | Nigral FA/MD (single-shell tensor) | **Exploratory** | Pre-registered PPMI 2.0 re-test failed: AUROC 0.574 (0.495–0.652); MD ρ −0.01 vs PPMI's hand-drawn ROIs | — |
 | DWI | Single-shell free water | Quarantined | Age r +0.02; PD vs HC AUROC 0.50; ill-posed on one shell | — |
-| DWI | Multi-shell posterior-SN free water (`dwisf_*`) | **In validation** | Pre-registered 14 Oct (prodromal DaT contrast); run in progress | Result expected late October; QSIPrep comparator |
+| DWI | Multi-shell posterior-SN free water (`dwisf_*`) | **Failed** (31 Oct) | Prodromal DaT-deficient vs DaT-normal AUROC 0.483 [0.418, 0.545] (146 / 239); PD vs DaT-normal prodromal 0.532 [0.476, 0.585]; ρ with SBR +0.04; age ρ +0.11 | Not used for prediction; the SAA follow-on was gated and did not run; QSIPrep agreement still pre-registered |
 | FLAIR | WMH volume, TrUE-Net | **In validation** | Preprocessing agreement on 60 FLAIRs: Dice 0.872, volume ICC 0.984 | Accuracy vs manual labels; biology on PPMI |
 | FLAIR | WMH volume, threshold method | Exploratory (superseded) | Age ρ 0.18 | — |
 | rs-fMRI | fMRIPrep + XCP-D connectivity | **Not yet validated** | No real-data run since the October fixes | Pre-registered plan (below) |
@@ -178,7 +178,9 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 - **Multi-shell posterior-SN free water** (`dwi --eddy --study`, PPMI 2.0 three-shell). Brain free water tracks age (r +0.49, 68 scans).
   - **Pre-registered test** ([preregistration_dwi_fw.md](preregistration_dwi_fw.md), frozen 14 Oct): prodromal DaT-deficient vs DaT-normal, as NM Stage 2b. PD vs HC is infeasible because PPMI holds three-shell DWI for only 13 controls.
   - **Freeze counts:** 275 DaT-normal, 184 DaT-deficient; power about 0.91 at AUROC 0.60.
-  - **Running.** Sessions without a usable b0 reference are counted as exclusions.
+  - **Result (31 Oct): failed.** AUROC 0.483 [0.418, 0.545] (146 deficient / 239 normal), with the point estimate on the wrong side of chance. PD vs DaT-normal prodromal 0.532 [0.476, 0.585]; ρ with putamen SBR +0.04; age ρ in DaT-normal +0.11. Every number is in the pre-registration.
+  - Scope (post hoc, 31 Oct): the result is effectively Siemens-only (390 of 392 passing); TR 3.8–5.0 s is below the > 6 s the method's originators recommend; QC failures were more often DaT-deficient (34 of 61), though restoring 44 of them left the result unchanged (0.493). Left/right ρ is 0.61. Striatal free water was not tested.
+  - The SAA follow-on ([preregistration_dwi_fw_saa.md](preregistration_dwi_fw_saa.md), frozen 30 Oct) was gated on this test and did not run.
 - **Pre-registered** ([preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md), frozen 15 Oct): agreement of posterior-SN free water between PIE's preprocessing and QSIPrep 26.0.0 (40 sessions, ICC(2,1) ≥ 0.75), after the FW run.
 
 ### FLAIR white-matter hyperintensities
@@ -241,7 +243,8 @@ If Stage 3 passes, NM becomes **validated, with limits**: Siemens GRE-MT, snceg 
 | [preregistration_nm_staged_validation.md](preregistration_nm_staged_validation.md) | NM staged: technical, biological, clinical | Stage 1 and 2b frozen and run (passed; 2b overlap disclosed). Stage 3 and 2b-R (Amendment 1) frozen 15 Oct, awaiting downloads. Stages 2a and 2c DRAFT |
 | [preregistration_ch4_cat12.md](preregistration_ch4_cat12.md) | Nucleus basalis (Ch4), CAT12.9 | Run 15 Oct: not validated |
 | [preregistration_ch4_v2.md](preregistration_ch4_v2.md) | Ch4 v2: v3.0.3 map, 1 mm, probability-weighted; IXI ≥ 50 for age; symmetry gate | Run 24 Oct: **validated** |
-| [preregistration_dwi_fw.md](preregistration_dwi_fw.md) | Posterior-SN free water, prodromal DaT contrast (+ PD secondaries) | Frozen 14 Oct; running |
+| [preregistration_dwi_fw.md](preregistration_dwi_fw.md) | Posterior-SN free water, prodromal DaT contrast (+ PD secondaries) | Run 31 Oct: **failed** (0.483 [0.418, 0.545]) |
+| [preregistration_dwi_fw_saa.md](preregistration_dwi_fw_saa.md) | Posterior-SN free water vs CSF SAA, paper's clinical cohort | Frozen 30 Oct (Amendment 1 before the run); not run: gated on the DaT test |
 | [preregistration_dwi_qsiprep.md](preregistration_dwi_qsiprep.md) | PIE vs QSIPrep free-water agreement | Frozen 15 Oct; runs after the FW run |
 | [preregistration_flair_wmh.md](preregistration_flair_wmh.md) | TrUE-Net WMH accuracy (MICCAI 2017 test set) and PPMI biology | Frozen 15 Oct; awaiting the test-set download and G1 runner; weights caveat open |
 | [preregistration_fmri.md](preregistration_fmri.md) | rs-fMRI throughput, motion (QC-FC), reliability, per protocol | Frozen 15 Oct; awaiting the PPMI-1 census and the run step |
@@ -257,6 +260,10 @@ script hashes, before its data are processed.
 
 Newest first.
 
+- **2026-10-31**
+  - DWI multi-shell posterior-SN free water failed its pre-registered prodromal DaT test: AUROC 0.483 [0.418, 0.545]
+    (146 / 239). PD vs DaT-normal prodromal 0.532. The SAA follow-on was gated and did not run.
+  - Processing finished after retry passes 5 and 6; the 26–30 Oct pause cost 3 runs, which were re-run.
 - **2026-10-24**
   - Survival positive control passed: baseline DaT predicts PD/DLB in 1,992 prodromal participants, HR 2.41
     [2.09, 2.78] per SD lower.

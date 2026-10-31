@@ -214,8 +214,9 @@ multi-shell fit, ≥ 20 nigral voxels, ≥ 95 % in the brain mask, ≥ 80 % phys
 posterior halves measured. Single-shell rows fail `multishell` (single-shell free water stays quarantined, below).
 `assemble_features` carries the columns under that QC. The test is pre-registered in
 [preregistration_dwi_fw.md](preregistration_dwi_fw.md). Its contrast is prodromal DaT-deficient against DaT-normal,
-not PD − HC: PPMI 2.0's three-shell protocol reached at most 5 healthy controls (13 Oct 2026). Until it runs the endpoint is exploratory
-(`dwi_nigral_validated` False). The free-water change is only comparable within one correction tier across visits.
+not PD − HC: PPMI 2.0's three-shell protocol reached at most 5 healthy controls (13 Oct 2026). **It failed (31 Oct 2026):** AUROC 0.483
+[0.418, 0.545] in 146 DaT-deficient / 239 DaT-normal prodromal participants, and PD vs DaT-normal prodromal 0.532. The
+endpoint stays exploratory (`dwi_nigral_validated` False). The free-water change is only comparable within one correction tier across visits.
 
 ### Single-shell free water is not assembled by default
 

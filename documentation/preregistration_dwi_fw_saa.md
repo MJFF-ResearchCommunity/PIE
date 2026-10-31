@@ -1,6 +1,7 @@
 # Pre-registration: posterior-SN free water and CSF seed status (SAA) in PPMI prodromal participants
 
-**Status: FROZEN 30 Oct 2026** (user-approved, all three decisions below as recommended), **amended 30 Oct 2026
+**Status: NOT RUN (31 Oct 2026): the gate was not met.** The frozen DaT test failed (AUROC 0.483 [0.418, 0.545]),
+so `analyse_dwi_fw_saa.py` stopped as pre-registered and computed nothing. **FROZEN 30 Oct 2026** (user-approved, all three decisions below as recommended), **amended 30 Oct 2026
 before the run** (user-approved; see Amendment 1). Drafted 25 Oct; frozen
 before the frozen DaT test (`preregistration_dwi_fw.md`) was run. The commit that adds this line is the frozen code.
 At the freeze:
