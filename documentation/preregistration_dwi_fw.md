@@ -152,3 +152,9 @@ every number reported.
       one job type at a time, so TrUE-Net now waits for pass 5 (reordered 24 Oct so the paper's analysis comes first). A pre-retry copy of the table is kept.
   - No `dwisf_*` value had been looked at, and no value was ever computed on a seed-0 registration under the frozen
     code.
+- **26–30 Oct 2026: pause (scheduling only).**
+  - The PD arm finished on 26 Oct (04:17), with no new failures.
+  - Pass 5 started straight after and was frozen at 07:23 with 20 of its 43 retries done. It was thawed on 30 Oct.
+  - The 3 runs in flight (1 `topup`, 2 `eddy_cuda`) hit their wall-clock limit on thaw.
+  - Pass 6 (`--retry-errors`, the same frozen command) re-runs them after pass 5. A pre-retry copy of the table is kept.
+  - No `dwisf_*` value had been looked at.
